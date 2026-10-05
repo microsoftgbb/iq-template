@@ -142,7 +142,7 @@ variable "embedding_model" {
   type = object({
     name     = optional(string, "text-embedding-3-small")
     version  = optional(string, "1")
-    sku      = optional(string, "Standard")
+    sku      = optional(string, "GlobalStandard")
     capacity = optional(number, 10)
   })
   default  = {}

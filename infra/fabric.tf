@@ -62,10 +62,11 @@ resource "fabric_workspace_git" "dev" {
 
   git_provider_details = {
     git_provider_type = "GitHub"
-    owner_name        = var.github_owner
-    repository_name   = var.github_repository_name
-    branch_name       = var.github_branch_name
-    directory_name    = var.github_directory_name
+    # Fabric returns GitHub owner names in lowercase.
+    owner_name      = lower(var.github_owner)
+    repository_name = var.github_repository_name
+    branch_name     = var.github_branch_name
+    directory_name  = var.github_directory_name
   }
 
   git_credentials = {

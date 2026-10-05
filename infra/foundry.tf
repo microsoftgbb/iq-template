@@ -27,6 +27,7 @@ resource "azapi_resource" "foundry_project" {
   parent_id = azapi_resource.foundry.id
   location  = azurerm_resource_group.main.location
   tags      = local.tags
+  locks     = [azapi_resource.foundry.id]
 
   identity {
     type = "SystemAssigned"
@@ -90,13 +91,14 @@ resource "azapi_resource" "search_connection" {
   name                      = "knowledge-search"
   parent_id                 = azapi_resource.foundry_project.id
   schema_validation_enabled = false
+  locks                     = [azapi_resource.foundry.id]
 
   body = {
     properties = {
       category      = "CognitiveSearch"
       authType      = "AAD"
       target        = azurerm_search_service.knowledge.endpoint
-      isSharedToAll = true
+      isSharedToAll = false
       metadata = {
         ApiType    = "Azure"
         ResourceId = azurerm_search_service.knowledge.id
@@ -111,6 +113,7 @@ resource "azapi_resource" "knowledge_base_connection" {
   name                      = "knowledge-base"
   parent_id                 = azapi_resource.foundry_project.id
   schema_validation_enabled = false
+  locks                     = [azapi_resource.foundry.id]
 
   body = {
     properties = {
@@ -118,7 +121,7 @@ resource "azapi_resource" "knowledge_base_connection" {
       authType      = "ProjectManagedIdentity"
       target        = local.knowledge_base_mcp_endpoint
       audience      = "https://search.azure.com/"
-      isSharedToAll = true
+      isSharedToAll = false
       metadata      = { ApiType = "Azure" }
     }
   }

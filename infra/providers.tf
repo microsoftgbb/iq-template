@@ -9,7 +9,6 @@ provider "azurerm" {
     "Microsoft.CognitiveServices",
     "Microsoft.Fabric",
     "Microsoft.Search",
-    "Microsoft.Storage",
   ]
 }
 

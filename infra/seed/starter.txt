@@ -8,12 +8,13 @@ definitions to TEST and to a separately provisioned PROD workspace. It does not
 copy the underlying data. Derived projects own automated workflows and approvals.
 
 The Microsoft Foundry project connects to a Foundry IQ knowledge base backed by
-Azure AI Search. Its knowledge source indexes documents from the private
-knowledge Blob container, including this starter document.
+Azure AI Search. Its indexed OneLake source reads the Files area of the DEV
+knowledge lakehouse, including this starter.txt document. No separate Azure
+Storage account, private endpoint, or network security perimeter is required.
 
-Azure AI Search uses its managed identity to read Blob documents and call the
+Azure AI Search uses its managed identity to read OneLake documents and call the
 Foundry embedding and chat models. The Foundry project uses its managed identity
 to retrieve knowledge through the knowledge-base MCP connection.
 
-Fabric workspaces and OneLake data are not automatically indexed by this starter.
-Only documents uploaded to the knowledge container are part of this knowledge base.
+Only files in the dedicated knowledge lakehouse are indexed. Other Fabric items,
+lakehouses, and the lakehouse Tables area are not part of this knowledge base.

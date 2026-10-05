@@ -7,9 +7,9 @@ This is a **clean-slate GitHub repository template**, not a deployed project. De
 - `infra/main.tf`: shared naming, tags, resource group.
 - `infra/fabric.tf`: new capacity, DEV/TEST workspaces, DEV GitHub integration.
 - `infra/foundry.tf`: Foundry account/project, model deployments, project connections.
-- `infra/knowledge.tf`: Blob, Search, scoped RBAC, knowledge-source/base lifecycle.
+- `infra/knowledge.tf`: DEV knowledge lakehouse, OneLake seed upload, Search, permissions, knowledge-source/base lifecycle.
 - `infra/versions.tf`, `providers.tf`, `variables.tf`, `outputs.tf`: provider constraints, authentication, inputs, public outputs.
-- `infra/seed/`: generic, non-sensitive starter content uploaded to Blob.
+- `infra/seed/`: generic, non-sensitive starter content uploaded to OneLake Files.
 - `workspace/`: Fabric Git item definitions only; no infrastructure or credentials.
 - `cicd/`: optional fabric-cicd configuration, pinned CLI dependencies, and item-promotion guidance.
 - `docs/getting-started.md`: the canonical, concise deployment guide.
@@ -26,7 +26,9 @@ This is a **clean-slate GitHub repository template**, not a deployed project. De
 - Preserve `unpublish.skip: true` in `cicd/config.yml` unless explicitly asked to enable deletions. Never run `fab deploy` as a template check or place secrets in promotion/parameter YAML.
 - Use native Terraform resources before scripts/provisioners, explicit API versions, and configurable model versions/SKUs/quota. Foundry uses `Microsoft.CognitiveServices/accounts` projects, not ML hubs.
 - Search knowledge bases/sources are **data-plane** objects managed by `restful_resource`, not unsupported AzAPI/ARM types. Preserve CRUD and drift detection.
-- The Blob source owns its generated index/indexer/skillset/data source. Preserve source-rebuild behavior, write-only connection handling, and knowledge-base-before-source deletion ordering.
+- The indexed OneLake source owns its generated index/indexer/skillset/data source. Preserve source-rebuild behavior and knowledge-base-before-source deletion ordering.
+- The Azure CLI seed upload is the sole provisioner exception: Fabric's provider has no OneLake file resource. Use the CLI's authenticated session, stable GUID paths and content-hash triggers; never silently ignore upload errors. This is bootstrap, not file drift management.
+- OneLake indexing currently requires Search's identity to have Contributor on DEV. Do not imply it is a read-only lakehouse grant; do not broaden it to TEST/PROD.
 - Surface errors. Limit drift exclusions to documented server behavior; do not hide changes or imply unimplemented features exist.
 
 ## Security and execution
@@ -34,7 +36,7 @@ This is a **clean-slate GitHub repository template**, not a deployed project. De
 - Never run live `plan`, `apply`, `destroy`, or deployment tests as a template-maintenance check. Deployment/testing belongs in a derived repository with an explicitly chosen target.
 - Do not delete cloud assets, local state, or ignored configuration without explicit permission. Preserve unrelated user changes and staging.
 - Keep PATs ephemeral/write-only and rotate with `github_token_version`. Never commit real tfvars, `.env`, state, saved plans, keys, or debug logs; never print credentials.
-- Use scoped managed identities at runtime. Bootstrap Search/storage keys remain in state; derived projects need secured remote state before team/CI use.
+- Use Entra authentication for OneLake bootstrap and scoped managed identities at runtime. The Search bootstrap key and other provider-returned secrets can remain in state; derived projects need secured remote state before team/CI use.
 - Document cost, preview APIs, public networking, and asynchronous ingestion honestly. This is a development baseline, not a production security guarantee.
 
 ## Verification and documentation

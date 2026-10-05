@@ -76,12 +76,22 @@ output "knowledge_base_connection_id" {
   value       = azapi_resource.knowledge_base_connection.id
 }
 
-output "knowledge_storage_account_name" {
-  description = "Upload source documents here using Microsoft Entra authentication."
-  value       = azurerm_storage_account.knowledge.name
+output "knowledge_lakehouse_id" {
+  description = "DEV lakehouse containing the knowledge source files."
+  value       = fabric_lakehouse.knowledge.id
 }
 
-output "knowledge_container_name" {
-  description = "Private Blob container indexed by the knowledge source."
-  value       = azurerm_storage_container.knowledge.name
+output "knowledge_lakehouse_name" {
+  description = "Display name of the DEV knowledge lakehouse."
+  value       = fabric_lakehouse.knowledge.display_name
+}
+
+output "knowledge_files_url" {
+  description = "Authenticated OneLake Files endpoint for source documents."
+  value       = "https://onelake.dfs.fabric.microsoft.com/${fabric_workspace.dev.id}/${fabric_lakehouse.knowledge.id}/Files"
+}
+
+output "knowledge_source_name" {
+  description = "Indexed OneLake source; use includeReferenceSourceData in retrieval requests for document URLs."
+  value       = restful_resource.knowledge_source.body.name
 }

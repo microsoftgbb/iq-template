@@ -17,41 +17,59 @@ resource "azurerm_search_service" "knowledge" {
   }
 }
 
-resource "azurerm_storage_account" "knowledge" {
-  name                            = "st${local.compact_prefix}${random_string.suffix.result}"
-  resource_group_name             = azurerm_resource_group.main.name
-  location                        = azurerm_resource_group.main.location
-  account_tier                    = "Standard"
-  account_replication_type        = "LRS"
-  min_tls_version                 = "TLS1_2"
-  https_traffic_only_enabled      = true
-  allow_nested_items_to_be_public = false
-  shared_access_key_enabled       = true
-  default_to_oauth_authentication = true
-  tags                            = local.tags
+resource "fabric_lakehouse" "knowledge" {
+  display_name = "${replace(var.project_name, "-", "_")}_knowledge"
+  description  = "OneLake files indexed by the Foundry IQ knowledge base."
+  workspace_id = fabric_workspace.dev.id
+
+  # Finish initial Git synchronization before adding the Terraform-owned item.
+  depends_on = [fabric_workspace_git.dev]
 }
 
-resource "azurerm_storage_container" "knowledge" {
-  name                  = "knowledge"
-  storage_account_id    = azurerm_storage_account.knowledge.id
-  container_access_type = "private"
+# The OneLake indexer currently requires workspace Contributor, not Viewer.
+resource "fabric_workspace_role_assignment" "search_onelake_contributor" {
+  workspace_id = fabric_workspace.dev.id
+  role         = "Contributor"
+  principal = {
+    id   = azurerm_search_service.knowledge.identity[0].principal_id
+    type = "ServicePrincipal"
+  }
 }
 
-# The provider uploads this bootstrap blob using a storage key, not a public URL.
-resource "azurerm_storage_blob" "starter" {
-  name                 = "starter.txt"
-  storage_container_id = azurerm_storage_container.knowledge.id
-  type                 = "Block"
-  content_type         = "text/plain"
-  source_content       = file("${path.module}/seed/starter.txt")
-  content_md5          = filemd5("${path.module}/seed/starter.txt")
-}
+# Fabric's provider has no file resource; bootstrap with the existing Azure CLI.
+resource "terraform_data" "onelake_seed" {
+  triggers_replace = {
+    workspace_id = fabric_workspace.dev.id
+    lakehouse_id = fabric_lakehouse.knowledge.id
+    content_hash = filesha256("${path.module}/seed/starter.txt")
+  }
 
-resource "azurerm_role_assignment" "search_blob_reader" {
-  scope                            = azurerm_storage_account.knowledge.id
-  role_definition_name             = "Storage Blob Data Reader"
-  principal_id                     = azurerm_search_service.knowledge.identity[0].principal_id
-  skip_service_principal_aad_check = true
+  provisioner "local-exec" {
+    interpreter = ["bash", "-c"]
+    quiet       = true
+    command     = <<-EOT
+      set -eu
+      az storage fs file upload \
+        --account-name onelake \
+        --blob-endpoint https://onelake.dfs.fabric.microsoft.com \
+        --file-system "$WORKSPACE_ID" \
+        --path "$LAKEHOUSE_ID/Files/starter.txt" \
+        --source "$SOURCE_FILE" \
+        --auth-mode login \
+        --overwrite true \
+        --content-type text/plain \
+        --only-show-errors \
+        --output none
+    EOT
+    environment = {
+      WORKSPACE_ID                    = fabric_workspace.dev.id
+      LAKEHOUSE_ID                    = fabric_lakehouse.knowledge.id
+      SOURCE_FILE                     = abspath("${path.module}/seed/starter.txt")
+      AZURE_STORAGE_CONNECTION_STRING = ""
+      AZURE_STORAGE_KEY               = ""
+      AZURE_STORAGE_SAS_TOKEN         = ""
+    }
+  }
 }
 
 resource "azurerm_role_assignment" "search_foundry_user" {
@@ -74,25 +92,21 @@ resource "azurerm_role_assignment" "deployer_search_reader" {
   principal_id         = data.azurerm_client_config.current.object_id
 }
 
-resource "azurerm_role_assignment" "deployer_blob_contributor" {
-  scope                = azurerm_storage_account.knowledge.id
-  role_definition_name = "Storage Blob Data Contributor"
-  principal_id         = data.azurerm_client_config.current.object_id
-}
-
 resource "restful_resource" "knowledge_source" {
   path            = "/knowledgesources/${local.knowledge_source_name}"
   check_existance = true
-  # Rebuild generated ingestion objects and resend the write-only connection.
-  force_new_attrs = ["name", "kind", "description", "azureBlobParameters"]
+  # Rebuild the generated ingestion objects when source settings change.
+  force_new_attrs = ["name", "kind", "description", "indexedOneLakeParameters"]
 
   body = {
     name        = local.knowledge_source_name
-    kind        = "azureBlob"
-    description = "Documents from the private ${var.project_name} knowledge container."
-    azureBlobParameters = {
-      containerName = azurerm_storage_container.knowledge.name
+    kind        = "indexedOneLake"
+    description = "Documents from the ${var.project_name} DEV knowledge lakehouse Files area."
+    indexedOneLakeParameters = {
+      fabricWorkspaceId = fabric_workspace.dev.id
+      lakehouseId       = fabric_lakehouse.knowledge.id
       ingestionParameters = {
+        networkAccessMode         = "public"
         contentExtractionMode     = "minimal"
         disableImageVerbalization = true
         ingestionSchedule         = { interval = "PT5M" }
@@ -108,24 +122,20 @@ resource "restful_resource" "knowledge_source" {
     }
   }
 
-  # Search redacts connection strings on read, even keyless ResourceId values.
-  ephemeral_body = {
-    azureBlobParameters = {
-      connectionString = "ResourceId=${azurerm_storage_account.knowledge.id}"
-    }
-  }
-
   lifecycle {
+    # Search redacts this ID on GET; changes are tracked by the workspace trigger.
+    ignore_changes = [body.indexedOneLakeParameters.fabricWorkspaceId]
     replace_triggered_by = [
       azurerm_search_service.knowledge.id,
-      azurerm_storage_account.knowledge.id,
+      fabric_workspace.dev.id,
+      fabric_lakehouse.knowledge.id,
       azapi_resource.embedding_model.body,
     ]
   }
 
   depends_on = [
-    azurerm_storage_blob.starter,
-    azurerm_role_assignment.search_blob_reader,
+    terraform_data.onelake_seed,
+    fabric_workspace_role_assignment.search_onelake_contributor,
     azurerm_role_assignment.search_foundry_user,
   ]
 }
