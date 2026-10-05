@@ -69,13 +69,13 @@ variable "github_repository_name" {
 }
 
 variable "github_branch_name" {
-  description = "Existing GitHub branch connected to DEV."
+  description = "Existing GitHub branch to select during DEV's plan-driven Git bootstrap."
   type        = string
   default     = "main"
 }
 
 variable "github_directory_name" {
-  description = "Repository directory containing Fabric item definitions."
+  description = "Repository directory to select during Git bootstrap, containing Fabric item definitions."
   type        = string
   default     = "/workspace"
 
@@ -106,6 +106,20 @@ variable "github_token_version" {
   validation {
     condition     = var.github_token_version >= 1 && floor(var.github_token_version) == var.github_token_version
     error_message = "github_token_version must be a positive integer."
+  }
+}
+
+variable "knowledge_lakehouse_id" {
+  description = "DEV lakehouse GUID created by Git bootstrap. Leave null for platform setup; set after the seed notebook succeeds to enable the knowledge source, base and MCP connection."
+  type        = string
+  default     = null
+
+  validation {
+    condition = var.knowledge_lakehouse_id == null ? true : (
+      can(regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$", var.knowledge_lakehouse_id)) &&
+      var.knowledge_lakehouse_id != "00000000-0000-0000-0000-000000000000"
+    )
+    error_message = "knowledge_lakehouse_id must be null or the nonzero GUID of the Git-created DEV lakehouse, not its logical ID or an Azure resource ID."
   }
 }
 

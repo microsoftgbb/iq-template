@@ -36,7 +36,7 @@ override.tf.json
 
 # Keep .terraform.lock.hcl and sanitized configuration examples tracked.
 
-# Optional Fabric item-promotion tooling.
+# Local Python environments and notebook validation caches.
 .venv/
 __pycache__/
 *.py[cod]

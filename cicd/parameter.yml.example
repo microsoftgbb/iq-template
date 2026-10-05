@@ -1,6 +1,0 @@
-# Optional: replace this placeholder with your actual DEV workspace ID.
-find_replace:
-  - find_value: "<dev-workspace-id>"
-    replace_value:
-      TEST: "$workspace.$id"
-      PROD: "$workspace.$id"

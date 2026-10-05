@@ -25,13 +25,13 @@ data "fabric_capacity" "capacity" {
 
 resource "fabric_workspace" "dev" {
   display_name = "${var.project_name}-dev"
-  description  = "Development workspace."
+  description  = "Development workspace; bootstrap from Git with a Fabric deployment plan."
   capacity_id  = data.fabric_capacity.capacity.id
 }
 
 resource "fabric_workspace" "test" {
   display_name = "${var.project_name}-test"
-  description  = "Test workspace; initially empty, reserved for deployments from GitHub."
+  description  = "Test workspace; initially empty, reserved for native Fabric deployments."
   capacity_id  = data.fabric_capacity.capacity.id
 }
 
@@ -56,23 +56,24 @@ resource "fabric_connection" "github" {
   }
 }
 
-resource "fabric_workspace_git" "dev" {
-  workspace_id            = fabric_workspace.dev.id
-  initialization_strategy = "PreferRemote"
-
-  git_provider_details = {
-    git_provider_type = "GitHub"
-    # Fabric returns GitHub owner names in lowercase.
-    owner_name      = lower(var.github_owner)
-    repository_name = var.github_repository_name
-    branch_name     = var.github_branch_name
-    directory_name  = var.github_directory_name
-  }
-
-  git_credentials = {
-    source        = "ConfiguredConnection"
-    connection_id = fabric_connection.github.id
-  }
+# Git initialization is performed outside Terraform so it can attach a deployment plan.
+resource "fabric_deployment_pipeline" "main" {
+  display_name = "${var.project_name}-promotion"
+  description  = "Native Fabric item promotion; attach the reviewed deployment plan per operation."
+  stages = [
+    {
+      display_name = "DEV"
+      description  = "Git-connected development stage."
+      is_public    = false
+      workspace_id = fabric_workspace.dev.id
+    },
+    {
+      display_name = "TEST"
+      description  = "Validation stage; initially empty."
+      is_public    = false
+      workspace_id = fabric_workspace.test.id
+    },
+  ]
 }
 
 # The creator already has Admin; only grant Contributor to a separate user.
