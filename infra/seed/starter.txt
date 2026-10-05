@@ -1,0 +1,19 @@
+Fabric and Foundry IQ starter knowledge
+
+This deployment provisions one new Microsoft Fabric capacity for two workspaces.
+The DEV workspace is connected to an existing GitHub repository, using the
+workspace directory on the main branch by default. The TEST workspace starts
+empty. The optional cicd configuration promotes Git-versioned Fabric item
+definitions to TEST and to a separately provisioned PROD workspace. It does not
+copy the underlying data. Derived projects own automated workflows and approvals.
+
+The Microsoft Foundry project connects to a Foundry IQ knowledge base backed by
+Azure AI Search. Its knowledge source indexes documents from the private
+knowledge Blob container, including this starter document.
+
+Azure AI Search uses its managed identity to read Blob documents and call the
+Foundry embedding and chat models. The Foundry project uses its managed identity
+to retrieve knowledge through the knowledge-base MCP connection.
+
+Fabric workspaces and OneLake data are not automatically indexed by this starter.
+Only documents uploaded to the knowledge container are part of this knowledge base.
