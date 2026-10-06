@@ -16,7 +16,7 @@ locals {
   knowledge_source_name       = "${var.project_name}-documents"
   knowledge_base_name         = "${var.project_name}-knowledge"
   openai_endpoint             = "https://${azapi_resource.foundry.name}.openai.azure.com"
-  knowledge_base_mcp_endpoint = "${azurerm_search_service.knowledge.endpoint}/knowledgebases/${restful_resource.knowledge_base.body.name}/mcp?api-version=${local.search_api_version}"
+  knowledge_base_mcp_endpoint = var.knowledge_lakehouse_id == null ? null : "${azurerm_search_service.knowledge.endpoint}/knowledgebases/${restful_resource.knowledge_base[0].body.name}/mcp?api-version=${local.search_api_version}"
 
   tags = merge(var.tags, {
     project    = var.project_name

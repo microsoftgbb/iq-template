@@ -109,6 +109,8 @@ resource "azapi_resource" "search_connection" {
 
 # RemoteTool/ProjectManagedIdentity is documented but absent from AzAPI's schema.
 resource "azapi_resource" "knowledge_base_connection" {
+  count = var.knowledge_lakehouse_id == null ? 0 : 1
+
   type                      = "Microsoft.CognitiveServices/accounts/projects/connections@2025-10-01-preview"
   name                      = "knowledge-base"
   parent_id                 = azapi_resource.foundry_project.id

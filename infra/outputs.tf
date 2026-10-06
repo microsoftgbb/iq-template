@@ -14,8 +14,13 @@ output "fabric_capacity_resource_id" {
 }
 
 output "dev_workspace_id" {
-  description = "GitHub-connected DEV workspace."
+  description = "DEV workspace GUID; connect and sync Git with the Bootstrap deployment plan after platform setup."
   value       = fabric_workspace.dev.id
+}
+
+output "dev_workspace_name" {
+  description = "Display name of the DEV bootstrap target."
+  value       = fabric_workspace.dev.display_name
 }
 
 output "test_workspace_id" {
@@ -29,8 +34,40 @@ output "test_workspace_name" {
 }
 
 output "github_repository_url" {
-  description = "Repository connected to the DEV workspace."
+  description = "Repository to connect to the DEV workspace."
   value       = local.github_repository_url
+}
+
+output "github_connection_id" {
+  description = "GitHub credentials connection for plan-driven DEV Git bootstrap; not a PAT."
+  value       = fabric_connection.github.id
+}
+
+output "github_connect_request" {
+  description = "Fabric Git Connect API request body. Terraform does not connect, initialize or synchronize Git."
+  value = {
+    gitProviderDetails = {
+      gitProviderType = "GitHub"
+      ownerName       = lower(var.github_owner)
+      repositoryName  = var.github_repository_name
+      branchName      = var.github_branch_name
+      directoryName   = var.github_directory_name
+    }
+    myGitCredentials = {
+      source       = "ConfiguredConnection"
+      connectionId = fabric_connection.github.id
+    }
+  }
+}
+
+output "deployment_pipeline_id" {
+  description = "Native Fabric DEV/TEST deployment pipeline; no content is deployed by Terraform."
+  value       = fabric_deployment_pipeline.main.id
+}
+
+output "deployment_pipeline_stage_ids" {
+  description = "Native Fabric stage GUIDs keyed by stage name."
+  value       = { for stage in fabric_deployment_pipeline.main.stages : stage.display_name => stage.id }
 }
 
 output "foundry_project_endpoint" {
@@ -57,13 +94,18 @@ output "search_endpoint" {
 }
 
 output "knowledge_base_name" {
-  description = "Foundry IQ knowledge base, backed by Azure AI Search."
-  value       = restful_resource.knowledge_base.body.name
+  description = "Foundry IQ knowledge base, backed by Azure AI Search; absent until knowledge setup."
+  value       = one(restful_resource.knowledge_base[*].body.name)
+}
+
+output "knowledge_setup_pending" {
+  description = "True until the Git-created DEV lakehouse GUID is supplied. False does not imply asynchronous ingestion has finished."
+  value       = var.knowledge_lakehouse_id == null
 }
 
 output "knowledge_source_status_url" {
   description = "GET with a Search token to inspect asynchronous ingestion and errors."
-  value       = "${azurerm_search_service.knowledge.endpoint}/knowledgesources/${restful_resource.knowledge_source.body.name}/status?api-version=${local.search_api_version}"
+  value       = var.knowledge_lakehouse_id == null ? null : "${azurerm_search_service.knowledge.endpoint}/knowledgesources/${restful_resource.knowledge_source[0].body.name}/status?api-version=${local.search_api_version}"
 }
 
 output "knowledge_base_mcp_endpoint" {
@@ -73,25 +115,41 @@ output "knowledge_base_mcp_endpoint" {
 
 output "knowledge_base_connection_id" {
   description = "Project connection resource ID for the knowledge-base MCP tool."
-  value       = azapi_resource.knowledge_base_connection.id
+  value       = one(azapi_resource.knowledge_base_connection[*].id)
 }
 
 output "knowledge_lakehouse_id" {
-  description = "DEV lakehouse containing the knowledge source files."
-  value       = fabric_lakehouse.knowledge.id
+  description = "Git-owned DEV lakehouse containing the knowledge source files; absent until knowledge setup."
+  value       = one(data.fabric_lakehouse.knowledge[*].id)
 }
 
 output "knowledge_lakehouse_name" {
   description = "Display name of the DEV knowledge lakehouse."
-  value       = fabric_lakehouse.knowledge.display_name
+  value       = one(data.fabric_lakehouse.knowledge[*].display_name)
 }
 
 output "knowledge_files_url" {
   description = "Authenticated OneLake Files endpoint for source documents."
-  value       = "https://onelake.dfs.fabric.microsoft.com/${fabric_workspace.dev.id}/${fabric_lakehouse.knowledge.id}/Files"
+  value       = var.knowledge_lakehouse_id == null ? null : "https://onelake.dfs.fabric.microsoft.com/${fabric_workspace.dev.id}/${data.fabric_lakehouse.knowledge[0].id}/Files"
 }
 
 output "knowledge_source_name" {
   description = "Indexed OneLake source; use includeReferenceSourceData in retrieval requests for document URLs."
-  value       = restful_resource.knowledge_source.body.name
+  value       = one(restful_resource.knowledge_source[*].body.name)
+}
+
+output "ontology_knowledge_sources" {
+  description = "Live Fabric ontology sources registered in the knowledge base, with DEV physical item IDs. Empty until explicitly configured."
+  value = {
+    for name, source in restful_resource.ontology_source : name => {
+      knowledge_source_name = source.body.name
+      workspace_id          = fabric_workspace.dev.id
+      ontology_id           = data.fabric_ontology.knowledge[name].id
+    }
+  }
+}
+
+output "knowledge_base_requires_user_token" {
+  description = "When true, retrieval must include an end-user Search-audience token in x-ms-query-source-authorization. Project managed identity alone cannot query Fabric ontologies."
+  value       = length(var.knowledge_ontologies) > 0
 }

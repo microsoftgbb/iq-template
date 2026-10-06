@@ -8,7 +8,7 @@ resource "azurerm_search_service" "knowledge" {
   semantic_search_sku = "standard"
   tags                = local.tags
 
-  # Terraform uses an admin key; Foundry queries use the project managed identity.
+  # The project identity authenticates to Search; ontology queries also need a user token.
   local_authentication_enabled = true
   authentication_failure_mode  = "http401WithBearerChallenge"
 
@@ -17,13 +17,18 @@ resource "azurerm_search_service" "knowledge" {
   }
 }
 
-resource "fabric_lakehouse" "knowledge" {
-  display_name = "${replace(var.project_name, "-", "_")}_knowledge"
-  description  = "OneLake files indexed by the Foundry IQ knowledge base."
-  workspace_id = fabric_workspace.dev.id
+data "fabric_lakehouse" "knowledge" {
+  count = var.knowledge_lakehouse_id == null ? 0 : 1
 
-  # Finish initial Git synchronization before adding the Terraform-owned item.
-  depends_on = [fabric_workspace_git.dev]
+  id           = var.knowledge_lakehouse_id
+  workspace_id = fabric_workspace.dev.id
+}
+
+data "fabric_ontology" "knowledge" {
+  for_each = var.knowledge_ontologies
+
+  id           = each.value.ontology_id
+  workspace_id = fabric_workspace.dev.id
 }
 
 # The OneLake indexer currently requires workspace Contributor, not Viewer.
@@ -33,42 +38,6 @@ resource "fabric_workspace_role_assignment" "search_onelake_contributor" {
   principal = {
     id   = azurerm_search_service.knowledge.identity[0].principal_id
     type = "ServicePrincipal"
-  }
-}
-
-# Fabric's provider has no file resource; bootstrap with the existing Azure CLI.
-resource "terraform_data" "onelake_seed" {
-  triggers_replace = {
-    workspace_id = fabric_workspace.dev.id
-    lakehouse_id = fabric_lakehouse.knowledge.id
-    content_hash = filesha256("${path.module}/seed/starter.txt")
-  }
-
-  provisioner "local-exec" {
-    interpreter = ["bash", "-c"]
-    quiet       = true
-    command     = <<-EOT
-      set -eu
-      az storage fs file upload \
-        --account-name onelake \
-        --blob-endpoint https://onelake.dfs.fabric.microsoft.com \
-        --file-system "$WORKSPACE_ID" \
-        --path "$LAKEHOUSE_ID/Files/starter.txt" \
-        --source "$SOURCE_FILE" \
-        --auth-mode login \
-        --overwrite true \
-        --content-type text/plain \
-        --only-show-errors \
-        --output none
-    EOT
-    environment = {
-      WORKSPACE_ID                    = fabric_workspace.dev.id
-      LAKEHOUSE_ID                    = fabric_lakehouse.knowledge.id
-      SOURCE_FILE                     = abspath("${path.module}/seed/starter.txt")
-      AZURE_STORAGE_CONNECTION_STRING = ""
-      AZURE_STORAGE_KEY               = ""
-      AZURE_STORAGE_SAS_TOKEN         = ""
-    }
   }
 }
 
@@ -93,6 +62,8 @@ resource "azurerm_role_assignment" "deployer_search_reader" {
 }
 
 resource "restful_resource" "knowledge_source" {
+  count = var.knowledge_lakehouse_id == null ? 0 : 1
+
   path            = "/knowledgesources/${local.knowledge_source_name}"
   check_existance = true
   # Rebuild the generated ingestion objects when source settings change.
@@ -104,7 +75,7 @@ resource "restful_resource" "knowledge_source" {
     description = "Documents from the ${var.project_name} DEV knowledge lakehouse Files area."
     indexedOneLakeParameters = {
       fabricWorkspaceId = fabric_workspace.dev.id
-      lakehouseId       = fabric_lakehouse.knowledge.id
+      lakehouseId       = data.fabric_lakehouse.knowledge[count.index].id
       ingestionParameters = {
         networkAccessMode         = "public"
         contentExtractionMode     = "minimal"
@@ -128,28 +99,32 @@ resource "restful_resource" "knowledge_source" {
     replace_triggered_by = [
       azurerm_search_service.knowledge.id,
       fabric_workspace.dev.id,
-      fabric_lakehouse.knowledge.id,
       azapi_resource.embedding_model.body,
     ]
   }
 
   depends_on = [
-    terraform_data.onelake_seed,
     fabric_workspace_role_assignment.search_onelake_contributor,
     azurerm_role_assignment.search_foundry_user,
   ]
 }
 
 resource "restful_resource" "knowledge_base" {
+  count = var.knowledge_lakehouse_id == null ? 0 : 1
+
   path            = "/knowledgebases/${local.knowledge_base_name}"
   check_existance = true
 
   body = {
-    name               = local.knowledge_base_name
-    description        = "Foundry IQ knowledge base for ${var.project_name}."
-    outputMode         = "answerSynthesis"
-    answerInstructions = "Answer using the retrieved documents and include citations. If the sources do not contain the answer, say you do not know."
-    knowledgeSources   = [{ name = restful_resource.knowledge_source.body.name }]
+    name                  = local.knowledge_base_name
+    description           = "Foundry IQ knowledge base for ${var.project_name}."
+    outputMode            = "answerSynthesis"
+    answerInstructions    = "Answer using retrieved source results and include citations. If the sources do not contain the answer, say you do not know. Never report unavailable or unauthorized sources as successfully queried."
+    retrievalInstructions = "Use connected Fabric ontology sources for current entities, relationships, statuses and counts. Use indexed OneLake files for documentation and background. Bootstrap documents are not live table data; do not substitute them for a failed ontology query."
+    knowledgeSources = concat(
+      [{ name = restful_resource.knowledge_source[count.index].body.name }],
+      [for source in restful_resource.ontology_source : { name = source.body.name }],
+    )
     models = [{
       kind = "azureOpenAI"
       azureOpenAIParameters = {
@@ -163,6 +138,28 @@ resource "restful_resource" "knowledge_base" {
 
   lifecycle {
     # Search refuses to delete a source while a knowledge base references it.
-    replace_triggered_by = [restful_resource.knowledge_source]
+    replace_triggered_by = [restful_resource.knowledge_source[count.index]]
+  }
+}
+
+resource "restful_resource" "ontology_source" {
+  for_each = var.knowledge_ontologies
+
+  path            = "/knowledgesources/${var.project_name}-${each.key}-ontology"
+  check_existance = true
+  force_new_attrs = ["name", "kind"]
+
+  body = {
+    name        = "${var.project_name}-${each.key}-ontology"
+    kind        = "fabricOntology"
+    description = each.value.description
+    fabricOntologyParameters = {
+      workspaceId = fabric_workspace.dev.id
+      ontologyId  = data.fabric_ontology.knowledge[each.key].id
+    }
+  }
+
+  lifecycle {
+    replace_triggered_by = [azurerm_search_service.knowledge.id]
   }
 }

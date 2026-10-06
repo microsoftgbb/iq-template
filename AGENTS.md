@@ -5,29 +5,34 @@
 This is a **clean-slate GitHub repository template**, not a deployed project. Derived repositories own their infrastructure, state, tests, and CI/CD. Do not add compatibility code for deployments predating this template.
 
 - `infra/main.tf`: shared naming, tags, resource group.
-- `infra/fabric.tf`: new capacity, DEV/TEST workspaces, DEV GitHub integration.
+- `infra/fabric.tf`: new capacity, DEV/TEST workspaces, GitHub credentials connection, native DEV/TEST deployment pipeline.
 - `infra/foundry.tf`: Foundry account/project, model deployments, project connections.
-- `infra/knowledge.tf`: DEV knowledge lakehouse, OneLake seed upload, Search, permissions, knowledge-source/base lifecycle.
+- `infra/knowledge.tf`: Git-owned DEV lakehouse/ontology lookups, Search, permissions, indexed-file and optional live ontology sources, conditional knowledge-base lifecycle.
 - `infra/versions.tf`, `providers.tf`, `variables.tf`, `outputs.tf`: provider constraints, authentication, inputs, public outputs.
-- `infra/seed/`: generic, non-sensitive starter content uploaded to OneLake Files.
-- `workspace/`: Fabric Git item definitions only; no infrastructure or credentials.
-- `cicd/`: optional fabric-cicd configuration, pinned CLI dependencies, and item-promotion guidance.
+- `workspace/`: Fabric Git item definitions, including a schema-enabled lakehouse, insert-only synthetic seeder, new-experience Site/Asset ontology, scoped binding notebook, and deployment plan; no infrastructure or credentials.
+- `cicd/`: native Git bootstrap, deployment-plan and deployment-pipeline guidance; no deployment wrapper or fabric-cicd dependency.
 - `docs/getting-started.md`: the canonical, concise deployment guide.
+- `docs/ontology-knowledge.md`: sample binding, additional ontology registration and delegated retrieval authentication.
 
 ## Conventions
 
-- Keep infrastructure setup to plain Terraform and one local tfvars file. Keep optional item promotion in `cicd/`, using upstream tooling rather than custom wrappers. Do not bundle project-specific tests.
+- Keep infrastructure setup to plain Terraform and one local tfvars file. Use staged setup: platform apply, native Git sync with a deployment plan, then knowledge apply with the physical DEV lakehouse GUID. Keep promotion guidance in `cicd/`, using native tooling rather than custom wrappers. Do not bundle project-specific tests.
 - Use required `project_name` for project branding, resource names, and tags. Never hard-code a template repository's name, owner, region, tenant, or subscription into a derived deployment.
 - Use snake_case Terraform labels and typed, documented variables/outputs. Validate input constraints, format with `terraform fmt`, and retain the lock file.
 - Discover subscription/authentication through provider-supported CLI/environment conventions. Require an explicit region; keep credentials out of configuration.
 - Provision the capacity before looking up its Fabric GUID. Workspaces take the GUID, **not** the Azure resource ID.
-- Use GitHub for DEV Git integration; no Azure DevOps integration. TEST starts empty. Tenant-wide Fabric settings remain administrator-owned prerequisites.
-- Promote the same reviewed `workspace/` commit to TEST then PROD. fabric-cicd deploys definitions, not underlying data; PROD provisioning and automated approval gates belong to derived projects.
-- Preserve `unpublish.skip: true` in `cicd/config.yml` unless explicitly asked to enable deletions. Never run `fab deploy` as a template check or place secrets in promotion/parameter YAML.
+- Use GitHub for DEV Git integration; no Azure DevOps integration. Git connection/initialization/sync stays outside Terraform because the pinned provider cannot attach a deployment plan. TEST starts empty. Tenant-wide Fabric settings remain administrator-owned prerequisites.
+- Promote the same reviewed `workspace/` revision to TEST then PROD using native deployment pipelines with explicit plan attachment. These copy live workspace definitions, not Git checkouts or data; require synchronized, unchanged source workspaces. PROD provisioning and automated approval gates belong to derived projects.
+- Do not automate orphan deletion or place secrets in item definitions/plan parameters. Review Git deletions explicitly. Never run live item deployment as a template check.
 - Use native Terraform resources before scripts/provisioners, explicit API versions, and configurable model versions/SKUs/quota. Foundry uses `Microsoft.CognitiveServices/accounts` projects, not ML hubs.
 - Search knowledge bases/sources are **data-plane** objects managed by `restful_resource`, not unsupported AzAPI/ARM types. Preserve CRUD and drift detection.
 - The indexed OneLake source owns its generated index/indexer/skillset/data source. Preserve source-rebuild behavior and knowledge-base-before-source deletion ordering.
-- The Azure CLI seed upload is the sole provisioner exception: Fabric's provider has no OneLake file resource. Use the CLI's authenticated session, stable GUID paths and content-hash triggers; never silently ignore upload errors. This is bootstrap, not file drift management.
+- Do not use Terraform provisioners for seeding or Git operations. Git owns the lakehouse/notebook; Terraform only looks up the supplied DEV lakehouse GUID. Keep the source, base and MCP connection disabled when that input is null.
+- The notebook seeds only missing demo keys/files, using current-workspace identity and GUID-based OneLake paths. Preserve existing data, reject incompatible schemas, and surface failures. Require explicit opt-in outside DEV/TEST. This is bootstrap, not file drift management or a generic production ingestion pipeline.
+- Keep ontologies in the new-experience TMDL format. The sample starts without environment-specific partitions; its binding action checks the logical ID/marker, refreshes only its source tables' SQL metadata, and updates the target-local source binding. Preserve unrelated definition parts, refuse unknown mappings, bound polling and serialize authoring/deployment.
+- Review and commit generated DEV binding/normalization changes before promotion. Expected target-binding differences are not new business-model revisions; always rebind each promoted target before exposing it.
+- Register ontologies as native `fabricOntology` knowledge sources, not exported documents or a custom MCP proxy. They query bound data live. Retrieval requires an end-user Search-audience token in `x-ms-query-source-authorization`; Search/Foundry managed identities do not substitute for that delegated identity. Keep user tokens out of state/configuration.
+- Deployment plans order item groups and supported actions; attach one per operation and poll for completion. Do not imply SQL discovery, graph materialization or semantic-model refresh completes just because seeding did.
 - OneLake indexing currently requires Search's identity to have Contributor on DEV. Do not imply it is a read-only lakehouse grant; do not broaden it to TEST/PROD.
 - Surface errors. Limit drift exclusions to documented server behavior; do not hide changes or imply unimplemented features exist.
 
@@ -36,7 +41,7 @@ This is a **clean-slate GitHub repository template**, not a deployed project. De
 - Never run live `plan`, `apply`, `destroy`, or deployment tests as a template-maintenance check. Deployment/testing belongs in a derived repository with an explicitly chosen target.
 - Do not delete cloud assets, local state, or ignored configuration without explicit permission. Preserve unrelated user changes and staging.
 - Keep PATs ephemeral/write-only and rotate with `github_token_version`. Never commit real tfvars, `.env`, state, saved plans, keys, or debug logs; never print credentials.
-- Use Entra authentication for OneLake bootstrap and scoped managed identities at runtime. The Search bootstrap key and other provider-returned secrets can remain in state; derived projects need secured remote state before team/CI use.
+- Use the notebook's authorized Fabric runtime for OneLake bootstrap and scoped managed identities for Search/Foundry access. The Search bootstrap key and other provider-returned secrets can remain in state; derived projects need secured remote state before team/CI use.
 - Document cost, preview APIs, public networking, and asynchronous ingestion honestly. This is a development baseline, not a production security guarantee.
 
 ## Verification and documentation

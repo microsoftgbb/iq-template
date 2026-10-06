@@ -12,7 +12,10 @@ provider "azurerm" {
   ]
 }
 
-provider "fabric" {}
+provider "fabric" {
+  # Ontology metadata lookup is a preview feature in the pinned provider.
+  preview = length(var.knowledge_ontologies) > 0
+}
 
 # AzAPI does not register Search knowledge-base/source data-plane resource types.
 # Keep their CRUD lifecycle in Terraform; do not log this provider's HTTP traffic.
