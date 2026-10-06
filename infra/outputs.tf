@@ -137,3 +137,19 @@ output "knowledge_source_name" {
   description = "Indexed OneLake source; use includeReferenceSourceData in retrieval requests for document URLs."
   value       = one(restful_resource.knowledge_source[*].body.name)
 }
+
+output "ontology_knowledge_sources" {
+  description = "Live Fabric ontology sources registered in the knowledge base, with DEV physical item IDs. Empty until explicitly configured."
+  value = {
+    for name, source in restful_resource.ontology_source : name => {
+      knowledge_source_name = source.body.name
+      workspace_id          = fabric_workspace.dev.id
+      ontology_id           = data.fabric_ontology.knowledge[name].id
+    }
+  }
+}
+
+output "knowledge_base_requires_user_token" {
+  description = "When true, retrieval must include an end-user Search-audience token in x-ms-query-source-authorization. Project managed identity alone cannot query Fabric ontologies."
+  value       = length(var.knowledge_ontologies) > 0
+}

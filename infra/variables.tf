@@ -110,7 +110,7 @@ variable "github_token_version" {
 }
 
 variable "knowledge_lakehouse_id" {
-  description = "DEV lakehouse GUID created by Git bootstrap. Leave null for platform setup; set after the seed notebook succeeds to enable the knowledge source, base and MCP connection."
+  description = "DEV lakehouse GUID created by Git bootstrap. Leave null for platform setup; set after bootstrap succeeds to enable knowledge sources, the base and MCP connection."
   type        = string
   default     = null
 
@@ -120,6 +120,41 @@ variable "knowledge_lakehouse_id" {
       var.knowledge_lakehouse_id != "00000000-0000-0000-0000-000000000000"
     )
     error_message = "knowledge_lakehouse_id must be null or the nonzero GUID of the Git-created DEV lakehouse, not its logical ID or an Azure resource ID."
+  }
+}
+
+variable "knowledge_ontologies" {
+  description = "Optional Git-owned DEV ontologies to expose as live Foundry IQ sources, keyed by a stable short name. Supply physical item GUIDs after binding succeeds. Queries require a delegated end-user token."
+  type = map(object({
+    ontology_id = string
+    description = string
+  }))
+  default  = {}
+  nullable = false
+
+  validation {
+    condition = alltrue([
+      for name in keys(var.knowledge_ontologies) :
+      can(regex("^[a-z][a-z0-9-]{0,30}[a-z0-9]$", name)) && !strcontains(name, "--")
+    ])
+    error_message = "Ontology source keys must be 2-32 lowercase letters, digits or single hyphens, starting with a letter and ending with a letter or digit."
+  }
+
+  validation {
+    condition = alltrue([
+      for ontology in values(var.knowledge_ontologies) : try(
+        can(regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$", ontology.ontology_id)) &&
+        ontology.ontology_id != "00000000-0000-0000-0000-000000000000" &&
+        length(trimspace(ontology.description)) > 0,
+        false
+      )
+    ])
+    error_message = "Each ontology must have a nonzero physical item GUID and a nonempty description of the questions it can answer."
+  }
+
+  validation {
+    condition     = length(var.knowledge_ontologies) == 0 || var.knowledge_lakehouse_id != null
+    error_message = "Register ontologies during knowledge setup, after setting knowledge_lakehouse_id to the Git-created DEV lakehouse GUID."
   }
 }
 

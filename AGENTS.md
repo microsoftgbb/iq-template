@@ -7,11 +7,12 @@ This is a **clean-slate GitHub repository template**, not a deployed project. De
 - `infra/main.tf`: shared naming, tags, resource group.
 - `infra/fabric.tf`: new capacity, DEV/TEST workspaces, GitHub credentials connection, native DEV/TEST deployment pipeline.
 - `infra/foundry.tf`: Foundry account/project, model deployments, project connections.
-- `infra/knowledge.tf`: Git-owned DEV lakehouse lookup, Search, permissions, conditional knowledge-source/base lifecycle.
+- `infra/knowledge.tf`: Git-owned DEV lakehouse/ontology lookups, Search, permissions, indexed-file and optional live ontology sources, conditional knowledge-base lifecycle.
 - `infra/versions.tf`, `providers.tf`, `variables.tf`, `outputs.tf`: provider constraints, authentication, inputs, public outputs.
-- `workspace/`: Fabric Git item definitions, including a schema-enabled lakehouse, insert-only synthetic seeder notebook, and deployment plan; no infrastructure or credentials.
+- `workspace/`: Fabric Git item definitions, including a schema-enabled lakehouse, insert-only synthetic seeder, new-experience Site/Asset ontology, scoped binding notebook, and deployment plan; no infrastructure or credentials.
 - `cicd/`: native Git bootstrap, deployment-plan and deployment-pipeline guidance; no deployment wrapper or fabric-cicd dependency.
 - `docs/getting-started.md`: the canonical, concise deployment guide.
+- `docs/ontology-knowledge.md`: sample binding, additional ontology registration and delegated retrieval authentication.
 
 ## Conventions
 
@@ -28,6 +29,9 @@ This is a **clean-slate GitHub repository template**, not a deployed project. De
 - The indexed OneLake source owns its generated index/indexer/skillset/data source. Preserve source-rebuild behavior and knowledge-base-before-source deletion ordering.
 - Do not use Terraform provisioners for seeding or Git operations. Git owns the lakehouse/notebook; Terraform only looks up the supplied DEV lakehouse GUID. Keep the source, base and MCP connection disabled when that input is null.
 - The notebook seeds only missing demo keys/files, using current-workspace identity and GUID-based OneLake paths. Preserve existing data, reject incompatible schemas, and surface failures. Require explicit opt-in outside DEV/TEST. This is bootstrap, not file drift management or a generic production ingestion pipeline.
+- Keep ontologies in the new-experience TMDL format. The sample starts without environment-specific partitions; its binding action checks the logical ID/marker, refreshes only its source tables' SQL metadata, and updates the target-local source binding. Preserve unrelated definition parts, refuse unknown mappings, bound polling and serialize authoring/deployment.
+- Review and commit generated DEV binding/normalization changes before promotion. Expected target-binding differences are not new business-model revisions; always rebind each promoted target before exposing it.
+- Register ontologies as native `fabricOntology` knowledge sources, not exported documents or a custom MCP proxy. They query bound data live. Retrieval requires an end-user Search-audience token in `x-ms-query-source-authorization`; Search/Foundry managed identities do not substitute for that delegated identity. Keep user tokens out of state/configuration.
 - Deployment plans order item groups and supported actions; attach one per operation and poll for completion. Do not imply SQL discovery, graph materialization or semantic-model refresh completes just because seeding did.
 - OneLake indexing currently requires Search's identity to have Contributor on DEV. Do not imply it is a read-only lakehouse grant; do not broaden it to TEST/PROD.
 - Surface errors. Limit drift exclusions to documented server behavior; do not hide changes or imply unimplemented features exist.

@@ -8,7 +8,7 @@ resource "azurerm_search_service" "knowledge" {
   semantic_search_sku = "standard"
   tags                = local.tags
 
-  # Terraform uses an admin key; Foundry queries use the project managed identity.
+  # The project identity authenticates to Search; ontology queries also need a user token.
   local_authentication_enabled = true
   authentication_failure_mode  = "http401WithBearerChallenge"
 
@@ -21,6 +21,13 @@ data "fabric_lakehouse" "knowledge" {
   count = var.knowledge_lakehouse_id == null ? 0 : 1
 
   id           = var.knowledge_lakehouse_id
+  workspace_id = fabric_workspace.dev.id
+}
+
+data "fabric_ontology" "knowledge" {
+  for_each = var.knowledge_ontologies
+
+  id           = each.value.ontology_id
   workspace_id = fabric_workspace.dev.id
 }
 
@@ -109,11 +116,15 @@ resource "restful_resource" "knowledge_base" {
   check_existance = true
 
   body = {
-    name               = local.knowledge_base_name
-    description        = "Foundry IQ knowledge base for ${var.project_name}."
-    outputMode         = "answerSynthesis"
-    answerInstructions = "Answer using the retrieved documents and include citations. If the sources do not contain the answer, say you do not know."
-    knowledgeSources   = [{ name = restful_resource.knowledge_source[count.index].body.name }]
+    name                  = local.knowledge_base_name
+    description           = "Foundry IQ knowledge base for ${var.project_name}."
+    outputMode            = "answerSynthesis"
+    answerInstructions    = "Answer using retrieved source results and include citations. If the sources do not contain the answer, say you do not know. Never report unavailable or unauthorized sources as successfully queried."
+    retrievalInstructions = "Use connected Fabric ontology sources for current entities, relationships, statuses and counts. Use indexed OneLake files for documentation and background. Bootstrap documents are not live table data; do not substitute them for a failed ontology query."
+    knowledgeSources = concat(
+      [{ name = restful_resource.knowledge_source[count.index].body.name }],
+      [for source in restful_resource.ontology_source : { name = source.body.name }],
+    )
     models = [{
       kind = "azureOpenAI"
       azureOpenAIParameters = {
@@ -128,5 +139,27 @@ resource "restful_resource" "knowledge_base" {
   lifecycle {
     # Search refuses to delete a source while a knowledge base references it.
     replace_triggered_by = [restful_resource.knowledge_source[count.index]]
+  }
+}
+
+resource "restful_resource" "ontology_source" {
+  for_each = var.knowledge_ontologies
+
+  path            = "/knowledgesources/${var.project_name}-${each.key}-ontology"
+  check_existance = true
+  force_new_attrs = ["name", "kind"]
+
+  body = {
+    name        = "${var.project_name}-${each.key}-ontology"
+    kind        = "fabricOntology"
+    description = each.value.description
+    fabricOntologyParameters = {
+      workspaceId = fabric_workspace.dev.id
+      ontologyId  = data.fabric_ontology.knowledge[each.key].id
+    }
+  }
+
+  lifecycle {
+    replace_triggered_by = [azurerm_search_service.knowledge.id]
   }
 }

@@ -137,13 +137,16 @@ South Works (demo-site-002) is in the South region. Its asset is
 Conveyor A (demo-asset-003), which is Operational.
 
 The demo_sites table defines sites. The demo_assets table defines assets.
-demo_assets.site_id references demo_sites.site_id. These tables can supply
-Site and Asset ontology entities, a located-at graph relationship, and a
-semantic model that counts assets by site and status.
+demo_assets.site_id references demo_sites.site_id. ScenarioOntology maps these
+tables to Site and Asset entities and their LocatedAt relationship.
+BindScenario configures the target-specific binding.
 
 This starter document is indexed from the lakehouse Files area by Foundry IQ.
-The Delta tables, ontology, graph and semantic model are not indexed by that
-OneLake Files knowledge source. Their definitions and bindings are separate.
+The Delta tables and ontology are not indexed by that OneLake Files knowledge
+source. Register ScenarioOntology as a separate fabricOntology knowledge source
+to query its bound data live, with a delegated end-user token.
+The facts above describe the original seed, not current operational status.
+Use the ontology source, not this document, for current entity values and counts.
 
 Git versions item definitions and this notebook. The notebook materializes
 the sample data in each target workspace; Git does not copy OneLake data.

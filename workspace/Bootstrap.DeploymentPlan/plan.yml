@@ -17,3 +17,21 @@ groups:
               value: Scenario
             - name: allow_other_workspaces
               value: false
+  - name: ScenarioOntology
+    logicalId: e6a99499-e3f5-4a9b-8288-3985c73a05e5
+    dependsOn:
+      - groupName: SeedScenario
+  - name: BindScenario
+    logicalId: 52c47324-b4ec-4504-b6af-62fbf6ead50f
+    dependsOn:
+      - groupName: ScenarioOntology
+    postActions:
+      - name: Bind seeded ontology
+        job:
+          type: Execute
+          logicalId: 52c47324-b4ec-4504-b6af-62fbf6ead50f
+          parameters:
+            - name: lakehouse_name
+              value: Scenario
+            - name: ontology_name
+              value: ScenarioOntology
