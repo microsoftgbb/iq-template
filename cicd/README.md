@@ -23,6 +23,8 @@ Terraform owns capacity, workspaces, permissions, the GitHub credentials connect
 
 The generic item names are local to each project's workspaces. Preserve each `.platform` logical ID across environments. If you rename `Scenario` or `ScenarioOntology`, update notebook parameters and plan actions together. The plan uses logical IDs, while Terraform's `knowledge_lakehouse_id` and `knowledge_ontologies` inputs require physical DEV item GUIDs.
 
+Keep notebook defaults in executable `# PARAMETERS CELL` sections. This delimiter preserves the parameter-cell role through Fabric Git; a `tags` entry in the language metadata does not. A `# PARAMETERS` heading alone is not a code-cell delimiter and can cause Fabric to import the defaults as Markdown.
+
 The seeder uses the current runtime workspace, never a saved DEV workspace ID or default lakehouse attachment. It writes `Tables/dbo/demo_sites`, `Tables/dbo/demo_assets` and `Files/starter.txt`. Existing rows (including edited demo rows) and the existing file are retained. Incompatible table schemas/non-Delta paths and write failures stop the run; no data is silently replaced. Serialize seed runs per workspace.
 
 ## Initial Git synchronization

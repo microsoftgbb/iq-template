@@ -17,7 +17,7 @@
 # Missing synthetic keys are inserted; existing rows and starter.txt are preserved.
 # By default, only workspaces ending in -dev or -test may receive demo data.
 
-# PARAMETERS ********************
+# PARAMETERS CELL ********************
 
 lakehouse_name = "Scenario"
 allow_other_workspaces = False

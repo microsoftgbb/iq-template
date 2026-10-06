@@ -22,3 +22,5 @@ entity Site
 		lineageTag: ab94c032-64f8-4324-8a28-2eb9a7091706
 		backingConfiguration
 			valueColumn: demo_sites.region
+
+	annotation BootstrapBinding = site-asset-v1

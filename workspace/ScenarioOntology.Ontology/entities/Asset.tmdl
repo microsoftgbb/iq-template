@@ -27,3 +27,5 @@ entity Asset
 		lineageTag: c873d292-9840-4871-9738-0b87b0453c9b
 		backingConfiguration
 			valueColumn: demo_assets.status
+
+	annotation BootstrapBinding = site-asset-v1
