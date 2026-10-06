@@ -2,9 +2,11 @@
 
 Use this template for a **new project**, not an existing deployment. Each derived repository gets its own resources and Terraform state.
 
+**Guided App/CLI path:** open the derived repository's Codespace and tell Copilot **"Deploy the platform"**. The [deployment skill](../.github/skills/deploy-platform/SKILL.md) carries out all stages below, asks for missing choices/sign-in and plan approvals, then verifies document and live ontology retrieval. For App, direct it to that same Codespace through GitHub CLI SSH. See [single-prompt setup, credentials and state retention](development.md#deploy-from-one-prompt). The steps below remain the canonical manual flow.
+
 ## Prerequisites
 
-- **Tools:** Git, Bash, [Terraform 1.11+ (below 2.0)](https://developer.hashicorp.com/terraform/install), and [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli). No local Python, Fabric CLI or fabric-cicd installation is required; the seed notebook runs in Fabric.
+- **Tools:** open the included [Codespaces/devcontainer](development.md), or install Git, Bash, [Terraform 1.11+ (below 2.0)](https://developer.hashicorp.com/terraform/install), and [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) locally. The optional initializer also uses Python 3; the container includes Copilot CLI and Node.js for supporting tools. No local Spark, Fabric CLI or fabric-cicd installation is required; notebooks run in Fabric.
 - **Azure access:** subscription Owner, or Contributor plus Role Based Access Control Administrator/User Access Administrator. Allow registration of `Microsoft.Fabric`, `Microsoft.CognitiveServices`, and `Microsoft.Search`; Terraform handles registration and resource-scoped role assignments.
 - **Fabric access:** an identity allowed to create workspaces, connections and deployment pipelines, listed in `fabric_capacity_admins`. Complete the provider's [CLI user authentication setup](https://registry.terraform.io/providers/microsoft/fabric/latest/docs/guides/auth_app_reg_user), including deployment-pipeline permissions. The identity connecting Git needs workspace Admin. Bootstrap notebooks need execution/write access, including `Item.ReadWrite.All` for ontology binding and SQL metadata refresh. An administrator must enable Git/GitHub synchronization, applicable cross-geography export, **Users can create ontology (preview) items**, and **Users can create deployment plan (preview) items** ([Git prerequisites](https://learn.microsoft.com/fabric/cicd/git-integration/git-get-started#prerequisites), [ontology settings](https://learn.microsoft.com/fabric/iq/ontology/overview-tenant-settings), [plan prerequisites](https://learn.microsoft.com/fabric/cicd/deployment-plan/how-to-create-deployment-plan)). This template does not change tenant settings.
 - **OneLake access:** Search and Fabric must share a tenant. Enable external-app OneLake access and service-principal Fabric APIs. The [OneLake indexer](https://learn.microsoft.com/azure/search/search-how-to-index-onelake-files#grant-permissions) requires **Contributor on DEV** for the Search managed identity; Terraform grants it, not access to TEST/PROD.
@@ -13,21 +15,33 @@ Use this template for a **new project**, not an existing deployment. Each derive
 
 ## 1. Create your repository
 
-On GitHub, select **Use this template > Create a new repository**, then clone **that repository** and open its `infra/` directory. Keep the five item folders under `workspace/`, including their `.platform` logical IDs. The Git bootstrap configuration defaults to `main:/workspace`; set `github_branch_name` if your default branch differs. Push any customization to the selected branch before synchronizing Fabric.
+On GitHub, select **Use this template > Create a new repository**, then open **that repository** in Codespaces or clone it locally. Keep the five item folders under `workspace/`, including their `.platform` logical IDs: these are portable identities, not someone else's deployment bindings. The notebooks resolve physical bindings in each target workspace. Select your new repository's published bootstrap branch and `/workspace` directory; do not select an unpublished Copilot worktree branch. Push any customization to the selected branch before synchronizing Fabric.
 
 ## 2. Configure
 
-```sh
-az login
-az account set --subscription "<subscription-name-or-id>"
-cp -n terraform.tfvars.example terraform.tfvars
-```
+**With Copilot App/CLI:** from the repository root, ask it to **use /initialize-project**. The skill confirms your project, region and Fabric admin, resolves the new GitHub repository and published branch, then creates only the ignored `infra/terraform.tfvars`. It does not sign in or deploy, and refuses existing local configuration/state.
 
-Edit the **five placeholders** in `terraform.tfvars`: `project_name`, `location`, `fabric_capacity_admins`, `github_owner`, and `github_repository_name`. Leave `knowledge_lakehouse_id = null` and `knowledge_ontologies = {}` for the first apply. Use your new repository's details and a distinct, short project name. The capacity admin is your Fabric identity's user UPN or service-principal **object ID**.
+**Manually:** copy `infra/terraform.tfvars.example` to `infra/terraform.tfvars` without overwriting an existing file. Edit its **six placeholders**: `project_name`, `location`, `fabric_capacity_admins`, `github_owner`, `github_repository_name`, and `github_branch_name`. Use your new repository's details and a distinct, short project name. The capacity admin is your Fabric identity's user UPN or service-principal **object ID**. The initializer also works [directly without Copilot](development.md#what-gets-templated).
+
+For either path, leave `knowledge_lakehouse_id = null` and `knowledge_ontologies = {}` for the first apply. After completing the Fabric provider's user-context app/consent prerequisite, sign in using its approved tenant and application ID URI, then work from `infra/` for the remaining Terraform commands:
+
+```sh
+az login --use-device-code --tenant "<tenant-id>" \
+  --scope "<approved-Fabric-application-ID-URI>/.default"
+az account set --subscription "<subscription-name-or-id>"
+cd infra
+```
 
 Subscription/authentication come from the active Azure CLI account or standard `ARM_*`/`FABRIC_*` provider variables; `ARM_SUBSCRIPTION_ID` takes precedence over the CLI subscription. No subscription ID goes in tfvars. For azd environments, export `ARM_SUBSCRIPTION_ID="$(azd env get-value AZURE_SUBSCRIPTION_ID)"`; azd login alone does not authenticate AzureRM. Service-principal automation also requires the Fabric tenant's service-principal API setting.
 
-Enter the PAT without saving it in shell history (Bash/zsh):
+For Codespaces, prefer the repository-scoped `FABRIC_GITHUB_TOKEN` secret described in [developer setup](development.md#deploy-from-one-prompt). In each Terraform plan/apply shell, map it without printing it:
+
+```sh
+set +x
+export TF_VAR_github_token="${TF_VAR_github_token:-${FABRIC_GITHUB_TOKEN:?Configure the Fabric GitHub PAT securely}}"
+```
+
+Alternatively, enter the PAT in your own terminal without saving it in shell history (Bash/zsh); keep that shell for the following commands:
 
 ```sh
 printf 'GitHub PAT: '
