@@ -1,4 +1,6 @@
 # Azure providers use ARM_* environment variables or the active Azure CLI account.
+provider "azuread" {}
+
 provider "azapi" {}
 
 provider "azurerm" {

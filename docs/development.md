@@ -19,9 +19,17 @@ gh auth login
 # Start from the repository root; use /login in Copilot if prompted:
 copilot
 
-# After the Fabric provider app/consent prerequisite (device code works in Codespaces):
-az login --use-device-code --tenant "<tenant-id>" \
-  --scope "<approved-Fabric-application-ID-URI>/.default"
+# Initial user sign-in for the Entra-only bootstrap (device code works in Codespaces):
+az login --use-device-code --tenant "<tenant-id>"
+az account set --subscription "<subscription-name-or-id>"
+```
+
+Follow [identity bootstrap and administrator consent](getting-started.md#3-bootstrap-the-fabric-user-auth-application) before the first Fabric plan. Terraform prepares the app and permissions in the same state as the platform; only that initial plan targets `module.fabric_user_auth`. After admin consent, or when resuming with an already-consented registration, sign in with its generated scope:
+
+```sh
+az login --use-device-code \
+  --tenant "$(terraform -chdir=infra output -raw fabric_user_auth_tenant_id)" \
+  --scope "$(terraform -chdir=infra output -raw fabric_user_auth_scope)"
 az account set --subscription "<subscription-name-or-id>"
 ```
 
@@ -58,7 +66,8 @@ After these changes are included in the template's published branch:
 Copilot loads [`deploy-platform`](../.github/skills/deploy-platform/SKILL.md) and coordinates:
 
 ```text
-choose host/state + preflight -> configure -> review/apply platform plan
+choose host/state + configure -> review/apply Entra-only bootstrap
+  -> admin consent + scoped user sign-in -> review/apply full platform plan
   -> native DEV Git sync + Bootstrap -> verify seed/binding + discover physical IDs
   -> review/apply knowledge plan -> verify ingestion and live ontology retrieval
 ```
@@ -66,7 +75,8 @@ choose host/state + preflight -> configure -> review/apply platform plan
 This is **one guided request**, not a zero-input or guaranteed unattended deployment. You still need:
 
 - **Target and consent:** choose subscription/tenant, region, project name and capacity admin; approve the actual Terraform plans and reviewed Git content. Quota, preview availability and RBAC propagation can still block a run.
-- **Azure/Fabric user sign-in:** complete the [Fabric provider's user-context app/consent setup](https://registry.terraform.io/providers/microsoft/fabric/1.14.0/docs/guides/auth_app_reg_user) and administrator-owned tenant prerequisites from [getting started](getting-started.md). Copilot can guide device login, but cannot perform your MFA, grant its own consent or bypass policy. Plain `az login` alone is not proof that Fabric write/execute scopes are available.
+- **Entra setup and approval:** the initial Terraform identity needs directory permissions to create/configure the app, service principal and authorized clients. Copilot can prepare them through the reviewed Entra-only plan and hand the administrator the generated approval link and scope manifest. An administrator grants consent separately; subscription Owner alone is not enough, and Terraform does not grant itself consent.
+- **Azure/Fabric user sign-in:** after consent, use the generated tenant/scope outputs and the administrator-owned tenant prerequisites from [getting started](getting-started.md). Copilot can guide device login, but cannot perform your MFA or bypass policy. Plain `az login`, app creation or consent alone is not proof that Fabric write/execute scopes and workspace roles are available.
 - **A secure Fabric Git PAT:** add a [Codespaces secret](https://docs.github.com/en/codespaces/managing-your-codespaces/managing-your-account-specific-secrets-for-github-codespaces) named `FABRIC_GITHUB_TOKEN`, restricted to the derived repository, with Contents read/write. Restart an already-running Codespace after adding it. The skill maps it to Terraform's ephemeral `TF_VAR_github_token` inside each plan/apply shell; it never copies it into files or chat. An existing `TF_VAR_github_token` is also supported. Copilot's login and the default Codespaces `GITHUB_TOKEN` are not this PAT.
 - **State retention:** prefer an existing encrypted, access-controlled remote backend and project-specific state key. A single-user local-state demo needs explicit acceptance and secure retention/backup before deleting the Codespace. Deleting a Codespace does not delete its Azure resources. Team/CI deployment requires remote state.
 
@@ -104,6 +114,6 @@ The shipped workspace has **no physical workspace/lakehouse/ontology IDs, SQL ho
 
 For a non-Copilot setup, run the [initializer](../.github/skills/initialize-project/scripts/initialize_project.py) directly with `--help`, or follow the manual configuration in [getting started](getting-started.md). The helper uses Python's standard library and Git, offers `--dry-run`, creates the local file with owner-only permissions, and refuses existing tfvars/state. It never rewrites workspace definitions or changes Git remotes.
 
-During guided deployment, the [knowledge configuration helper](../.github/skills/deploy-platform/scripts/configure_knowledge.py) fills the two second-stage settings using verified physical DEV IDs. It preserves unrelated inputs and rejects conflicting/custom registrations rather than replacing them. Neither helper authenticates or deploys resources; the skill coordinates ordinary native commands with explicit approvals.
+During guided deployment, the [knowledge configuration helper](../.github/skills/deploy-platform/scripts/configure_knowledge.py) fills the two knowledge-stage settings using verified physical DEV IDs. It preserves unrelated inputs and rejects conflicting/custom registrations rather than replacing them. Neither helper authenticates or deploys resources; the skill coordinates ordinary native commands with explicit approvals.
 
 Once a derived DEV workspace is bound, its reviewed Git export legitimately contains environment-specific source details. Keep those out of the pristine template, and rebind every promoted target; see [binding ownership and review](ontology-knowledge.md#review-the-generated-binding). Do not use blanket GUID replacement to reset a deployed repository.

@@ -12,6 +12,8 @@ Read this after choosing the derived repository, execution host and delegated us
 
 ## Authentication and response receipts
 
+Complete the Entra bootstrap, administrator consent and generated-scope user sign-in in `docs/getting-started.md` first. Use the `fabric_user_auth` output's scope manifest for deployment preflight; app creation alone does not authorize these requests. Keep the custom app login scope distinct from the Fabric token audience below.
+
 Use `az rest --resource https://api.fabric.microsoft.com` for ordinary reads. For requests that can return `202`, capture the **status, response headers and body**: Azure CLI's normal JSON body alone does not provide the operation receipt. Do not enable debug/verbose HTTP logging to obtain headers.
 
 For a reviewed POST, use this shell pattern with the known Fabric URL and a non-secret JSON request file. Supply the bearer header through curl's stdin configuration, not an expanded token in process arguments. Run on the execution host with shell tracing off:

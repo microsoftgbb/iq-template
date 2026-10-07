@@ -1,3 +1,18 @@
+output "fabric_user_auth" {
+  description = "Prepared Fabric user-auth registration, delegated permission manifest and admin approval link. Consent and user sign-in remain separate."
+  value       = module.fabric_user_auth.authentication
+}
+
+output "fabric_user_auth_tenant_id" {
+  description = "Entra tenant for the prepared Fabric user-auth application."
+  value       = module.fabric_user_auth.authentication.tenant_id
+}
+
+output "fabric_user_auth_scope" {
+  description = "Application scope to use with az login after administrator consent."
+  value       = module.fabric_user_auth.authentication.login_scope
+}
+
 output "resource_group_name" {
   description = "Resource group containing the Azure infrastructure."
   value       = azurerm_resource_group.main.name

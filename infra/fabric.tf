@@ -27,12 +27,17 @@ resource "fabric_workspace" "dev" {
   display_name = "${var.project_name}-dev"
   description  = "Development workspace; bootstrap from Git with a Fabric deployment plan."
   capacity_id  = data.fabric_capacity.capacity.id
+
+  # Preserve the login registration until Fabric teardown has finished.
+  depends_on = [module.fabric_user_auth]
 }
 
 resource "fabric_workspace" "test" {
   display_name = "${var.project_name}-test"
   description  = "Test workspace; initially empty, reserved for native Fabric deployments."
   capacity_id  = data.fabric_capacity.capacity.id
+
+  depends_on = [module.fabric_user_auth]
 }
 
 resource "fabric_connection" "github" {
@@ -54,6 +59,8 @@ resource "fabric_connection" "github" {
       key_wo_version = var.github_token_version
     }
   }
+
+  depends_on = [module.fabric_user_auth]
 }
 
 # Git initialization is performed outside Terraform so it can attach a deployment plan.
@@ -74,6 +81,8 @@ resource "fabric_deployment_pipeline" "main" {
       workspace_id = fabric_workspace.test.id
     },
   ]
+
+  depends_on = [module.fabric_user_auth]
 }
 
 # The creator already has Admin; only grant Contributor to a separate user.

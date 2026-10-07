@@ -10,7 +10,7 @@ variable "location" {
 }
 
 variable "project_name" {
-  description = "Short, project-specific name used for workspaces, Azure resource names and tags. Keep stable after deployment."
+  description = "Short, project-specific name used for the Entra application, workspaces, Azure resource names and tags. Keep stable after deployment."
   type        = string
   nullable    = false
 
