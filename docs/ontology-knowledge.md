@@ -57,7 +57,7 @@ Run the normal knowledge plan/apply from [getting started](getting-started.md). 
 
 Use a separate stable map key for each additional ontology. Export its real definition to `workspace/`, supply its seed/binding actions and plan dependencies, then add its physical DEV GUID and domain description to `knowledge_ontologies`. Don't duplicate the sample logical ID for a different ontology. The reusable Terraform registration is not limited to the Site/Asset schema.
 
-Leave the map empty to use only indexed documents. Nonempty registrations require `knowledge_lakehouse_id`; they are part of the second setup stage. Removing an entry removes its Search knowledge-source registration, **not** the Fabric ontology or data. Ontology parameter changes update the live source in place; no index rebuild is needed.
+Leave the map empty to use only indexed documents. Nonempty registrations require `knowledge_lakehouse_id`; they belong to knowledge setup after Fabric bootstrap. Removing an entry removes its Search knowledge-source registration, **not** the Fabric ontology or data. Ontology parameter changes update the live source in place; no index rebuild is needed.
 
 Outputs `ontology_knowledge_sources` and `knowledge_base_requires_user_token` identify the sources and the runtime authorization requirement. Terraform registration is not evidence that a user can successfully query the ontology.
 
@@ -71,6 +71,8 @@ There are two separate authentication layers:
 | Knowledge base -> Fabric ontology | An **end-user** token in `x-ms-query-source-authorization`, scoped to `https://search.azure.com/.default`. Search exchanges it for a Fabric-scoped token on the user's behalf. The user must be allowed to read the ontology and its bound data. |
 
 The Search and Fabric resources must share an Entra tenant. Enable the Fabric ontology tenant settings and complete any tenant consent required for the documented delegated flow. **Do not use the Search or Foundry managed identity token as a substitute for the end-user token.** Ontology retrieval does not inherit access from the seeding identity or Search's workspace Contributor grant.
+
+The Terraform `fabric_user_auth` module prepares **deployment-user** access for the Fabric provider, Git/bootstrap and promotion. Its registration, exposed `access` scope and admin approval do not implement a consuming application's sign-in or the Search-to-Fabric runtime delegation. Keep those identities and consent requirements distinct; never store an end-user token in Terraform.
 
 For a direct retrieval request, the header arrangement is:
 

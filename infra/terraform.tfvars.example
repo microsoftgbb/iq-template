@@ -13,7 +13,9 @@ knowledge_ontologies   = {}
 # Capacity admins: user UPNs or service-principal object IDs.
 # Select the new repository's published default branch, not a local agent worktree branch.
 # Defaults: F2 capacity, Basic Search; Git bootstrap uses /workspace.
-# First apply creates the platform, not the Git connection or workspace items.
+# Use one state: first target module.fabric_user_auth to prepare the Entra application.
+# An administrator grants consent; sign in with the generated scope before a full plan.
+# The first full apply creates the platform, not the Git connection or workspace items.
 # After Git sync with Bootstrap and successful seed/binding runs, replace null with the
 # DEV Scenario lakehouse's physical GUID (not its .platform logicalId) and apply again.
 # Register the bound ontology in that same knowledge apply:

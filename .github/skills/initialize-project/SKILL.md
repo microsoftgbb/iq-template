@@ -45,4 +45,4 @@ Do **not** regenerate UUIDs or replace every occurrence of `Scenario`:
 
 If a purported fresh template contains exported physical bindings or notebook attachments, stop and review their ownership using `docs/ontology-knowledge.md`. Do not delete unknown partitions or perform global GUID replacement. In a deployed derived repository, reviewed DEV binding exports are expected, and every promoted target must be rebound.
 
-Finish by pointing to the platform stage in `docs/getting-started.md`. After a separately authorized bootstrap, use the actual physical DEV GUIDs printed by the notebooks for the knowledge stage in the **same** tfvars file; never substitute logical IDs or invent placeholders as deployment values.
+Finish by pointing to the Entra bootstrap, administrator consent and platform stages in `docs/getting-started.md`. Configuration-only initialization does not create the app or grant consent. After a separately authorized Fabric bootstrap, use the actual physical DEV GUIDs printed by the notebooks for the knowledge stage in the **same** tfvars file; never substitute logical IDs or invent placeholders as deployment values.

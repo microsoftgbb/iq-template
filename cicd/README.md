@@ -3,15 +3,16 @@
 Use [Git integration](https://learn.microsoft.com/fabric/cicd/git-integration/intro-to-git-integration) for DEV and [native deployment pipelines](https://learn.microsoft.com/fabric/cicd/deployment-pipelines/intro-to-deployment-pipelines) for promotion. Attach a [deployment plan (preview)](https://learn.microsoft.com/fabric/cicd/deployment-plan/deployment-plan-overview) when item deployment must run seed notebooks or follow an explicit order.
 
 ```text
-Terraform platform -> Git /workspace + Bootstrap -> seeded DEV -> Terraform knowledge
+Entra bootstrap -> admin consent/user sign-in -> Terraform platform
+                   -> Git /workspace + Bootstrap -> seeded DEV -> Terraform knowledge
                                       reviewed DEV -> TEST -> approved TEST -> PROD
 ```
 
-There is no fabric-cicd dependency, `fab deploy` configuration, or custom deployment wrapper. Start with [getting started](../docs/getting-started.md); infrastructure still uses plain Terraform and one local tfvars file. Derived repositories own unattended automation, tests and approval gates.
+There is no fabric-cicd dependency, `fab deploy` configuration, or custom deployment wrapper. Start with [getting started](../docs/getting-started.md); infrastructure and the project-specific user-auth registration use plain Terraform, one state and one local tfvars file. The registration prepares delegated Git/item/pipeline scopes, not tenant consent or a runtime user token. Derived repositories own unattended automation, tests and approval gates.
 
 ## Ownership and included items
 
-Terraform owns capacity, workspaces, permissions, the GitHub credentials connection, the DEV/TEST deployment pipeline, Foundry and Search. Git owns workspace item definitions. The seeder owns only the insertion of missing demo keys and initial starter content. Do not manage the same lakehouse or notebook with both Terraform and Git.
+Terraform owns the project-specific user-auth registration, capacity, workspaces, permissions, the GitHub credentials connection, the DEV/TEST deployment pipeline, Foundry and Search. An administrator owns consent; shared Microsoft enterprise applications are read-only lookups, not Terraform-owned assets. Git owns workspace item definitions. The seeder owns only the insertion of missing demo keys and initial starter content. Do not manage the same lakehouse or notebook with both Terraform and Git.
 
 | Git item | Purpose |
 | --- | --- |
