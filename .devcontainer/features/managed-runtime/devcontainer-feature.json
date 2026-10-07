@@ -1,0 +1,9 @@
+{
+  "id": "managed-runtime",
+  "version": "1.0.0",
+  "name": "Copilot Managed Runtime",
+  "description": "Installs the Managed Runtime CLI, Copilot plugin, Git Credential Manager and Linux dependencies during image build.",
+  "installsAfter": [
+    "ghcr.io/devcontainers/features/node"
+  ]
+}

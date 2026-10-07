@@ -16,12 +16,24 @@
     },
     "ghcr.io/devcontainers/features/node:2": {
       "version": "24",
-      "nodeGypDependencies": false,
+      "nodeGypDependencies": true,
       "pnpmVersion": "none"
-    }
+    },
+    "./features/managed-runtime": {}
   },
   "remoteUser": "vscode",
   "postCreateCommand": "bash .devcontainer/check-tools.sh",
+  "forwardPorts": [3000, 8080],
+  "portsAttributes": {
+    "3000": {
+      "label": "Managed Runtime app",
+      "onAutoForward": "notify"
+    },
+    "8080": {
+      "label": "Managed Runtime config",
+      "onAutoForward": "silent"
+    }
+  },
   "customizations": {
     "vscode": {
       "extensions": [

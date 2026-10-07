@@ -7,7 +7,7 @@ A GitHub repository template for starting independent Fabric and Foundry IQ proj
 - A Microsoft Foundry account/project with chat and embedding models.
 - After workspace bootstrap, a Foundry IQ knowledge base with indexed OneLake documents and optional live Fabric ontology sources, plus a managed-identity MCP connection to Search.
 
-Start with [getting started](docs/getting-started.md). Use the included **Codespaces/devcontainer** for Azure CLI, Terraform, Copilot CLI, GitHub CLI, Python and supporting tools. [Developer setup](docs/development.md) covers Copilot App/CLI and the repository skills for deployment, initialization, static maintenance and Fabric workspace work; [AGENTS.md](AGENTS.md) keeps the always-on guardrails concise.
+Start with [getting started](docs/getting-started.md). Use the included **Codespaces/devcontainer** for Azure CLI, Terraform, Copilot CLI, GitHub CLI, Python, Node.js 24, and the **Copilot Managed Runtime plugin and CLI (`ms`)**, including Git Credential Manager and native build dependencies. [Developer setup](docs/development.md) covers Copilot App/CLI, [Managed Runtime app development](docs/development.md#build-and-deploy-copilot-managed-runtime-apps), and the repository skills for deployment, initialization, static maintenance and Fabric workspace work; [AGENTS.md](AGENTS.md) keeps the always-on guardrails concise.
 
 Setup is **Terraform platform -> Git sync with the Bootstrap plan -> Terraform knowledge wiring**, using one local tfvars file. Terraform does not initialize Git or run notebooks. A deployment plan must be explicitly attached to each sync/deployment; pushing a commit alone does not execute it.
 
