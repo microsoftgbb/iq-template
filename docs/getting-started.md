@@ -2,6 +2,8 @@
 
 Use this template for a **new project**, not an existing deployment. Each derived repository gets its own resources and Terraform state.
 
+For a visual overview, see the [platform architecture](architecture.md) and [deployment flow](deployment-flow.md).
+
 **Guided App/CLI path:** open the derived repository's Codespace and tell Copilot **"Deploy the platform"**. The [deployment skill](../.github/skills/deploy-platform/SKILL.md) carries out all stages below, asks for missing choices/sign-in and plan approvals, then verifies document and live ontology retrieval. For App, direct it to that same Codespace through GitHub CLI SSH. See [single-prompt setup, credentials and state retention](development.md#deploy-from-one-prompt). The steps below remain the canonical manual flow.
 
 ## Prerequisites
