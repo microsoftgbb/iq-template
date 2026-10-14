@@ -18,6 +18,15 @@ output "resource_group_name" {
   value       = azurerm_resource_group.main.name
 }
 
+output "service_locations" {
+  description = "Explicit effective regions. Cross-region traffic, cost and data handling must be reviewed when overrides are used."
+  value = {
+    foundry = var.location
+    fabric  = coalesce(var.fabric_location, var.location)
+    search  = coalesce(var.search_location, var.location)
+  }
+}
+
 output "fabric_capacity_id" {
   description = "Fabric capacity GUID used by both workspaces."
   value       = data.fabric_capacity.capacity.id
@@ -167,4 +176,25 @@ output "ontology_knowledge_sources" {
 output "knowledge_base_requires_user_token" {
   description = "When true, retrieval must include an end-user Search-audience token in x-ms-query-source-authorization. Project managed identity alone cannot query Fabric ontologies."
   value       = length(var.knowledge_ontologies) > 0
+}
+
+output "fabric_iq_connections" {
+  description = "Native Foundry Fabric IQ delegated-user connections keyed by ontology registration. These do not create agents or prove consuming-app authorization."
+  value = {
+    for name, connection in azapi_resource.fabric_iq_connection : name => {
+      id         = connection.id
+      name       = connection.name
+      server_url = connection.body.properties.target
+    }
+  }
+}
+
+output "studio_agent_schema_name" {
+  description = "Prescribed schema name for the scenario's Copilot Studio agent, derived from project_name. PAC creates the agent; Terraform does not."
+  value       = "iq_${replace(var.project_name, "-", "_")}_assistant"
+}
+
+output "studio_agent_display_name" {
+  description = "Prescribed display name for the scenario's Copilot Studio agent and Managed Runtime app."
+  value       = "${var.project_name} assistant"
 }

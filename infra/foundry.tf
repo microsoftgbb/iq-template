@@ -131,6 +131,28 @@ resource "azapi_resource" "knowledge_base_connection" {
   depends_on = [azurerm_role_assignment.project_search_reader]
 }
 
+# UserEntraToken is documented on the preview RemoteTool API, not AzAPI's schema.
+resource "azapi_resource" "fabric_iq_connection" {
+  for_each = var.knowledge_ontologies
+
+  type                      = "Microsoft.CognitiveServices/accounts/projects/connections@2025-10-01-preview"
+  name                      = "fabric-${each.key}"
+  parent_id                 = azapi_resource.foundry_project.id
+  schema_validation_enabled = false
+  locks                     = [azapi_resource.foundry.id]
+
+  body = {
+    properties = {
+      category      = "RemoteTool"
+      authType      = "UserEntraToken"
+      target        = "https://api.fabric.microsoft.com/v1/mcp/dataPlane/workspaces/${fabric_workspace.dev.id}/items/${data.fabric_ontology.knowledge[each.key].id}/ontologyEndpoint"
+      audience      = "https://analysis.windows.net/powerbi/api"
+      isSharedToAll = false
+      metadata      = { ApiType = "Azure" }
+    }
+  }
+}
+
 resource "azurerm_role_assignment" "deployer_foundry_user" {
   scope        = azapi_resource.foundry.id
   principal_id = data.azurerm_client_config.current.object_id

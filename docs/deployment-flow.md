@@ -1,6 +1,6 @@
 # Deployment flow
 
-From a new derived repository to **verified DEV readiness**. Follow the numbered arrows across the top row, back across the middle row, then across the bottom row. [Getting started](getting-started.md) is the canonical guide for prerequisites and commands.
+From a new derived repository to **verified DEV readiness** (steps 1-9 in the diagram), then the scenario agent and app (step 10). Follow the numbered arrows across the top row, back across the middle row, then across the bottom row. [Getting started](getting-started.md) is the canonical guide for prerequisites and commands.
 
 [![Deployment sequence with three Terraform plan approvals: configure, prepare identity, obtain administrator consent and user sign-in, provision the platform, sync and bootstrap DEV, check bindings and discover IDs, wire knowledge, verify retrieval, and report DEV ready.](diagrams/deployment-flow.svg)](diagrams/deployment-flow.svg)
 
@@ -19,8 +19,9 @@ Select the image for the full-size SVG. For the resulting components, see the [p
 | 7 | Wire knowledge | Put the verified physical IDs into the **same** tfvars file. Review and approve the saved **full, untargeted** knowledge plan for sources, knowledge base and MCP connection. |
 | 8 | Verify both retrieval paths | Wait for successful OneLake ingestion. Verify document retrieval separately from live ontology retrieval, including `fabricOntology` activity/references and the required end-user token. |
 | 9 | Report DEV ready | Claim readiness only after the required checks pass. If a phase fails or times out, report the blocker and resume point instead. TEST promotion and PROD are separate workflows. |
+| 10 | Create the agent and app | Create, render, push, connect, configure, publish and check the Studio agent, then register the app and verify it in the App Player as the signed-in user. Agent creation, connection creation, configuration and app registration each need approval. |
 
-The three highlighted approvals are **Terraform plan approvals**, not a replacement for administrator consent, user sign-in or review of incoming Git changes. Every phase uses the same execution host, checkout, tfvars file and state/backend.
+The three highlighted approvals in the diagram are **Terraform plan approvals**, not a replacement for administrator consent, user sign-in or review of incoming Git changes. Every phase uses the same execution host, checkout, tfvars file and state/backend.
 
 ## What Bootstrap does
 
@@ -37,6 +38,6 @@ The plan itself is the fifth selected Git item. **A Git push does not run the pl
 
 A successful Terraform apply, notebook run or source registration is not proof of query readiness. For the sample flow, verify both documents and live ontology data; an answer copied from `starter.txt` is not evidence of live ontology retrieval.
 
-The guided flow leaves TEST empty and does not create PROD, a consuming agent, a Managed Runtime app or a runtime user-sign-in implementation. Those are separate, explicitly designed tasks. See [runtime identity requirements](ontology-knowledge.md#supply-the-end-users-identity-at-query-time) and [promotion to TEST and PROD](../cicd/README.md#promoting-through-test-and-prod).
+The guided flow leaves TEST empty. It does not create PROD, deploy or share the app beyond local App Player use, or verify a second user's isolation. Those are separate, explicit tasks. See [native runtime integration](runtime-integration.md) and [promotion to TEST and PROD](../cicd/README.md#promoting-through-test-and-prod).
 
 [Editable Excalidraw source](diagrams/deployment-flow.excalidraw) | [Editing and icon attribution](diagrams/README.md)

@@ -1,0 +1,9 @@
+{
+  "id": "iq-plugins",
+  "version": "1.0.0",
+  "name": "Official Microsoft IQ Copilot plugins",
+  "description": "Installs pinned Azure/Foundry IQ, Work IQ/M365 Agents Toolkit and Fabric skill packages with their native MCP declarations. Does not authenticate or start MCP servers.",
+  "installsAfter": [
+    "ghcr.io/devcontainers/features/node"
+  ]
+}

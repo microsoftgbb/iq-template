@@ -1,7 +1,7 @@
 resource "azurerm_search_service" "knowledge" {
   name                = "srch-${local.resource_prefix}"
   resource_group_name = azurerm_resource_group.main.name
-  location            = azurerm_resource_group.main.location
+  location            = coalesce(var.search_location, var.location)
   sku                 = var.search_sku
   replica_count       = 1
   partition_count     = 1

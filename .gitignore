@@ -41,6 +41,15 @@ override.tf.json
 __pycache__/
 *.py[cod]
 
+# Disposable verification checkouts and generated runtime artifacts.
+.artifacts/
+
+# App dependencies, builds and the Managed Runtime CLI's local cache.
+node_modules/
+dist/
+*.tsbuildinfo
+.ms/
+
 # Local logs, notes, editor backups, and OS metadata.
 *.log
 scratch.md

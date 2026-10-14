@@ -1,0 +1,19 @@
+mcs.metadata:
+  componentName: Connection Proof
+  description: Returns the caller's fresh connection-proof challenge without tools, business data or a model call.
+kind: AdaptiveDialog
+beginDialog:
+  kind: OnRecognizedIntent
+  id: main
+  intent:
+    displayName: Connection Proof
+    triggerQueries:
+      - connection proof
+      - run connection proof
+      - verify managed runtime connection
+  actions:
+    - kind: SendActivity
+      id: returnChallenge
+      activity: "CPS_AGENT_PROOF|{System.Activity.Text}"
+    - kind: EndConversation
+      id: finishProof
