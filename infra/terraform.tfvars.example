@@ -13,6 +13,12 @@ knowledge_ontologies   = {}
 # Capacity admins: user UPNs or service-principal object IDs.
 # Select the new repository's published default branch, not a local agent worktree branch.
 # Defaults: F2 capacity, Basic Search; Git bootstrap uses /workspace.
+# Check Fabric CU quota and Search new-service capacity before applying.
+# location is the common region and always remains the Foundry/resource-group region.
+# Only after explicitly approving cross-region costs/data handling, optionally set:
+# fabric_location = "<approved-fabric-region>"
+# search_location = "<approved-search-region>"
+# These default to location. Never change a deployed region as an automatic retry.
 # Use one state: first target module.fabric_user_auth to prepare the Entra application.
 # An administrator grants consent; sign in with the generated scope before a full plan.
 # The first full apply creates the platform, not the Git connection or workspace items.
@@ -26,5 +32,8 @@ knowledge_ontologies   = {}
 #   }
 # }
 # Ontology queries require delegated user authentication at runtime, not a saved token.
+# Registered ontologies also receive native Foundry Fabric IQ UserEntraToken connections.
+# fabric_iq_connections outputs their IDs/endpoints; this does not create a consuming
+# agent/app or prove its OBO flow. Search fabricOntology calls still need the user header.
 # Guided Codespaces deployment reads the FABRIC_GITHUB_TOKEN Codespaces secret.
 # Set TF_VAR_github_token in your shell; never add a PAT to this file.

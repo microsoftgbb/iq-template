@@ -19,10 +19,14 @@
       "nodeGypDependencies": true,
       "pnpmVersion": "none"
     },
-    "./features/managed-runtime": {}
+    "ghcr.io/devcontainers/features/dotnet:2": {
+      "version": "10.0"
+    },
+    "./features/managed-runtime": {},
+    "./features/iq-plugins": {}
   },
   "remoteUser": "vscode",
-  "postCreateCommand": "bash .devcontainer/check-tools.sh",
+  "postCreateCommand": "dotnet tool restore && bash .devcontainer/check-tools.sh",
   "forwardPorts": [3000, 8080],
   "portsAttributes": {
     "3000": {

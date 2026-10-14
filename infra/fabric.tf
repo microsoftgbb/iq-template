@@ -1,7 +1,7 @@
 resource "azurerm_fabric_capacity" "main" {
   name                   = "fc${local.compact_prefix}${random_string.suffix.result}"
   resource_group_name    = azurerm_resource_group.main.name
-  location               = azurerm_resource_group.main.location
+  location               = coalesce(var.fabric_location, var.location)
   administration_members = var.fabric_capacity_admins
   tags                   = local.tags
 

@@ -14,6 +14,14 @@ Read this after choosing the derived repository, execution host and delegated us
 
 Complete the Entra bootstrap, administrator consent and generated-scope user sign-in in `docs/getting-started.md` first. Use the `fabric_user_auth` output's scope manifest for deployment preflight; app creation alone does not authorize these requests. Keep the custom app login scope distinct from the Fabric token audience below.
 
+The pinned provider's `AzureCLICredential` can receive a first-party token with
+`scp: user_impersonation`. That token need not enumerate the registration's
+declared named scopes. Check the selected user, tenant, resource audience and
+actual consent separately; do not falsely reject this credential route by
+comparing unlike scope lists, accept an arbitrary application's token, or infer
+write authorization from a successful read. The custom API's `access` token is
+still not a Fabric bearer token.
+
 Use `az rest --resource https://api.fabric.microsoft.com` for ordinary reads. For requests that can return `202`, capture the **status, response headers and body**: Azure CLI's normal JSON body alone does not provide the operation receipt. Do not enable debug/verbose HTTP logging to obtain headers.
 
 For a reviewed POST, use this shell pattern with the known Fabric URL and a non-secret JSON request file. Supply the bearer header through curl's stdin configuration, not an expanded token in process arguments. Run on the execution host with shell tracing off:
@@ -84,6 +92,12 @@ References: [Connect](https://learn.microsoft.com/rest/api/fabric/core/git/conne
 
 For a Fabric operation's `202`, retain `x-ms-operation-id`, validated `Location` and `Retry-After`. Poll `GET /v1/operations/{operationId}` until `Succeeded`; continue only for `NotStarted`/`Running`, honor polling delays and fail on unsuccessful/unknown states. Read `/result` when the operation provides a result, including Initialize Connection and Get Status. Do not turn a missing/non-JSON result for a no-body operation into an empty JSON object.
 
+Some receipts advertise a regional service hostname. Do not forward credentials
+to that hostname automatically. Use the documented canonical
+`https://api.fabric.microsoft.com/v1/operations/{operationId}` endpoint, retaining
+the returned operation ID. A receipt-parsing failure is not permission to
+resubmit the accepted mutation; recover and observe that same operation.
+
 A deployment plan failure can leave earlier groups completed. Inspect the operation result and notebook runs before resuming. Never submit a duplicate while another operation/job is active.
 
 When an already-deployed notebook genuinely needs running outside the plan, use its **physical item ID** with:
@@ -95,6 +109,14 @@ POST https://api.fabric.microsoft.com/v1/workspaces/{workspaceId}/notebooks/{not
 Use the notebook-specific route and `RunNotebook` job type from the notebook API guide; the deployment plan's `job.type: Execute` is not a scheduler job type to copy blindly. For the untouched sample, omit the body and use the notebook's parameter defaults; run `SeedScenario` to completion, then `BindScenario`. Do not invent a default lakehouse attachment. For customized parameters, follow the notebook API's supported `executionData` shape, not an assumed generic `parameters` property.
 
 This job API returns a **job-instance Location**, not a generic `/operations/{id}` receipt. Validate its workspace/item, honor `Retry-After`, and poll that instance until `Completed`. `Failed`, `Cancelled`, a timeout or an unknown status does not satisfy readiness. Inspect non-secret failure details and preserve the receipt. A phase observation timeout does not cancel the running cloud operation.
+
+Use the canonical Job Scheduler read:
+`GET /v1/workspaces/{workspaceId}/items/{notebookId}/jobs/instances/{jobInstanceId}`.
+It reports the normalized `RunNotebook` job type. The notebook-specific
+`.../notebooks/{notebookId}/jobs/execute/instances/{jobInstanceId}?beta=true`
+projection can instead report `jobType: "execute"` and nested compute/exit
+properties; that representation is not evidence that the submitted job changed.
+Never rerun a notebook because the two response projections differ.
 
 References: [LROs](https://learn.microsoft.com/rest/api/fabric/articles/long-running-operation), [run item job](https://learn.microsoft.com/rest/api/fabric/core/job-scheduler/run-on-demand-item-job), [get job instance](https://learn.microsoft.com/rest/api/fabric/core/job-scheduler/get-item-job-instance), [notebook execution](https://learn.microsoft.com/fabric/data-engineering/notebook-public-api).
 

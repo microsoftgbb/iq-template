@@ -1,0 +1,24 @@
+mcs.metadata:
+  componentName: Foundry IQ knowledge
+  description: Cited guidance and background documents from the scenario knowledge base, retrieved as the signed-in user.
+kind: TaskDialog
+inputs:
+  - kind: ManualTaskInput
+    propertyName: "'knowledgeBaseName'"
+    value: "{{knowledge_base_name}}"
+
+  - kind: ManualTaskInput
+    propertyName: "'api-version'"
+    value: "{{search_api_version}}"
+
+modelDisplayName: Foundry IQ knowledge
+modelDescription: Retrieve cited guidance or background documents from the scenario knowledge base. Never use it for current statuses, counts or relationships.
+action:
+  kind: InvokeExternalAgentTaskAction
+  connectionReference: "{{agent_schema}}.shared_azureaisearchfoundryiq.00000000000000000000000000000002"
+  connectionProperties:
+    mode: Invoker
+
+  operationDetails:
+    kind: ModelContextProtocolMetadata
+    operationId: AzureAISearchKBRetrieveMcp

@@ -1,5 +1,5 @@
 variable "location" {
-  description = "Azure region short name supporting Fabric, Search agentic retrieval, and both selected models."
+  description = "Explicit Foundry/resource-group region supporting both selected models; also the default Fabric/Search region unless an approved service-specific override is supplied."
   type        = string
   nullable    = false
 
@@ -17,6 +17,28 @@ variable "project_name" {
   validation {
     condition     = can(regex("^[a-z][a-z0-9-]{1,14}[a-z0-9]$", var.project_name)) && !strcontains(var.project_name, "--")
     error_message = "project_name must be 3-16 lowercase letters, digits or single hyphens, starting with a letter and ending with a letter or digit."
+  }
+}
+
+variable "fabric_location" {
+  description = "Optional Fabric capacity region override. Defaults to location; choose explicitly when regional CU quota prevents the common-region deployment."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.fabric_location == null ? true : can(regex("^[a-z][a-z0-9]+$", var.fabric_location))
+    error_message = "fabric_location must be null or an explicit Azure region short name."
+  }
+}
+
+variable "search_location" {
+  description = "Optional Search region override. Defaults to location; choose explicitly when service capacity or feature availability prevents the common-region deployment."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.search_location == null ? true : can(regex("^[a-z][a-z0-9]+$", var.search_location))
+    error_message = "search_location must be null or an explicit Azure region short name."
   }
 }
 

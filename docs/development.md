@@ -4,11 +4,20 @@
 
 In your **derived repository**, use **Code > Codespaces > Create codespace** on the intended branch. For a local checkout with Docker and VS Code's Dev Containers extension, run **Dev Containers: Reopen in Container**.
 
-The [devcontainer](../.devcontainer/devcontainer.json) includes Azure CLI, Terraform, the standalone GitHub Copilot CLI (`copilot`, not the retired `gh copilot` extension), Git/GitHub CLI, Node.js/npm, Python 3 with venv support, Bash, jq, ripgrep and an SSH server for authenticated Codespaces access. It also includes the Copilot Managed Runtime CLI (`ms`), its official `microsoft-managed-apps` Copilot plugin, Git Credential Manager (GCM), native Node build tools, `libsecret` development libraries and `xdg-open`. It configures the Terraform, Azure CLI, Python, YAML and Copilot editor extensions.
+The [devcontainer](../.devcontainer/devcontainer.json) includes Azure CLI, Terraform, the standalone GitHub Copilot CLI (`copilot`, not the retired `gh copilot` extension), Git/GitHub CLI, Node.js/npm, Python 3 with venv support, Bash, jq, ripgrep and an SSH server for authenticated Codespaces access. It also includes the .NET 10 SDK for the repository-pinned Power Platform CLI (`dotnet pac`, from [`.config/dotnet-tools.json`](../.config/dotnet-tools.json)), the Copilot Managed Runtime CLI (`ms`), its official `microsoft-managed-apps` Copilot plugin, Git Credential Manager (GCM), native Node build tools, `libsecret` development libraries and `xdg-open`. It configures the Terraform, Azure CLI, Python, YAML and Copilot editor extensions.
 
 Tools are installed during image build. The base image, Terraform and Copilot are pinned; Node uses the 24 release line and must be at least 24.11.0. Copilot comes from its official GitHub release with mandatory SHA-256 verification, without an npm-registry dependency. The local [Managed Runtime feature](../.devcontainer/features/managed-runtime/install.sh) runs after the Node feature: it pins the `@microsoft/managed-apps-cli` npm package, explicitly allows its three native-dependency install scripts, verifies the official GCM release's SHA-256, and installs the plugin for the **`vscode` user**, not root. The marketplace is a local checkout of a pinned Microsoft commit; change the feature's pins and rebuild to update it, rather than tracking the marketplace's moving branch.
 
-The post-create hook only checks tool availability, minimum Node/Git versions, native authentication bindings and plugin registration. It does **not** install or update packages, sign in, generate tfvars, initialize Terraform, provision resources, synchronize Fabric, or run notebooks. Python supports the local initializer, plugin hooks and static source checks; Node supports app builds and Node-based developer/MCP tools. Spark, Delta and NotebookUtils still run in Fabric, not locally. No Fabric CLI, fabric-cicd, azd or .NET SDK is needed for these workflows.
+The [IQ plugin feature](../.devcontainer/features/iq-plugins/install.sh) also
+installs `azure`, `foundry-iq-skills`, `workiq`,
+`microsoft-365-agents-toolkit` and `fabric-skills` from reviewed official
+marketplace commits. It supplies a pinned Azure MCP binary, retains the
+packages' hosted MCP declarations, and uses the image's Python 3.12 for Foundry
+IQ helpers. See the [package/MCP map and authorization boundaries](copilot-tooling.md).
+These are coding-assistant capabilities, not automatically enabled app or agent
+integrations.
+
+The post-create command restores the pinned Power Platform CLI with `dotnet tool restore`, then only checks tool availability, minimum Node/Git/Python versions, native authentication bindings and all six plugin registrations. It does **not** install or update packages, start MCP servers, invoke skills, sign in, accept terms, generate tfvars, initialize Terraform, provision resources, synchronize Fabric, query Microsoft 365, or run notebooks. Python supports the local initializer, plugin hooks and static source checks; Node supports app builds and Node-based developer/MCP tools. Spark, Delta and NotebookUtils still run in Fabric, not locally. No Fabric CLI, fabric-cicd or azd is needed for the template's native deployment flow; the .NET SDK only runs the pinned Power Platform CLI. On a host without the devcontainer, install the .NET 10 SDK and run `dotnet tool restore` at the repository root. Use optional product-workflow dependency checks only when that workflow is explicitly requested.
 
 Authenticate separately when needed:
 
@@ -39,21 +48,24 @@ The Copilot App uses its selected execution host; a devcontainer file does not a
 
 ## Build and deploy Copilot Managed Runtime apps
 
+The template ships the app in [`app/`](../app/); the repository root is its
+native app root. [Getting started step 7](getting-started.md#7-create-the-agent-and-app)
+registers and runs it against the shipped Studio agent. For an environment new
+to the project, run the [runtime integration preflight](runtime-integration.md)
+first. A signed-in account or an allowed connector is not enough; inspect the
+pinned CLI's help and keep authentication-cache probes serialized.
+
 The container supplies the prerequisites in Microsoft's [developer guide](https://learn.microsoft.com/en-us/microsoft-365/managed-apps/developer/?view=o365-worldwide) and [GitHub Copilot quickstart](https://learn.microsoft.com/en-us/microsoft-365/managed-apps/developer/quickstart-github-copilot?view=o365-worldwide): Node.js >= 24.11.0, Git >= 2.27.0, GCM, the global `ms` CLI and the Copilot plugin. Managed Runtime is **preview**. You still need a work/school account in an eligible tenant and permission to create apps. Running apps, including local development, requires Power Apps Premium or sufficient Managed Application Copilot Credits; a Copilot subscription alone is not that license.
 
-The plugin is already installed in the container; do not repeat the quickstart's marketplace installation there. Copilot App/CLI on another host needs its own plugin installation; rebuilding the container does not modify that host. Start a new Copilot CLI session in a **separate, empty app directory**, not the template root, `infra/` or `workspace/`, then invoke:
+The plugin is already installed in the container; do not repeat the quickstart's marketplace installation there. Copilot App/CLI on another host needs its own plugin installation; rebuilding the container does not modify that host. Do not scaffold another app with `/microsoft-managed-apps:create-app` or `ms app create`: the shipped `app/` is the shell.
 
-```text
-/microsoft-managed-apps:create-app
-```
+Complete the **separate** Managed Runtime sign-in in your own terminal: use `ms auth login --device-code` in headless Codespaces/SSH sessions, then `ms auth status`. Browser-based `ms auth login` is also available. Azure CLI, Copilot and Fabric Git authentication do not sign you into `ms`. GCM uses Git's ephemeral in-memory cache in this headless container (900 seconds by default), not a plaintext Git credential store or a desktop keyring. Protect all CLI authentication caches; never commit them or put credentials in the image.
 
-Approve the app plan and complete the requested **separate** Managed Runtime sign-in in your own terminal: use `ms auth login --device-code` in headless Codespaces/SSH sessions, then `ms auth status`. Browser-based `ms auth login` is also available. Azure CLI, Copilot and Fabric Git authentication do not sign you into `ms`. GCM uses Git's ephemeral in-memory cache in this headless container (900 seconds by default), not a plaintext Git credential store or a desktop keyring. Protect all CLI authentication caches; never commit them or put credentials in the image.
+The app's React, TypeScript, Vite, `@microsoft/managed-apps` and `@microsoft/managed-apps-vite-plugin` dependencies are locked in the root `package-lock.json` for the `app` npm workspace, not installed as global tools. Use `ms`, **not `npx ms`**, which can resolve an unrelated npm package.
 
-The scaffold installs app-local React, TypeScript, Vite, `@microsoft/managed-apps` and `@microsoft/managed-apps-vite-plugin` dependencies. These belong in the generated app's package manifest/lockfile, not as global tools or dependencies of this infrastructure template. Use `ms`, **not `npx ms`**, which can resolve an unrelated npm package.
+From the repository root, `npm run lint`, `npm run build` and `npm test` check the app, and `ms app dev` starts the local development loop. The container forwards the default app/config ports **3000 and 8080**; keep Codespaces ports private. When the browser is on another machine, use private local port forwarding for these ports. For example, `gh codespace ports forward 3000:3000 8080:8080 --codespace "<name>"` runs on the browser's machine. Device-code sign-in avoids forwarding an authentication callback port.
 
-From the generated app, `npm run build` checks the application build, `ms app pack` builds and stages local output, and `ms app dev` starts the local development loop. The container forwards the default app/config ports **3000 and 8080**; keep Codespaces ports private. When the browser is on another machine, use private local port forwarding for these ports. For example, `gh codespace ports forward 3000:3000 8080:8080 --codespace "<name>"` runs on the browser's machine. Device-code sign-in avoids forwarding an authentication callback port.
-
-Review and push app commits before opening a hosted preview with `ms app play --mode preview`. Deployment is a separate, explicit action: use `/microsoft-managed-apps:deploy` or `ms app deploy` after approving the preview. The platform supplies build/hosting infrastructure; this template does not scaffold, register, share or deploy an app automatically, and **"Deploy the platform" still means the Fabric/Foundry workflow below**. Bringing your own GitHub repository additionally requires an organization on GitHub Enterprise Cloud and the Microsoft Managed Apps GitHub App installed for that repository; platform-managed Git is the default.
+Review and push app commits before opening a hosted preview with `ms app play --mode preview`. Deployment is a separate, explicit action: use `/microsoft-managed-apps:deploy` or `ms app deploy` after approving the preview. The guided deployment registers the app and runs it locally; it does not share or deploy it. Binding the app to this GitHub repository requires an organization on GitHub Enterprise Cloud and the Microsoft Managed Apps GitHub App installed for that repository. A platform-managed or build-only repository is an explicit alternative, not an automatic fallback.
 
 ## Deploy from one prompt
 
@@ -70,6 +82,8 @@ choose host/state + configure -> review/apply Entra-only bootstrap
   -> admin consent + scoped user sign-in -> review/apply full platform plan
   -> native DEV Git sync + Bootstrap -> verify seed/binding + discover physical IDs
   -> review/apply knowledge plan -> verify ingestion and live ontology retrieval
+  -> create/connect/configure/publish the Studio agent -> register the app
+  -> App Player connection check and live answer
 ```
 
 This is **one guided request**, not a zero-input or guaranteed unattended deployment. You still need:
@@ -78,11 +92,12 @@ This is **one guided request**, not a zero-input or guaranteed unattended deploy
 - **Entra setup and approval:** the initial Terraform identity needs directory permissions to create/configure the app, service principal and authorized clients. Copilot can prepare them through the reviewed Entra-only plan and hand the administrator the generated approval link and scope manifest. An administrator grants consent separately; subscription Owner alone is not enough, and Terraform does not grant itself consent.
 - **Azure/Fabric user sign-in:** after consent, use the generated tenant/scope outputs and the administrator-owned tenant prerequisites from [getting started](getting-started.md). Copilot can guide device login, but cannot perform your MFA or bypass policy. Plain `az login`, app creation or consent alone is not proof that Fabric write/execute scopes and workspace roles are available.
 - **A secure Fabric Git PAT:** add a [Codespaces secret](https://docs.github.com/en/codespaces/managing-your-codespaces/managing-your-account-specific-secrets-for-github-codespaces) named `FABRIC_GITHUB_TOKEN`, restricted to the derived repository, with Contents read/write. Restart an already-running Codespace after adding it. The skill maps it to Terraform's ephemeral `TF_VAR_github_token` inside each plan/apply shell; it never copies it into files or chat. An existing `TF_VAR_github_token` is also supported. Copilot's login and the default Codespaces `GITHUB_TOKEN` are not this PAT.
+- **Agent and app access:** a Power Platform environment where you can create agents and apps, a Copilot Studio license and Managed Runtime licensing. You sign in to `pac` and `ms` yourself, connect your own IQ connections and approve agent creation, configuration and app registration.
 - **State retention:** prefer an existing encrypted, access-controlled remote backend and project-specific state key. A single-user local-state demo needs explicit acceptance and secure retention/backup before deleting the Codespace. Deleting a Codespace does not delete its Azure resources. Team/CI deployment requires remote state.
 
 The App route uses GitHub's [authenticated Codespaces SSH transport](https://docs.github.com/en/codespaces/developing-in-a-codespace/using-github-codespaces-with-github-cli#ssh-into-a-codespace), not a claimed native App-to-Codespaces attachment. Do not publish port 2222, configure an SSH password or disable host-key verification. If the App host cannot access Codespaces, use CLI in the Codespace rather than silently deploying from the laptop.
 
-On a failed/paused run, say **"Resume deployment in the same Codespace and backend."** Copilot checks existing state and operation receipts instead of resetting knowledge inputs or submitting duplicate jobs. It reports **DEV ready** only after both document and live ontology retrieval succeed; incomplete authentication or ingestion is reported as blocked/unverified. TEST stays empty and PROD/promotion/consuming agents remain separate. Review generated DEV binding changes before committing them and before any later promotion.
+On a failed/paused run, say **"Resume deployment in the same Codespace and backend."** Copilot checks existing state and operation receipts instead of resetting knowledge inputs or submitting duplicate jobs. It reports **DEV ready** only after both document and live ontology retrieval succeed, then continues with the agent and app; incomplete authentication or ingestion is reported as blocked/unverified. TEST stays empty and PROD, promotion, hosted deployment and sharing remain separate. Review generated DEV binding changes before committing them and before any later promotion.
 
 ## Use the repository skills
 
@@ -94,6 +109,8 @@ Open the derived repository in Copilot App, or start `copilot` at its root. [`AG
 | "Use /initialize-project to configure this new repository." | Confirms project/region/admin choices, resolves the intended repository and published branch, and creates one ignored local tfvars file. No deployment. |
 | "Use /template-maintenance to check my changes." | Runs scoped static checks without touching deployment state or executing cloud operations. |
 | "Use /fabric-workspace to review these bindings." | Checks logical identities, model references and target-local binding rules; live bootstrap/promotion remains an explicit operation. |
+| "Use /runtime-integration before building my agent and app." | Performs read-only checks in a chosen derived project and guides the native connector, authorization and app-build proof without claiming shell readiness. |
+| "Use /scenario-authoring to add this domain workflow." | Uses the canonical layout and complete native work-package recipes, preserving platform ownership and explicit opt-in/runtime readiness gates. |
 
 In CLI, use `/skills list` to see available skills and `/skills reload` after adding/updating them. In App, use **Customize > Skills**. Skills provide instructions, not permission to deploy or bypass tool approvals.
 

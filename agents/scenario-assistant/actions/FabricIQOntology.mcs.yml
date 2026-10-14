@@ -1,0 +1,15 @@
+mcs.metadata:
+  componentName: Fabric IQ ontology
+  description: Live scenario facts from the bound Fabric IQ ontology, queried as the signed-in user.
+kind: TaskDialog
+modelDisplayName: Fabric IQ ontology
+modelDescription: Query the live scenario ontology as the signed-in user for current entities, statuses, counts and relationships. Use this tool for every current fact.
+action:
+  kind: InvokeExternalAgentTaskAction
+  connectionReference: "{{agent_schema}}.shared_fabriciqmcpserver.00000000000000000000000000000001"
+  connectionProperties:
+    mode: Invoker
+
+  operationDetails:
+    kind: ModelContextProtocolMetadata
+    operationId: mcp_FabricIQOntology

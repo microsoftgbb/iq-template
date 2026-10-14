@@ -1,0 +1,5 @@
+connectionReferences:
+  - connectionReferenceLogicalName: "{{agent_schema}}.shared_fabriciqmcpserver.00000000000000000000000000000001"
+    connectorId: /providers/Microsoft.PowerApps/apis/shared_fabriciqmcpserver
+  - connectionReferenceLogicalName: "{{agent_schema}}.shared_azureaisearchfoundryiq.00000000000000000000000000000002"
+    connectorId: /providers/Microsoft.PowerApps/apis/shared_azureaisearchfoundryiq
