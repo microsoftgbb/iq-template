@@ -21,8 +21,16 @@ provider "fabric" {
 
 # AzAPI does not register Search knowledge-base/source data-plane resource types.
 # Keep their CRUD lifecycle in Terraform; do not log this provider's HTTP traffic.
+# The admin key is read on every run and never stored in state or saved plans.
+ephemeral "azapi_resource_action" "search_admin_keys" {
+  type                   = "Microsoft.Search/searchServices@${local.search_management_api_version}"
+  resource_id            = azapi_resource.search.id
+  action                 = "listAdminKeys"
+  response_export_values = { primary_key = "primaryKey" }
+}
+
 provider "restful" {
-  base_url      = azurerm_search_service.knowledge.endpoint
+  base_url      = local.search_endpoint
   create_method = "PUT"
   update_method = "PUT"
   delete_method = "DELETE"
@@ -33,7 +41,7 @@ provider "restful" {
     apikey = [{
       in    = "header"
       name  = "api-key"
-      value = azurerm_search_service.knowledge.primary_key
+      value = ephemeral.azapi_resource_action.search_admin_keys.output.primary_key
     }]
   }
 

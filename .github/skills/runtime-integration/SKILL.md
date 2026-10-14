@@ -7,9 +7,9 @@ description: Preflight the shipped Copilot Studio agent and Managed Runtime app 
 
 Read `AGENTS.md`, `docs/runtime-integration.md`, `docs/development.md` and
 `docs/ontology-knowledge.md`. This is a bounded integration procedure, not a
-deployment wrapper. `deploy-platform` stage 8 creates the shipped Studio agent
-and app; use this skill for the preflight, the remaining shell evidence and the
-re-validation of blocked routes.
+deployment wrapper. The `deploy-platform` runner's `agent` and `app` phases create
+the shipped Studio agent and app; use this skill for the preflight, the remaining
+shell evidence and the re-validation of blocked routes.
 
 ## 1. Choose the proof target
 

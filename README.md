@@ -40,13 +40,15 @@ than redesigning the platform.
 
 1. Select **Use this template** to create your own repository.
 2. Open its **Codespace** for the prepared toolchain, or follow [developer setup](docs/development.md) for a local environment.
-3. Tell Copilot **"Deploy the platform"**. When using Copilot App with Codespaces, name the Codespace to keep deployment in that checkout and state. It finishes with the agent and app running in the App Player.
+3. Tell Copilot **"Deploy the platform"**. When using Copilot App with Codespaces, name the Codespace to keep deployment in that checkout and state. It finishes with the agent and app running in the App Player. To skip the agent, run the same [deterministic runner](docs/development.md#deploy-deterministically) yourself: `python3 .github/skills/deploy-platform/scripts/deploy.py up`.
 
 Review [prerequisites and manual steps](docs/getting-started.md) before deploying. You choose the target, sign in, arrange administrator consent and approve the plans. For **configuration only**, use **/initialize-project**.
 
-Use one explicit region by default. Check Fabric CU quota and Search new-service
-capacity first; approved `fabric_location` / `search_location` overrides can
-retain working Foundry resources when a service is unavailable in that region.
+Use one explicit region by default. Check Fabric CU quota first; the default
+serverless Search tier is offered in fewer regions than dedicated tiers, which
+also have new-service capacity limits. Approved `fabric_location` /
+`search_location` overrides can retain working Foundry resources when a service
+is unavailable in that region.
 
 [![Nine deployment stages: configure, bootstrap Entra, obtain consent and sign in, provision infrastructure, sync and bootstrap DEV, verify bindings and discover IDs, wire knowledge, verify both retrieval paths, then report DEV ready.](docs/diagrams/deployment-flow.svg)](docs/diagrams/deployment-flow.svg)
 

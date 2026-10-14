@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
@@ -109,6 +110,30 @@ class StudioAgentTests(unittest.TestCase):
         blockers = " ".join(studio.evaluate(SCHEMA, bot, components, references, statuses))
         for expected in ("Agent readers", "Invoker", "not published", "unbound", "must sign in"):
             self.assertIn(expected, blockers)
+
+    def test_find_reports_whether_the_agent_exists_without_changing_it(self):
+        for bots, expected in (([], ("missing", None)), ([{"botid": "b", "schemaname": SCHEMA}], ("found", "b"))):
+            fake = (lambda entity, params, bots=bots: bots), None
+            stdout = io.StringIO()
+            with mock.patch.object(studio, "dataverse", return_value=fake), contextlib.redirect_stdout(stdout):
+                code = studio.main(["find", "--tenant-id", WORKSPACE, "--dataverse-url", "https://org.crm.dynamics.com",
+                                    "--agent-schema", SCHEMA])
+            report = json.loads(stdout.getvalue())
+            self.assertEqual((code, report["status"], report["bot_id"]), (0, *expected))
+
+    def test_find_proves_the_dataverse_url_belongs_to_the_chosen_environment(self):
+        organization = {"Detail": {"EnvironmentId": ONTOLOGY, "TenantId": WORKSPACE}}
+        stderr = io.StringIO()
+        with mock.patch.object(studio, "token", return_value="token"), \
+                mock.patch.object(studio, "call", return_value=organization), contextlib.redirect_stderr(stderr):
+            code = studio.main(["find", "--tenant-id", WORKSPACE, "--dataverse-url", "https://org.crm.dynamics.com",
+                                "--agent-schema", SCHEMA, "--environment-id", "33333333-3333-4333-8333-333333333333"])
+        self.assertEqual(code, 2)
+        self.assertIn(f"belongs to environment {ONTOLOGY}", stderr.getvalue())
+
+    def test_bearer_requests_never_follow_redirects(self):
+        self.assertIsNone(studio.NoRedirect().redirect_request(None, None, 302, "Found", {}, "https://elsewhere.example"))
+        self.assertTrue(any(isinstance(handler, studio.NoRedirect) for handler in studio.OPENER.handlers))
 
     def test_cloud_commands_validate_inputs_before_any_sign_in(self):
         stderr = io.StringIO()

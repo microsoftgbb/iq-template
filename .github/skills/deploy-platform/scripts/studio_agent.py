@@ -42,6 +42,16 @@ class StudioError(ValueError):
     pass
 
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Bearer tokens must never follow a redirect to another URL."""
+
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+OPENER = urllib.request.build_opener(NoRedirect)
+
+
 def schema_name(value):
     if not re.fullmatch(r"[A-Za-z][A-Za-z0-9]{1,7}_[A-Za-z0-9_]{1,80}", value or ""):
         raise StudioError("agent-schema must be '<publisher prefix>_<name>' using letters, digits and underscores.")
@@ -191,7 +201,7 @@ def call(method, url, bearer, body=None):
     request = urllib.request.Request(url, method=method, headers=headers,
                                      data=None if body is None else json.dumps(body).encode())
     try:
-        with urllib.request.urlopen(request, timeout=120) as response:
+        with OPENER.open(request, timeout=120) as response:
             raw = response.read()
             return json.loads(raw) if raw else {}
     except urllib.error.HTTPError as error:
@@ -310,6 +320,25 @@ def guid_or_name(value):
     return value
 
 
+def command_find(args):
+    schema = schema_name(args.agent_schema)
+    if args.environment_id:
+        expected = guid(args.environment_id, "environment-id")
+        base = https_url(args.dataverse_url, "dataverse-url")
+        detail = call("GET", f"{base}/api/data/v9.2/RetrieveCurrentOrganization(AccessType=@p1)"
+                             "?@p1=Microsoft.Dynamics.CRM.EndpointAccessType'Default'",
+                      token(base, args.tenant_id)).get("Detail") or {}
+        if not detail.get("EnvironmentId") or guid(detail["EnvironmentId"], "EnvironmentId") != expected:
+            raise StudioError(f"{base} belongs to environment {detail.get('EnvironmentId')}, not {expected}.")
+        if detail.get("TenantId") and guid(detail["TenantId"], "TenantId") != guid(args.tenant_id, "tenant-id"):
+            raise StudioError(f"{base} belongs to another tenant.")
+    query, _ = dataverse(args)
+    bots = query("bots", {"$select": "botid,schemaname", "$filter": f"schemaname eq '{schema}'"})
+    if len(bots) > 1:
+        raise StudioError(f"More than one agent has schema name {schema}; resolve the duplicate first.")
+    return {"status": "found" if bots else "missing", "bot_id": bots[0]["botid"] if bots else None}
+
+
 def command_check(args):
     schema = schema_name(args.agent_schema)
     query, _ = dataverse(args)
@@ -340,7 +369,8 @@ def main(argv=None):
 
     for name, help_text in (("connections", "Find or create the caller's two IQ connections."),
                             ("configure", "Set access, grounding and connection bindings."),
-                            ("check", "Read-only readiness check of the published agent.")):
+                            ("check", "Read-only readiness check of the published agent."),
+                            ("find", "Read-only lookup of the agent by schema name.")):
         sub = commands.add_parser(name, help=help_text)
         sub.add_argument("--tenant-id", required=True)
         if name == "connections":
@@ -357,6 +387,8 @@ def main(argv=None):
             sub.add_argument("--knowledge-connection", required=True)
         if name == "check":
             sub.add_argument("--environment-id", required=True)
+        if name == "find":
+            sub.add_argument("--environment-id", help="Also prove the Dataverse URL belongs to this environment.")
         if name in ("connections", "configure"):
             sub.add_argument("--apply", action="store_true", help="Make the planned changes.")
 
@@ -365,7 +397,7 @@ def main(argv=None):
         if args.command != "render":
             guid(args.tenant_id, "tenant-id")
         handler = {"render": command_render, "connections": command_connections,
-                   "configure": command_configure, "check": command_check}[args.command]
+                   "configure": command_configure, "check": command_check, "find": command_find}[args.command]
         report = handler(args)
     except StudioError as error:
         print(f"Studio agent step blocked: {error}", file=sys.stderr)

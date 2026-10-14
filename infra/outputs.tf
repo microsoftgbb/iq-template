@@ -114,7 +114,12 @@ output "model_deployments" {
 
 output "search_endpoint" {
   description = "Azure AI Search endpoint."
-  value       = azurerm_search_service.knowledge.endpoint
+  value       = local.search_endpoint
+}
+
+output "search_management_url" {
+  description = "Search service ARM URL. Serverless (preview) cannot be created with a managed identity, so deploy.py PATCHes its system identity here after the platform apply."
+  value       = "https://management.azure.com${azapi_resource.search.id}?api-version=${local.search_management_api_version}"
 }
 
 output "knowledge_base_name" {
@@ -129,7 +134,7 @@ output "knowledge_setup_pending" {
 
 output "knowledge_source_status_url" {
   description = "GET with a Search token to inspect asynchronous ingestion and errors."
-  value       = var.knowledge_lakehouse_id == null ? null : "${azurerm_search_service.knowledge.endpoint}/knowledgesources/${restful_resource.knowledge_source[0].body.name}/status?api-version=${local.search_api_version}"
+  value       = var.knowledge_lakehouse_id == null ? null : "${local.search_endpoint}/knowledgesources/${restful_resource.knowledge_source[0].body.name}/status?api-version=${local.search_api_version}"
 }
 
 output "knowledge_base_mcp_endpoint" {

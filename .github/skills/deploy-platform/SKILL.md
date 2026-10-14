@@ -1,13 +1,13 @@
 ---
 name: deploy-platform
-description: Deploy or resume the complete Fabric and Foundry DEV platform from a derived repository. Use for "deploy the platform", "deploy this project", or end-to-end setup through Copilot App or CLI. Coordinate configuration, reviewed Entra bootstrap and admin consent handoff, approved Terraform applies, native Fabric Git bootstrap, seed/binding actions, physical-ID discovery, knowledge wiring, retrieval checks, then the shipped Copilot Studio agent and Managed Runtime app. Never run as a template-maintenance check.
+description: Deploy or resume the complete Fabric and Foundry DEV platform from a derived repository. Use for "deploy the platform", "deploy this project", or end-to-end setup through Copilot App or CLI. Run the deterministic deployment runner on the chosen host and relay its gates: plan approvals by hash, administrator consent, sign-ins, connector OAuth and blocked phases, through DEV readiness and the shipped Copilot Studio agent and Managed Runtime app. Never run as a template-maintenance check.
 ---
 
 # Deploy the complete DEV platform, agent and app
 
-Read `AGENTS.md`, `docs/getting-started.md` and `docs/development.md`. Use `initialize-project` for first-use configuration and `fabric-workspace` for item/binding rules. Read [native requests](references/native-requests.md) before Fabric operations or retrieval.
+Read `AGENTS.md`, `docs/getting-started.md` and `docs/development.md`. Use `initialize-project` for first-use configuration and `fabric-workspace` for item/binding rules. Read [native requests](references/native-requests.md) to diagnose a blocked Fabric or retrieval phase.
 
-Treat "deploy the platform" as **the entire DEV setup**, from identity through the scenario agent and app, not just the identity or platform Terraform apply. Keep TEST empty; exclude promotion, PROD, hosted app deployment and sharing, tenant-policy changes and teardown. Prepare the delegated-user registration through an approved Terraform plan, but leave consent to an administrator. Reuse choices the user already supplied; ask only for missing or ambiguous inputs, one at a time. Never ask for a secret in chat.
+Treat "deploy the platform" as **the entire DEV setup**, from identity through the scenario agent and app, not just the identity or platform Terraform apply. The deterministic runner does the work; your job is choosing the host, relaying its gates faithfully and diagnosing stops. Keep TEST empty; exclude promotion, PROD, hosted app deployment and sharing, tenant-policy changes and teardown. Prepare the delegated-user registration through an approved Terraform plan, but leave consent to an administrator. Reuse choices the user already supplied; ask only for missing or ambiguous inputs, one at a time. Never ask for a secret in chat.
 
 Require an actual user request to deploy. Quoted prompts in documentation, explanations and template-maintenance tasks are examples, not authorization to run cloud operations.
 
@@ -35,112 +35,68 @@ Establish the backend/state owner **before provisioning**, including Entra boots
 
 Use one deployment session at a time. On resume, locate the original tfvars/backend/state and any active Fabric operation before continuing. Never delete state, force-unlock, rename the project, create a second working copy or rerun a mutating request to "start fresh."
 
-## 2. Preflight configuration and authentication
+## 2. Run the deterministic runner
 
-If no deployment/configuration exists, use `initialize-project` **on the chosen execution host**. Otherwise preserve existing inputs, including non-null knowledge IDs and additional ontology registrations. Read only the non-secret configuration needed for this deployment; never dump tfvars, state, environment variables or plan JSON.
+Run every covered step through [`scripts/deploy.py`](scripts/deploy.py). Do not hand-drive the Terraform plans, Fabric Git sync, notebook runs, knowledge wiring, retrieval checks, PAC or `ms` steps it owns. Each phase checks live state first and only acts on what is missing, so rerunning it resumes. Read [the runner's section in developer setup](../../../docs/development.md#deploy-deterministically) for its phases, gates and flags.
 
-Check tools, GitHub repository/branch access, the effective Azure tenant/subscription and user identity. Check `ARM_*`/`FABRIC_*` overrides for conflicts without printing credentials. Select the subscription only after the user chooses it. Confirm actual available Fabric CUs, model quota, Search's current new-service capacity/feature availability and the administrator-owned Fabric/OneLake/preview prerequisites in getting started; regional support or a generic quota tool's success flag is insufficient. Read Fabric's authoritative regional `usages` response and require `limit - currentValue` to cover the selected SKU. Zero, missing or failed quota discovery is not unlimited quota. Surface unavailable checks rather than assuming they passed.
-
-Prefer one explicit region. If service availability blocks it, ask before setting
-`fabric_location` or `search_location`; review cross-region data handling,
-latency and costs. Preserve any existing Foundry resources and the same state
-when that is the approved recovery. Never automatically relocate resources,
-raise quota, switch subscription/SKU or retry an old saved plan after a partial
-apply. Produce a fresh full plan and obtain approval for any replacements.
-
-Use an authorized **delegated user** for this bundled notebook flow. A service-principal login is not a substitute. Initial normal Azure CLI sign-in is enough to start the Entra-only bootstrap, provided that user has permission to manage app registrations, service principals, owners and pre-authorized clients. Subscription ownership does not provide those permissions. The tenant's shared Microsoft Power BI Service principal must exist and publish the required scopes. The template reads it; it must not own, modify or delete that Microsoft application.
-
-If directory permissions or the existing Microsoft service principal are missing, stop for administrator assistance. Do not self-grant directory privileges, create a replacement Microsoft application, grant tenant consent or change tenant settings.
-
-Require a fine-grained GitHub PAT for this derived repository with Contents read/write. Prefer a Codespaces secret named `FABRIC_GITHUB_TOKEN`, scoped only to that repository, or an already supplied `TF_VAR_github_token`. Do not reuse `GITHUB_TOKEN`, `GH_TOKEN` or Copilot's login token as the Fabric PAT. A newly added Codespaces secret requires a Codespace restart and reconnection.
-
-For **each** Terraform plan/apply shell, resolve the PAT inside the execution host; tool shells do not share exports:
+On the chosen execution host, with shell tracing off:
 
 ```bash
 set +x
-export TF_VAR_github_token="${TF_VAR_github_token:-${FABRIC_GITHUB_TOKEN:?Configure the Fabric GitHub PAT securely on this execution host}}"
+python3 .github/skills/deploy-platform/scripts/deploy.py up --json --non-interactive \
+  --subscription "<chosen-subscription>" --local-state \
+  --environment-id "<power-platform-environment-id>" \
+  --environment-url "https://<org>.crm.dynamics.com"
 ```
 
-Do not persist this value in tfvars, shell profiles, request files or receipts. Stop for missing sign-in, permissions, quota, secrets or an unconfirmed target before provisioning.
+Pass `--local-state` only if the user accepted local state in step 1; otherwise use the declared remote backend with `--backend-config <file>`. On first use without `infra/terraform.tfvars`, add `--project-name`, `--location` and `--capacity-admin`, confirmed under the `initialize-project` rules; never infer a region, project name or administrator. The runner remembers subscription, tenant, caller, backend and environment choices, and refuses a different one; never edit its receipts to bypass that. Omit the environment flags until the user has confirmed the Power Platform environment and Org URL; the runner then waits at the `agent` phase without creating anything there.
 
-## 3. Prepare identity and hand off administrator consent
+Require a fine-grained GitHub PAT for this derived repository with Contents read/write. Prefer a Codespaces secret named `FABRIC_GITHUB_TOKEN`, scoped only to that repository, or an already supplied `TF_VAR_github_token`; a newly added Codespaces secret requires a Codespace restart and reconnection. The runner reads it only from the execution host's environment, maps it into each plan and apply, and never writes it anywhere. Never ask for it in chat, and do not reuse `GITHUB_TOKEN`, `GH_TOKEN` or Copilot's login token. For App-driven remote work, run the runner inside the same `gh codespace ssh` heredoc shown in step 1.
 
-Initialize the agreed backend from `infra/` without upgrading providers, then validate. Keep all root inputs and the ephemeral PAT available, even though the identity module never consumes that PAT.
+Run the runner asynchronously with its stderr in a private log, and check that log every few seconds rather than waiting for the process to exit. Native CLIs such as `ms app init` can print a GitHub or Microsoft device-code prompt that expires in about 15 minutes. When one appears, ask the user to read the code from that log themselves and complete the sign-in; never relay the code. Reports redact one-time codes.
 
-For an initial or partially completed **identity-only bootstrap**, create a uniquely named saved plan with `-input=false -target=module.fabric_user_auth`. Review it: only that module's AzureAD resources and scope UUID may change. Explain the delegated scopes, first-party client pre-authorizations and ownership, obtain approval for that exact plan, then apply the saved plan. This is the only supported targeting exception; do not target the platform, knowledge resources or teardown. Terraform's incomplete-target warning does not mean the platform is deployed.
+## 3. Handle each stop
 
-On resume, locate the existing module in the original state and reuse its outputs. Do not create a duplicate registration, import a same-named app without review, or routinely repeat targeting. If platform resources already exist and identity changes are needed, review the full plan and consent implications rather than assuming this is a fresh bootstrap.
+The `--json` report gives `result`, `phase`, `message`, `next` and, for approvals, `approval` with the key, description, saved plan path, sha256 and change summary.
 
-Read the non-secret `fabric_user_auth` output and hand the administrator its `api_permissions_url`, tenant, client ID and delegated scope manifest. An administrator reviews and grants consent separately. Do not treat `required_resource_access`, pre-authorized clients or registration outputs as a consent receipt. Pause if approval is pending; record this phase as **registration prepared / consent pending**, not Fabric-ready.
+| Exit | Meaning | Do |
+| --- | --- | --- |
+| `0` | Completed through the requested phase | Report honestly (step 5). |
+| `3` | A person must act or a cloud operation is still running | Relay `message` and `next` exactly: the administrator approval link, device-code sign-in commands, PAT setup, **Fix connection** link, or the still-running operation. Never perform consent, MFA or connector OAuth for the user, and never relay a consent code. Rerun when they confirm; nothing is resubmitted. |
+| `4` | Approval required | For a plan, show the summary and `terraform -chdir=infra show <plan>`, and explain billable resources, public or preview exposure, permissions and any replacement or deletion. For an action, explain what it creates. After the user explicitly approves, rerun with `--approve <key>=<sha12>` for that exact plan, or `--approve <action>`. |
+| `2` | Blocked | Read the message and the receipts in `.artifacts/deploy/state.json`, then diagnose with [native requests](references/native-requests.md) and getting started. Fix the cause or ask the user, then rerun. Do not improvise mutating calls the runner owns, delete state or receipts, reset knowledge inputs or create a second working copy. |
 
-After consent, have the user complete device sign-in with the generated `fabric_user_auth_tenant_id` and `fabric_user_auth_scope` outputs. Restore the chosen CLI subscription afterwards. Keep the same Terraform caller; a different caller can change application ownership and deployment role assignments. Do not set `FABRIC_CLIENT_ID` to the new application to substitute client-credentials authentication for this CLI-user flow.
+Add these flags only after the user's explicit, specific choice:
 
-Verify Fabric access with a read-only request and check the authorization route for the actual operations against the prepared manifest: capacity/workspace/Git operations, item read/write/execute, connection creation and deployment-pipeline management. Native requests still acquire a **Fabric-audience** token, not the custom app's `access` token. The pinned provider uses `AzureCLICredential`; its first-party Azure CLI token can expose the general `user_impersonation` scope instead of enumerating the registration's nine named scopes. Do not require those two scope lists to be identical or treat the custom API token as a Fabric token. Verify the expected delegated caller/tenant/audience and the registration's actual administrator consent separately; a generic scope or successful read does not prove every write operation or workspace role. For other clients, check their documented delegated scope requirements rather than assuming this first-party route applies. Token inspection must remain in memory and report only the needed checks, never raw tokens or full claims. Permission changes require administrator review/re-consent and a fresh login before using the changed access.
+- `--yes` approves every non-destructive plan and action in that run. Use it only when the user asks for unattended approval of the run.
+- `--allow-replace` permits an approved plan that deletes or replaces resources. Use it only after the user reviews those exact changes; replacements after a partial apply need a fresh full plan, not a retried old one.
+- `--grant-admin-consent` grants tenant-wide consent for exactly the declared delegated scopes. Use it only when the user states that they are a tenant administrator and want to grant it. Otherwise hand the administrator the printed link and wait.
+- `--consent-confirmed` proceeds when the user's sign-in cannot read consent grants. Use it only after the administrator has confirmed the grant.
+- `--register-search-serverless` registers the subscription's auto-approved `Microsoft.Search/Serverless` preview feature and re-registers `Microsoft.Search`. Use it only when the user accepts the serverless Search preview and that subscription change; otherwise relay the printed commands or let them choose `search_sku = "basic"`.
+- `--bootstrap-fallback notebooks` syncs without the plan and runs `SeedScenario` then `BindScenario` as the user. Use it only after surfacing the exact `FeatureNotAvailable` error and the user chooses that path. Never change a tenant setting instead.
+- `--retry-failed` continues after a failed or receipt-less Git operation, notebook run, publish or app registration. Use it only after that operation has been inspected and its cause fixed; the runner never resubmits an accepted request otherwise.
 
-The registration covers deployment-user authentication, not a consuming app's Search-to-Fabric ontology sign-in flow. It creates no credentials or application permissions and does not replace tenant settings, workspace/data roles or the runtime user-token requirement.
+## 4. Keep what the runner cannot verify
 
-## 4. Provision or reconcile infrastructure
+- **Prerequisites:** the runner checks tools, the delegated Azure user, provider overrides, PAT read access, the shared Power BI Service principal, Fabric CU quota, model quota, whether the Search region offers the chosen tier and, for serverless, its subscription feature. It does not verify administrator-owned Fabric tenant settings, dedicated Search new-service capacity or Entra directory permissions; surface them from getting started. If directory permissions or the Microsoft service principal are missing, stop for administrator assistance. Do not self-grant directory privileges, create a replacement Microsoft application or change tenant settings. A service-principal login is not a substitute for the delegated user.
+- **Serverless Search:** Terraform creates it without a managed identity because the preview fails otherwise; the runner enables the system identity and verifies it, since the preview answers that update with HTTP 500. Its grants arrive with the knowledge plan. Changing serverless settings, tags, tier or region replaces it; after knowledge setup the runner applies that as two reviewed plans, first with the identity grants deferred (`search_identity_ready=false`, which also needs `--allow-replace`), then the grants. Review both like any other plan.
+- **Regions and quota:** never automatically relocate resources, raise quota, switch subscription or SKU, or retry after a partial apply. Ask before setting `fabric_location` or `search_location`, review cross-region data handling, latency and cost, and approve a fresh full plan.
+- **Identity:** the targeted identity plan is the only targeting exception; the runner refuses one that touches anything else, and blocks later plans that change the registration. The registration, `required_resource_access`, pre-authorized clients and outputs are not a consent receipt. Permission changes need administrator re-consent and a fresh sign-in. Keep the same Terraform caller.
+- **Bootstrap:** the runner syncs only additions of items defined in `workspace/`, from the pushed `HEAD` of the configured branch, and refuses other Git targets, conflicts and `CommitToGit`. The binder legitimately changes DEV definitions: review its generated changes with the user and commit them through Fabric source control before any promotion. Do not commit, push or overwrite them automatically.
+- **Readiness:** the `verify` phase waits for ingestion and requires `fabricOntology` activity and references matching the DEV workspace and ontology, with live source data, plus a separate `indexedOneLake` reference. It uses the user's own Search token, never a managed identity, and never accepts a document-only answer as live ontology evidence. Use `--ontology-question` and `--expect` when the user intentionally changed the seed data.
 
-After consent and delegated sign-in, run plain Terraform from the same `infra/` root and backend: validate, then create a uniquely named saved **untargeted** platform plan with `-input=false`. For a fresh deployment, knowledge inputs remain null/empty. **Never reset them on resume.**
+## 5. Report honestly
 
-Summarize billable resources, public/preview exposure, permissions and any replacement/deletion. Stop for unresolved changes to identity permissions or ownership rather than applying new Fabric operations before their consent/sign-in prerequisites. Obtain approval for that exact plan, then apply that saved plan with the PAT available again. Do not use `-auto-approve`, targeting outside the initial identity bootstrap, blanket replacement or an unreviewed re-plan. If code, inputs, state or target changes, create a new plan and obtain new approval.
+Report completed and blocked phases, including registration, consent and sign-in, the chosen host and backend, resource, workspace and Foundry links, and any remaining binding review. Claim **DEV ready** only after the `verify` phase succeeded. Distinguish a prepared registration, a deployed but unverified system and a ready one. Do not promote to TEST or PROD.
 
-Capture non-secret outputs: resource group, DEV workspace, Git connect request, Foundry endpoint, Search endpoint and knowledge status. Confirm deployed resources/roles/models reached their expected states. Preserve state and investigate a partial apply; do not destroy successful resources to recover.
+## 6. Agent and app
 
-## 5. Bootstrap DEV through native Fabric APIs
+The `agent` and `app` phases follow getting started step 7 on the same host and checkout. Read `docs/runtime-integration.md` for the Studio route's constraints. Do not substitute a Foundry agent, a GitHub Copilot harness agent, a custom connector or a backend; those routes are listed under "Routes to re-validate".
 
-Follow [native requests](references/native-requests.md) and `cicd/README.md`:
+1. Confirm the tenant, Power Platform environment ID and Org URL with the user; the agent and app share that environment. For an environment new to this project, run the `runtime-integration` preflight first; `candidate` permits continuing, not readiness. The user completes `dotnet pac auth create` and `ms auth login` personally; the runner prints the device-code commands.
+2. Agent creation (`agent-create`) runs `pac copilot init`, which creates **and publishes** the agent; state the environment and schema name before approving. On resume, the runner looks up the schema name and clones instead of creating twice. It renders `agents/scenario-assistant/` into ignored `.artifacts/studio/`; never edit or commit the rendered workspace or `.mcs/`.
+3. Connection creation (`agent-connections`) is followed by each owner's personal **Fix connection**. Publishing (`agent-publish`) applies **Agent readers** access, end-user (`Invoker`) tools and grounding off, then the runner rechecks until `ready`. Report blockers verbatim. Never switch a tool to `Maker` mode, widen access or re-enable grounding to pass a check.
+4. App registration (`app-register`) sets `STUDIO_AGENT_SCHEMA`, runs `ms app init` with the documented build settings and adds the Studio data source. If the GitHub organization is ineligible for repository binding, stop for the user's explicit repository choice; never register twice.
+5. The user then runs `ms app dev`, selects **Check connection**, completes the first-use consent link, checks again for the fresh challenge and asks the seed question. Record elapsed times. A 120-second `TimedOut` is a blocker to report, not a reason to add retries, warm-up jobs or a backend.
 
-1. Inspect Git connection and status. Connect only when disconnected, using `github_connect_request`. Refuse a different repository, branch, directory or selective connection; do not disconnect/repoint automatically.
-2. Initialize only when needed. Follow `requiredAction`; stop on `CommitToGit` or an unknown action instead of overwriting the source repository.
-3. Review the incoming changes and exact published SHA. Attach the incoming Bootstrap plan by its `.platform` logical ID to Update From Git with `beta=true`; include all five items. Only permit overriding incoming definitions after review/approval. Do not auto-resolve conflicts or accept deletions.
-4. Capture operation receipts and poll to terminal completion, including plan actions. `202` is not success. If the workspace is already synchronized, do not use a no-op Git update as a notebook trigger; inspect prior runs/bindings and execute the notebooks separately only when needed.
-5. Verify `SeedScenario` then `BindScenario` completed as the authorized user, or resume the failed/missing phase without duplicating an active job. Resolve exactly one lakehouse and ontology in DEV; verify their item types and expected logical identities. Inspect the live binding and scoped SQL readiness, not Git-normalized placeholders.
-
-If the documented plan option is rejected as `FeatureNotAvailable`, stop and
-surface the exact error. Do not silently remove the option or change a tenant
-setting. After the user explicitly chooses the manual path documented in getting
-started, synchronize the same reviewed definitions without plan execution, then
-run `SeedScenario` followed by `BindScenario` through the native Job Scheduler.
-Preserve the same receipts, identity and readiness checks. A rejected plan
-request and a successful definition import are not completed bootstrap actions.
-
-The binder legitimately changes DEV definitions. Review those generated changes with the user; do not commit/push or overwrite them automatically. Their review/commit is required before later promotion, not a reason to rerun Git sync and discard the binding.
-
-## 6. Wire knowledge using discovered physical IDs
-
-Use the physical IDs returned by the successful DEV item lookups, not names, `.platform` logical IDs or IDs from another workspace. For the starter's null/empty configuration, run this **local-only** helper on the execution host:
-
-```bash
-python3 .github/skills/deploy-platform/scripts/configure_knowledge.py \
-  --lakehouse-id "<verified-physical-DEV-lakehouse-guid>" \
-  --ontology-id "<verified-physical-DEV-ontology-guid>"
-```
-
-The helper changes only the two knowledge settings in the existing `infra/terraform.tfvars`, checks UUIDs/known logical IDs, preserves unrelated inputs and refuses a conflicting/custom mapping. It does not verify cloud identity or deploy. Use `--dry-run` first. On resume with custom/additional registrations, verify and preserve them rather than replacing the map with the sample.
-
-Format the changed tfvars, validate, create a uniquely named saved knowledge plan, obtain approval, and apply that exact plan. Keep the PAT available for both operations. Confirm `knowledge_setup_pending` is false and the knowledge base, both source types and Foundry MCP connection exist.
-
-## 7. Verify readiness and report honestly
-
-Wait for successful OneLake ingestion using `knowledge_source_status_url`; inspect errors rather than treating HTTP 200 as ingestion success. Allow for RBAC propagation and the five-minute schedule. Use a bounded observation deadline (30 minutes per Fabric/ingestion phase unless the user chooses another); honor `Retry-After`. On timeout, report the still-running operation and resume point, not success or implicit cancellation.
-
-Run the documented retrieval checks with a delegated **Search-audience user token** in `x-ms-query-source-authorization` as well as normal Search authentication. Terraform grants its deployer `Search Index Data Reader`; a different validation user needs their own explicit access. Never substitute managed identity, print the token, persist it, or silently fall back to document-only retrieval.
-
-Require a successful ontology `activity` entry and `fabricOntology` reference matching the actual DEV workspace/ontology, with live source data. Verify document retrieval separately. "Pump B at North Works" is the expected untouched seed answer, not sufficient evidence without the correct source references; preserve intentionally changed data.
-
-Report completed/blocked phases, including registration/consent/sign-in, the chosen host/backend, resource/workspace/Foundry links, and any remaining binding review. Claim **DEV ready** only after identity approval, infrastructure, Git/bootstrap, target-local binding, knowledge registration, ingestion and both retrieval paths succeed. Distinguish a prepared registration, a deployed but unverified system and a ready one. Do not promote to TEST/PROD. Continue with the agent and app only after DEV ready.
-
-## 8. Create the agent and app
-
-Follow getting started step 7 exactly, on the same execution host and checkout. Read `docs/runtime-integration.md` for the Studio route's constraints. Do not substitute a Foundry agent, a GitHub Copilot harness agent, a custom connector or a backend; those routes are listed under "Routes to re-validate".
-
-1. Confirm the tenant, Power Platform environment ID and Org URL with the user; the agent and app share that environment. Run `dotnet tool restore` and use `dotnet pac` for every PAC command. The user completes `pac auth create` and `ms auth login` personally, with device code in Codespaces. For an environment new to this project, run the `runtime-integration` preflight; `candidate` permits continuing, not readiness.
-2. Use the `studio_agent_schema_name` and `studio_agent_display_name` outputs. Before `pac copilot init`, state the environment and schema name and that it creates **and publishes** an agent, then obtain approval. On resume, look for that schema name first: when the workspace is missing, run `pac copilot clone --bot <schema> --output-dir .artifacts/studio` and use the folder it creates. Never init twice.
-3. `render`, then `push`. Change only `agents/scenario-assistant/`, never the rendered workspace, and never commit `.artifacts/` or `.mcs/`.
-4. Show the `connections` plan and add `--apply` only after approval. Each owner completes **Fix connection** personally; never relay a consent code. Rerun until `connected`.
-5. Show the `configure` plan, apply it after approval, then publish with the returned `bot_id`. Rerun `check` until `ready`, allowing for synchronization, and report blockers verbatim. Never switch a tool to `Maker` mode, widen access beyond **Agent readers** or re-enable grounding to pass a check.
-6. Set `STUDIO_AGENT_SCHEMA` in `app/src/config.ts` and run `npm ci`. Inspect any existing `ms.config.json` and never register twice. Run `ms app init` with the documented build settings after approval, because it registers a persistent app. If the GitHub organization is ineligible for repository binding, stop for the user's explicit repository choice. Add the Studio data source, run `ms app dev` and give the user the printed App Player URL.
-7. The user selects **Check connection**, completes the first-use consent link, checks again for the fresh challenge, then asks the seed question. Record elapsed times. A 120-second `TimedOut` is a blocker to report, not a reason to add retries, warm-up jobs or a backend.
-
-Review `app/src/config.ts` and `ms.config.json` with the user before committing. Hosted preview, deployment and sharing are separate explicit requests. Report **agent ready** from `check` and **app verified for one user** from the App Player results. Claim a ready shell only with all evidence in `docs/runtime-integration.md`; list second-user isolation as unverified until it is proven.
+Review `app/src/config.ts` and `ms.config.json` with the user before committing. Hosted preview, deployment and sharing are separate explicit requests. Report **agent ready** from the runner's `agent` phase and **app verified for one user** from the App Player results. Claim a ready shell only with all evidence in `docs/runtime-integration.md`; list second-user isolation as unverified until it is proven.

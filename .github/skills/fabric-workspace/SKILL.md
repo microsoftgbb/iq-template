@@ -22,7 +22,7 @@ Parse changed Python and JSON locally, and check that every plan logical ID reso
 
 ## Bootstrap or promote only when explicitly requested
 
-Confirm the derived repository, reviewed commit, target workspace and caller identity. Follow the native operations in `cicd/README.md`; this skill is not an unattended deployment wrapper.
+Confirm the derived repository, reviewed commit, target workspace and caller identity. The deployment runner's `bootstrap` phase performs the initial DEV sync; follow the native operations in `cicd/README.md` for anything else. This skill is not an unattended deployment wrapper.
 
 - Run the bundled binder as an authorized Fabric **user**. Service-principal NotebookUtils tokens lack the required scopes; unattended authentication needs a separately designed flow, not a token fallback.
 - Attach the reviewed plan explicitly for every operation. Git updates use the plan's logical ID (`ByLogicalId`); pipeline deployments use the plan's physical item ID (`ByItemId`). Keep required API fields, poll to completion and surface failed actions.
