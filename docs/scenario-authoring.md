@@ -9,6 +9,11 @@ The template ships this core end to end: the Fabric/knowledge baseline, the
 and the [Managed Runtime app](../app/) that calls it. A derived project adds its
 scenario in the homes below; it does not replace the shell.
 
+Use the [runtime diagram](runtime-integration.md#runtime-at-a-glance) for the fixed
+agent/app route, the [retrieval diagram](ontology-knowledge.md#two-retrieval-paths)
+for source and identity boundaries, and the [Fabric lifecycle](../cicd/README.md)
+for the native work-package order.
+
 ## One home per responsibility
 
 | Home | Put here | Do not put here |

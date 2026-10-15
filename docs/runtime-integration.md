@@ -25,6 +25,18 @@ preflight, the remaining evidence and re-validation. An explicitly chosen
 disposable derived project is the right place for live verification, not this
 reusable template.
 
+## Runtime at a glance
+
+[![The signed-in Managed Runtime user invokes a published standard-harness Copilot Studio agent through ExecuteCopilotAsyncV2. Invoker-mode Fabric IQ and Foundry IQ tools use that user's own connections for live facts and document evidence. Access, grounding, conversation isolation and readiness gates remain explicit.](diagrams/agent-runtime.svg)](diagrams/agent-runtime.svg)
+
+Arrows show invocation direction; answers return through the same agent and
+conversation. This is the intended authorization contract, not evidence that
+every user or deployment has passed the checks below. The Search knowledge
+base's separate live-source token contract is shown in
+[knowledge retrieval](ontology-knowledge.md#two-retrieval-paths).
+
+[Editable Excalidraw source](diagrams/agent-runtime.excalidraw) | [All diagrams](diagrams/README.md) | [Icon sources](diagram-authoring.md#official-icon-sources)
+
 ## Native connector contract
 
 | Responsibility | Connector / operation | End-user connection |

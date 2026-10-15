@@ -114,14 +114,10 @@ After these changes are included in the template's published branch:
 
 Copilot loads [`deploy-platform`](../.github/skills/deploy-platform/SKILL.md), runs the [deterministic runner](#deploy-deterministically) and relays its gates:
 
-```text
-choose host/state + configure -> review/apply Entra-only bootstrap
-  -> admin consent + scoped user sign-in -> review/apply full platform plan
-  -> native DEV Git sync + Bootstrap -> verify seed/binding + discover physical IDs
-  -> review/apply knowledge plan -> verify ingestion and live ontology retrieval
-  -> create/connect/configure/publish the Studio agent -> register the app
-  -> App Player connection check and live answer
-```
+[![The complete guided deployment: choose and authorize a target, build and bootstrap DEV, connect and prove knowledge, then create the Studio agent and register and verify the Managed Runtime app. Three Terraform plan approvals remain distinct from user and administrator actions.](diagrams/deployment-flow.svg)](deployment-flow.md)
+
+Read each row left to right, then continue down. See the
+[stage-by-stage guide](deployment-flow.md) for the approval and readiness gates.
 
 This is **one guided request**, not a zero-input or guaranteed unattended deployment. You still need:
 

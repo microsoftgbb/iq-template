@@ -23,13 +23,17 @@ Installation does not sign in, grant consent or enable optional runtime integrat
 
 ## Platform at a glance
 
-[![Architecture showing GitHub and Copilot authoring, Fabric DEV/TEST, indexed OneLake files and live ontology retrieval through Search and Foundry, with separate deployment and runtime identities.](docs/diagrams/platform-architecture.svg)](docs/diagrams/platform-architecture.svg)
+[![Platform overview: GitHub, Copilot and Terraform author a Fabric and Azure platform. A Managed Runtime app calls a Copilot Studio agent, which uses Foundry IQ for documents and native Fabric IQ for live facts with each user's own connections. TEST starts empty.](docs/diagrams/platform-architecture.svg)](docs/diagrams/platform-architecture.svg)
 
-[Components and ownership](docs/architecture.md) | [Ontology and retrieval](docs/ontology-knowledge.md)
+[Components and ownership](docs/architecture.md) | [All diagrams and editable sources](docs/diagrams/README.md)
 
 The app reaches DEV through the [proven native runtime route](docs/runtime-integration.md):
 app -> Copilot Studio agent -> Fabric IQ ontology and Foundry IQ knowledge base,
 each with the signed-in user's own credentials.
+
+Explore the focused views: [agent runtime and identity](docs/runtime-integration.md#runtime-at-a-glance),
+[indexed vs. live knowledge](docs/ontology-knowledge.md#two-retrieval-paths),
+and [Fabric bootstrap and promotion](cicd/README.md).
 
 For domain changes, follow the [scenario authoring contract](docs/scenario-authoring.md):
 one discoverable layout, complete native artifact inventories and fixed
@@ -50,7 +54,7 @@ also have new-service capacity limits. Approved `fabric_location` /
 `search_location` overrides can retain working Foundry resources when a service
 is unavailable in that region.
 
-[![Nine deployment stages: configure, bootstrap Entra, obtain consent and sign in, provision infrastructure, sync and bootstrap DEV, verify bindings and discover IDs, wire knowledge, verify both retrieval paths, then report DEV ready.](docs/diagrams/deployment-flow.svg)](docs/diagrams/deployment-flow.svg)
+[![Ten deployment stages, read left to right in each row: configure, prepare Entra identity, consent and sign in, provision the platform, bootstrap DEV, verify bindings, wire knowledge, prove both retrieval paths, report DEV ready, then create the Studio agent and Managed Runtime app. Plan and user approvals remain explicit.](docs/diagrams/deployment-flow.svg)](docs/diagrams/deployment-flow.svg)
 
 [Deployment stages and approval gates](docs/deployment-flow.md) | [Single-prompt setup](docs/development.md#deploy-from-one-prompt)
 

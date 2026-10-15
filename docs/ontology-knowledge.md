@@ -4,6 +4,18 @@ The template includes a Git-owned **Site/Asset ontology**, seeded lakehouse data
 
 This uses the native [`fabricOntology` knowledge source (preview)](https://learn.microsoft.com/azure/search/agentic-knowledge-source-how-to-fabric-ontology), not document export or a custom MCP proxy. The source queries Fabric at retrieval time; it doesn't create an index, copy table rows to Search, or use the file indexer's five-minute schedule.
 
+## Two retrieval paths
+
+[![OneLake Files are indexed on a five-minute schedule; the optional fabricOntology source queries bound Site/Asset data live without copying rows. Both feed one Foundry IQ knowledge base backed by Foundry models. Caller authorization is separate from the end-user token required for Search-to-Fabric delegation.](diagrams/knowledge-retrieval.svg)](diagrams/knowledge-retrieval.svg)
+
+One-way arrows show indexed content flowing toward the knowledge base; paired
+arrowheads show live request/response interactions, not data replication.
+The shipped Studio agent reads live facts through **native Fabric IQ** instead
+of this Search source, as the [runtime diagram](runtime-integration.md#runtime-at-a-glance)
+shows. Registering the source does not remove its end-user token requirement.
+
+[Editable Excalidraw source](diagrams/knowledge-retrieval.excalidraw) | [All diagrams](diagrams/README.md) | [Icon sources](diagram-authoring.md#official-icon-sources)
+
 ## Included scenario
 
 | Ontology definition | Backing data |

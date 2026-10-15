@@ -1,8 +1,8 @@
 # Deployment flow
 
-From a new derived repository to **verified DEV readiness** (steps 1-9 in the diagram), then the scenario agent and app (step 10). Follow the numbered arrows across the top row, back across the middle row, then across the bottom row. [Getting started](getting-started.md) is the canonical guide for prerequisites and commands.
+From a new derived repository to **verified DEV readiness** (steps 1-9 in the diagram), then the scenario agent and app (step 10). Read each row **left to right**, then continue down through the four phases. [Getting started](getting-started.md) is the canonical guide for prerequisites and commands.
 
-[![Deployment sequence with three Terraform plan approvals: configure, prepare identity, obtain administrator consent and user sign-in, provision the platform, sync and bootstrap DEV, check bindings and discover IDs, wire knowledge, verify retrieval, and report DEV ready.](diagrams/deployment-flow.svg)](diagrams/deployment-flow.svg)
+[![Ten-stage deployment in four phases: choose and authorize; build and bootstrap DEV; connect and prove knowledge; then create, connect, publish and verify the Studio agent and Managed Runtime app. Identity, platform and knowledge plans each require approval, separate from consent and agent/app approvals.](diagrams/deployment-flow.svg)](diagrams/deployment-flow.svg)
 
 Select the image for the full-size SVG. For the resulting components, see the [platform architecture](architecture.md).
 
@@ -34,7 +34,7 @@ The [`Bootstrap` deployment plan](../workspace/Bootstrap.DeploymentPlan/plan.yml
 3. Deploy `ScenarioOntology` with Site/Asset entities and their relationship.
 4. Deploy and execute `BindScenario` to refresh scoped SQL metadata, bind to the target lakehouse, and expose the physical IDs needed for knowledge setup.
 
-The plan itself is the fifth selected Git item. **A Git push does not run the plan**; attach it to each operation that needs its actions. Existing demo rows and files are preserved. For API request shapes, failure handling and target rebinding, use the [native bootstrap and promotion guide](../cicd/README.md).
+The plan itself is the fifth selected Git item. **A Git push does not run the plan**; attach it to each operation that needs its actions. Existing demo rows and files are preserved. The [Fabric lifecycle diagram](diagrams/fabric-lifecycle.svg) expands the four groups and promotion boundaries. For API request shapes, failure handling and target rebinding, use the [native bootstrap and promotion guide](../cicd/README.md).
 
 ## Where this flow stops
 
@@ -42,4 +42,4 @@ A successful Terraform apply, notebook run or source registration is not proof o
 
 The guided flow leaves TEST empty. It does not create PROD, deploy or share the app beyond local App Player use, or verify a second user's isolation. Those are separate, explicit tasks. See [native runtime integration](runtime-integration.md) and [promotion to TEST and PROD](../cicd/README.md#promoting-through-test-and-prod).
 
-[Editable Excalidraw source](diagrams/deployment-flow.excalidraw) | [Editing and icon attribution](diagrams/README.md)
+[Editable Excalidraw source](diagrams/deployment-flow.excalidraw) | [Authoring and icon sources](diagram-authoring.md)

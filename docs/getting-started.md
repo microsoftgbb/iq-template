@@ -8,6 +8,12 @@ For a visual overview, see the [platform architecture](architecture.md) and [dep
 
 **Deterministic path:** the skill drives the same [runner](development.md#deploy-deterministically) that you can run yourself, with the same gates and no AI agent: `python3 .github/skills/deploy-platform/scripts/deploy.py up`. The steps below remain the canonical manual flow and the runner's contract.
 
+[![Deployment at a glance: configure and authorize, build and bootstrap DEV, connect and prove knowledge, then create and verify the Studio agent and Managed Runtime app. Saved-plan approvals, administrator consent and user sign-in are separate gates.](diagrams/deployment-flow.svg)](deployment-flow.md)
+
+Read each row left to right, then continue down. The diagram's ten stages expand
+the seven manual sections below; [stage details](deployment-flow.md) distinguish
+DEV readiness from the agent/app and later promotion.
+
 ## Prerequisites
 
 - **Tools:** open the included [Codespaces/devcontainer](development.md), or install Git, Bash, [Terraform 1.11+ (below 2.0)](https://developer.hashicorp.com/terraform/install), and [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) locally. The optional initializer also uses Python 3. The container includes Copilot CLI, Node.js 24, the .NET 10 SDK for the repository-pinned Power Platform CLI (`dotnet pac`), and the Copilot Managed Runtime plugin, `ms` CLI, Git Credential Manager and native build dependencies for the [agent and app stage](#7-create-the-agent-and-app). No local Spark, Fabric CLI or fabric-cicd installation is required; notebooks run in Fabric.

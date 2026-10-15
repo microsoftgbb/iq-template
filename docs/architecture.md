@@ -2,9 +2,17 @@
 
 The intended **derived-project DEV baseline after bootstrap, knowledge wiring and the agent and app stage**, not a report of deployed resources. Copilot helps author and deploy all of it; the scenario workflow is the derived project's work.
 
-[![Fabric + Foundry IQ architecture: GitHub and Copilot feed a Terraform-managed platform; Fabric's OneLake files are indexed into Search, while its Site/Asset ontology is queried live. Foundry supplies models, a project and a managed-identity MCP connection. TEST is initially empty.](diagrams/platform-architecture.svg)](diagrams/platform-architecture.svg)
+[![Platform overview separating authoring, Fabric, Azure resources and the Power Platform experience. OneLake files feed Search; the Studio agent receives document evidence through Foundry IQ and live ontology facts through native Fabric IQ. The Managed Runtime app calls only the agent.](diagrams/platform-architecture.svg)](diagrams/platform-architecture.svg)
 
 Select the image for the full-size SVG. The [deployment flow](deployment-flow.md) shows how these components become ready.
+
+## Focused views
+
+| View | What it makes explicit |
+| --- | --- |
+| [Agent runtime and identity](runtime-integration.md#runtime-at-a-glance) | The generated app connector, published Studio agent and per-user IQ tools. |
+| [Knowledge retrieval](ontology-knowledge.md#two-retrieval-paths) | Indexed OneLake files versus live ontology queries, model dependencies and the two authorization layers. |
+| [Fabric bootstrap and promotion](../cicd/README.md) | Five portable Git items, seed/bind ordering and target-local data across DEV, TEST and separately provisioned PROD. |
 
 ## Components and ownership
 
@@ -47,7 +55,9 @@ Knowledge sources, the knowledge base and its MCP connection remain disabled whi
 
 ## Reading the boundaries
 
-Arrows show data, query and model dependencies; paired arrowheads denote request/response interactions, not data replication. The consumer box is the shipped Studio agent and app. They are created after DEV readiness, outside Terraform, and reach the knowledge base and ontology with each user's credentials.
+In this overview, arrows point toward the consuming component: Files feed Search, models support retrieval, and document evidence and live facts reach the Studio agent. The green live-facts path bypasses Search through the native Fabric IQ tool; the separate [knowledge retrieval view](ontology-knowledge.md#two-retrieval-paths) explains Search's optional live ontology source. The [runtime view](runtime-integration.md#runtime-at-a-glance) shows invocation direction instead.
+
+The Studio agent and app are created after DEV readiness, outside Terraform, and reach the knowledge base and ontology with each user's credentials. The diagram's Fabric group is a service boundary, not an Azure resource group: the capacity is an Azure resource, while Fabric workspaces and items live in Fabric.
 
 TEST is provisioned but stays empty until a reviewed native promotion. Git and deployment pipelines carry definitions, not OneLake data; every promoted target needs its own binding. PROD, production ingestion, the scenario workflow, hosted app deployment and production hardening belong to the derived project. The baseline is billable, uses authenticated public endpoints and includes preview features; see [getting started](getting-started.md#keep-in-mind).
 
@@ -55,4 +65,4 @@ TEST is provisioned but stays empty until a reviewed native promotion. Git and d
 
 The template builds on Microsoft's [Fabric capacity quickstart](https://github.com/microsoft/fabric-terraform-quickstart/tree/main/quickstarts/102-fabric-capacity), [Foundry Terraform guidance](https://learn.microsoft.com/azure/foundry/how-to/create-resource-terraform?tabs=azapi), and [OneLake knowledge-source documentation](https://learn.microsoft.com/azure/search/agentic-knowledge-source-how-to-onelake).
 
-[Editable Excalidraw source](diagrams/platform-architecture.excalidraw) | [Editing and icon attribution](diagrams/README.md)
+[Editable Excalidraw source](diagrams/platform-architecture.excalidraw) | [Authoring and icon sources](diagram-authoring.md)
