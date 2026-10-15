@@ -214,10 +214,11 @@ Use the native DEV/TEST deployment pipeline and explicitly attach the plan when 
 
 The template ships the app-facing [scenario assistant](../agents/scenario-assistant/README.md), a standard Copilot Studio agent with two native IQ tools, and the [Managed Runtime app](../app/) that calls it. This stage creates both in one Power Platform environment and connects them to DEV with **each user's own credentials**. Start after step 6 succeeds. [Native runtime integration](runtime-integration.md) explains why the app calls a Studio agent rather than a Foundry agent. The runner's `agent` and `app` phases run the commands below up to `ms app dev`, with the same approvals and sign-ins; starting the App Player stays yours.
 
-Use the environment that `ms` uses for your apps: the app calls the agent in its own environment. From the repository root, restore the pinned Power Platform CLI and sign in to that environment (add `--deviceCode` in Codespaces):
+Use a non-Default environment with a GUID ID that `ms` uses for your apps: the app calls the agent in its own environment. The runner does not support Dataverse's `Default-<guid>` environment IDs. From the repository root, restore the pinned Power Platform CLI, choose an existing environment and sign in (add `--deviceCode` in Codespaces):
 
 ```sh
 dotnet tool restore
+dotnet pac env list
 dotnet pac auth create --environment "<environment-id>"
 dotnet pac env who   # note its Org URL
 ```
@@ -269,7 +270,9 @@ ms app add data-source --connector shared_microsoftcopilotstudio --as action
 ms app dev
 ```
 
-`ms app init` binds the app to this GitHub repository. If the organization is not eligible, stop: a platform-managed or build-only repository is an explicit choice. Open the App Player URL that `ms app dev` prints and select **Check connection**. On each user's first conversation, Studio asks for connection consent in a card the connector cannot show, so the app links to Studio's connection manager instead. Connect both sources and check again until the agent returns the fresh challenge. Then ask "Which assets are in Maintenance and at which site?": expect Pump B at North Works. Live answers can take a minute, and the connector stops waiting at 120 seconds.
+`ms app init` binds the app to this GitHub repository. If the Microsoft Managed Apps GitHub App cannot access it, ask the repository/organization administrator to [install or configure the app](https://github.com/marketplace/microsoft-managed-apps) for this repository, then inspect any partial registration before retrying. If the organization is not eligible, stop: a platform-managed or build-only repository is an explicit choice.
+
+Before playback, each app user opens `https://make.powerapps.com/environments/<environment-id>/connections`, selects **New connection** -> **Microsoft Copilot Studio**, and signs in (or reuses their matching **Connected** connection). This avoids the App Player's observed loopback OAuth creation failure; see [runtime integration](runtime-integration.md#local-player-boundary). Open the App Player URL that `ms app dev` prints and select **Check connection**. Separately, on each user's first conversation, Studio asks for IQ connection consent in a card the connector cannot show, so the app links to Studio's connection manager instead. Connect both sources and check again until the agent returns the fresh challenge. Then ask "Which assets are in Maintenance and at which site?": expect Pump B at North Works. Live answers can take a minute, and the connector stops waiting at 120 seconds.
 
 Commit `app/src/config.ts` and the generated `ms.config.json`. Hosted preview, deployment and sharing are separate, explicit steps; share both the agent and the app with each additional user, who then consents to their own connections. Second-user isolation is not yet verified.
 

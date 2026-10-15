@@ -927,6 +927,75 @@ class AgentAndAppTests(unittest.TestCase):
         with self.assertRaisesRegex(deploy.Blocked, "targets agent iq_demo_assistant"):
             deploy.set_agent_schema(config, "iq_other_assistant")
 
+    def test_app_init_repository_access_errors_offer_admin_guidance_without_retrying(self):
+        errors = (
+            ("Microsoft GitHub App can't access the bound repository.", False, True),
+            ("GitHub App authentication failed.", False, False),
+            ("The environment is not eligible.", False, False),
+            ("", True, True),
+        )
+        for message, interactive, needs_install in errors:
+            with self.subTest(message=message, interactive=interactive):
+                root = make_root(self)
+                (root / "package-lock.json").write_text("{}", encoding="utf-8")
+                (root / "node_modules").mkdir()
+                status = {"success": True, "signedIn": True,
+                          "activeAccount": {"homeAccountId": f"user.{TENANT}"}}
+                ctx, shell = self.agent_context(root, [
+                    (command("ms", "auth", "status"), deploy.Result(0, json.dumps(status))),
+                    (command("ms", "app", "init"), deploy.Result(1, "", message)),
+                ])
+                ctx.interactive = interactive
+                ctx.args.approve = {"app-register": True}
+                ctx.state.section("app").update(installed=deploy.sha256_file(root / "package-lock.json"))
+                with self.assertRaises(deploy.Blocked) as stop:
+                    deploy.phase_app(ctx)
+                self.assertIn("ms app init failed (exit 1).", stop.exception.message)
+                if message:
+                    self.assertIn(message, stop.exception.message)
+                guidance = " ".join(stop.exception.next_steps)
+                if needs_install:
+                    self.assertIn("https://github.com/marketplace/microsoft-managed-apps", guidance)
+                    self.assertIn("ms app info", guidance)
+                    self.assertIn("--retry-failed only after confirming no app was registered", guidance)
+                    if interactive:
+                        self.assertIn("If the terminal reported", guidance)
+                else:
+                    self.assertEqual(guidance, "")
+                self.assertEqual(len(shell.matching(command("ms", "app", "init"))), 1)
+                saved = json.loads(ctx.state.path.read_text(encoding="utf-8"))["app"]
+                self.assertIn("init_started_at", saved)
+                self.assertNotIn("registered_at", saved)
+                with self.assertRaisesRegex(deploy.Blocked, "may have registered the app"):
+                    deploy.phase_app(ctx)
+                self.assertEqual(len(shell.matching(command("ms", "app", "init"))), 1)
+
+    def test_app_registration_surfaces_both_user_authorizations_without_claiming_readiness(self):
+        root = make_root(self)
+        (root / "package-lock.json").write_text("{}", encoding="utf-8")
+        (root / "node_modules").mkdir()
+        (root / "ms.config.json").write_text(json.dumps({
+            "environmentId": self.ENVIRONMENT,
+            "connectionReferences": {"studio": {"id": "/apis/shared_microsoftcopilotstudio"}},
+        }), encoding="utf-8")
+        status = {"success": True, "signedIn": True, "activeAccount": {"homeAccountId": f"user.{TENANT}"}}
+        ctx, shell = self.agent_context(root, [(command("ms", "auth", "status"), deploy.Result(0, json.dumps(status)))])
+        ctx.state.section("app").update(installed=deploy.sha256_file(root / "package-lock.json"))
+        for _ in range(2):
+            message = deploy.phase_app(ctx)
+            self.assertIn(f"https://make.powerapps.com/environments/{self.ENVIRONMENT}/connections", message)
+            self.assertIn("each user", message)
+            self.assertIn("when prompted", message)
+            self.assertNotIn("app ready", message)
+        steps = " ".join(deploy.APP_NEXT)
+        self.assertLess(steps.index("Before playback"), steps.index("ms app dev"))
+        self.assertIn("Studio user-connections", steps)
+        self.assertIn("Fabric IQ and Foundry IQ", steps)
+        self.assertNotIn("ms app deploy", steps)
+        self.assertFalse(shell.matching(command("ms", "app", "init")))
+        self.assertFalse(shell.matching(command("ms", "app", "add", "data-source")))
+        self.assertIn("registered_at", ctx.state.section("app"))
+
 
 if __name__ == "__main__":
     unittest.main()

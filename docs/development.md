@@ -65,6 +65,8 @@ The app's React, TypeScript, Vite, `@microsoft/managed-apps` and `@microsoft/man
 
 From the repository root, `npm run lint`, `npm run build` and `npm test` check the app, and `ms app dev` starts the local development loop. The container forwards the default app/config ports **3000 and 8080**; keep Codespaces ports private. When the browser is on another machine, use private local port forwarding for these ports. For example, `gh codespace ports forward 3000:3000 8080:8080 --codespace "<name>"` runs on the browser's machine. Device-code sign-in avoids forwarding an authentication callback port.
 
+Before playback, authorize your app-facing **Microsoft Copilot Studio** connection in the selected environment's Power Apps **Connections** page. This is separate from the agent's Fabric IQ/Foundry IQ consent. The App Player's **Check connection** flow can redirect to a loopback OAuth port even in hosted previews; use the [per-user connection steps](runtime-integration.md#local-player-boundary), not public Codespaces ports.
+
 Review and push app commits before opening a hosted preview with `ms app play --mode preview`. Deployment is a separate, explicit action: use `/microsoft-managed-apps:deploy` or `ms app deploy` after approving the preview. The guided deployment registers the app and runs it locally; it does not share or deploy it. Binding the app to this GitHub repository requires an organization on GitHub Enterprise Cloud and the Microsoft Managed Apps GitHub App installed for that repository. A platform-managed or build-only repository is an explicit alternative, not an automatic fallback.
 
 ## Deploy deterministically
@@ -103,6 +105,8 @@ These choices are explicit flags, never automatic:
 - `--retry-failed`: after you inspected and fixed a failed or unconfirmed operation, continue from live state; without it the runner never resubmits an accepted request.
 
 The runner refuses the reusable template, a different Git target, conflicts, non-additive incoming changes, any commit other than your pushed `HEAD`, ambient Terraform overrides (`TF_CLI_ARGS*`, `TF_WORKSPACE`, extra `TF_VAR_*`) and a Dataverse URL that belongs to another environment. It never prints or stores tokens. It still needs people for consent, MFA sign-ins, connector OAuth and the App Player check, so it is not unattended CI: the bundled binder and IQ connections need a delegated user. It does not promote, deploy or share the app, or tear anything down.
+
+Choose an existing non-Default Power Platform environment with a GUID ID (`dotnet pac env list`) and its matching Org URL. The runner diagnoses Dataverse's `Default-<guid>` environment IDs explicitly rather than treating them as malformed GUIDs. If `ms app init` reports that the Microsoft GitHub App cannot access the bound repository, ask the repository/organization administrator to [install or configure Microsoft Managed Apps](https://github.com/marketplace/microsoft-managed-apps) for that repository. Inspect `ms app list` / `ms app info` before retrying; recover a partial registration instead of registering a duplicate.
 
 ## Deploy from one prompt
 

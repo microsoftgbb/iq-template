@@ -368,6 +368,29 @@ host. Do not disable TLS, browser security or publish private Codespaces ports.
 If local playback remains blocked, use an explicitly approved native hosted
 preview of the reviewed pushed commit, not an invented proxy or backend.
 
+With Managed Runtime CLI 0.27, the App Player's **Check connection** flow was
+observed redirecting to `http://127.0.0.1:<port>/...` when creating the
+app-facing `shared_microsoftcopilotstudio` connection, including in a hosted
+preview. Hosted playback is therefore not a guaranteed fix for this OAuth
+failure. Do not publish Codespaces ports or change this repository's Entra
+registration to work around the player's redirect.
+
+Before playback, each app user can authorize the connection through
+`https://make.powerapps.com/environments/<environment-id>/connections`:
+select **New connection** -> **Microsoft Copilot Studio**, then sign in.
+Use the same tenant, environment and user as the app; reuse an existing matching
+**Connected** connection instead of creating duplicates. Return to the App
+Player and select **Check connection** again. This avoided the loopback
+creation flow in the observed deployment; if the player still requests a
+connection or fails, report the native blocker rather than claiming readiness.
+
+That app-facing connection is separate from the agent's delegated Fabric IQ
+and Foundry IQ connections. Follow the Studio **user-connections** link surfaced
+by the app when the agent requests consent, authorize both sources as the
+calling user, then repeat the fresh-challenge check. Neither the maker's CLI
+sign-in nor another user's connection replaces these per-user authorizations;
+complete them again if authorization expires or is revoked.
+
 ## Routes to re-validate
 
 These routes were blocked or unproven in October 2026. Keep the
