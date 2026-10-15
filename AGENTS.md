@@ -1,6 +1,6 @@
 # Repository guidance
 
-This is a **clean-slate GitHub template**, not a deployed project. Derived repositories own their infrastructure, state, tests and CI/CD. Do not add compatibility code for older deployments.
+This repo is derived from a template located in https://github.com/microsoftgbb/iq-template. It owns its infrastructure, state, tests and CI/CD. Do not add compatibility code for older deployments.
 
 ## Start here
 
@@ -17,7 +17,7 @@ Load the matching repository skill before its workflow:
 | Task | Skill |
 | --- | --- |
 | "Deploy the platform" or resume complete DEV setup, agent and app | [deploy-platform](.github/skills/deploy-platform/SKILL.md) |
-| Configure a new repository from this template | [initialize-project](.github/skills/initialize-project/SKILL.md) |
+| If this agent is running directly on the template, recommend configuring a new repository from this template and do not proceed with infra deployment, unless the user is developing the template itself | [initialize-project](.github/skills/initialize-project/SKILL.md) |
 | Change or statically validate the template/toolchain | [template-maintenance](.github/skills/template-maintenance/SKILL.md) |
 | Edit Fabric items, inspect bindings, bootstrap or promote | [fabric-workspace](.github/skills/fabric-workspace/SKILL.md) |
 | Preflight the agent/app route, prove shell readiness or re-validate a blocked route | [runtime-integration](.github/skills/runtime-integration/SKILL.md) |
