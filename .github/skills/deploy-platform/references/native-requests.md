@@ -1,6 +1,6 @@
 # Native requests for guided DEV deployment
 
-Read this after choosing the derived repository, execution host and delegated user. This is a request reference, not an executable deployment wrapper. Keep Terraform as the infrastructure owner and use Fabric's native Git and notebook APIs.
+Read this after choosing the derived repository, execution host and delegated user. It is the request contract that the [deterministic runner](../scripts/deploy.py) implements: use it to review the runner's behavior and to diagnose a blocked run. Do not hand-submit mutating requests that a resumable run owns. Keep Terraform as the infrastructure owner and use Fabric's native Git and notebook APIs.
 
 ## Contents
 
@@ -8,6 +8,7 @@ Read this after choosing the derived repository, execution host and delegated us
 - [Git connection and synchronization](#git-connection-and-synchronization)
 - [Operation and notebook completion](#operation-and-notebook-completion)
 - [Resolve and verify target bindings](#resolve-and-verify-target-bindings)
+- [Serverless Search identity](#serverless-search-identity)
 - [Knowledge readiness and retrieval](#knowledge-readiness-and-retrieval)
 
 ## Authentication and response receipts
@@ -127,6 +128,14 @@ Enumerate `GET /v1/workspaces/{devWorkspaceId}/items`, following pagination. Use
 Read the lakehouse metadata and the new-experience ontology metadata/definition. Get Definition can itself be asynchronous. Check the current workspace, expected ontology logical ID/generation and source bindings against `docs/ontology-knowledge.md`. Decode definition parts locally; do not rewrite TMDL from this deployment skill.
 
 Require the successful binder's scoped SQL refresh and current-workspace lakehouse/SQL pins. Git-normalized zero GUIDs, logical IDs and placeholder workspace names are not runtime source IDs. Discover the physical lakehouse and ontology GUIDs only from this DEV target before calling `scripts/configure_knowledge.py`.
+
+## Serverless Search identity
+
+Preflight reads `POST https://management.azure.com/providers/Microsoft.Search/fetchOfferings?api-version=2026-09-01-preview` on every run and, when it is readable, requires the chosen `search_sku` in the Search region's `skus`; an unreadable response is reported as unverified. Serverless also needs `GET /subscriptions/{subscriptionId}/providers/Microsoft.Features/providers/Microsoft.Search/features/Serverless?api-version=2021-07-01` to report `Registered`.
+
+The serverless preview ends in `Failed` when a system- or user-assigned identity is requested at creation, so Terraform creates it without one. After the platform apply, and again before the knowledge plan, the runner reads the `search_management_url` output with an ARM token. It waits for `Succeeded`/`running`, refuses a `Failed` service even when it shows a principal, and sends `PATCH {"identity":{"type":"SystemAssigned"}}` once when there is no `identity.principalId`. The preview answers HTTP 500 while applying the identity, so the runner accepts only a later GET that shows the principal on a healthy service. Any other error, or no principal within its own three-minute window, blocks. Never recreate the service to clear this.
+
+A full knowledge plan that creates or replaces serverless Search is never applied as is: the new service would have no principal for its grants. The runner discards it, applies a fresh plan with `-var=search_identity_ready=false`, enables and verifies the identity, then applies a third, normal plan. Each saved plan keeps its own variables and approval.
 
 ## Knowledge readiness and retrieval
 

@@ -67,6 +67,43 @@ From the repository root, `npm run lint`, `npm run build` and `npm test` check t
 
 Review and push app commits before opening a hosted preview with `ms app play --mode preview`. Deployment is a separate, explicit action: use `/microsoft-managed-apps:deploy` or `ms app deploy` after approving the preview. The guided deployment registers the app and runs it locally; it does not share or deploy it. Binding the app to this GitHub repository requires an organization on GitHub Enterprise Cloud and the Microsoft Managed Apps GitHub App installed for that repository. A platform-managed or build-only repository is an explicit alternative, not an automatic fallback.
 
+## Deploy deterministically
+
+One command runs the complete DEV flow, agent and app without an AI agent. It is the same runner Copilot uses for "Deploy the platform", so both paths create the same resources and require the same evidence. Run it in the derived repository's Codespace or devcontainer:
+
+```sh
+python3 .github/skills/deploy-platform/scripts/deploy.py up \
+  --subscription "<subscription-id-or-name>" --local-state \
+  --environment-id "<power-platform-environment-id>" \
+  --environment-url "https://<org>.crm.dynamics.com"
+```
+
+Without `infra/terraform.tfvars`, also pass `--project-name`, `--location` and `--capacity-admin`; the runner calls the [initializer](#what-gets-templated). Use `--local-state` only for a single-user demo whose state you back up. For anything shared, declare a secured remote backend in `infra/` and pass `--backend-config <file>`. Target choices are remembered in ignored `.artifacts/deploy/state.json`, so later runs need only `up`; a different subscription, tenant or caller is refused.
+
+| Phase | What it does | Stops for |
+| --- | --- | --- |
+| `config`, `preflight` | Repository, branch and tfvars checks; Azure user and subscription; provider overrides; PAT read access; Fabric CU and model quota; Search tier offered in its region and, for serverless, the `Microsoft.Search/Serverless` feature | Missing inputs, sign-in, PAT, quota or feature |
+| `identity` | Saved plan targeted only at `module.fabric_user_auth`, then apply | Plan approval |
+| `consent` | Reads the tenant-wide grant, then checks the scoped sign-in and Fabric reads | Administrator consent; device-code sign-in |
+| `platform` | Saved untargeted plan, then apply; enables the serverless Search identity that Terraform cannot set and verifies it, because the preview answers HTTP 500 | Plan approval |
+| `bootstrap` | Git connect, credentials and initialize; syncs your pushed `HEAD` with the attached `Bootstrap` plan; verifies the target-local binding | Conflicts, non-additive changes, an unavailable plan attachment |
+| `knowledge` | Writes the discovered physical GUIDs with the knowledge helper; saved plan, then apply. A plan that creates or replaces serverless Search is applied as two plans: grants deferred, then granted after the identity exists | Plan approval |
+| `verify` | Waits for ingestion; proves live ontology and document retrieval with your own token | Running ingestion; missing evidence |
+| `agent` | Creates or clones, renders, pushes, connects, configures, publishes and checks the Studio agent | Creation, connection and publish approvals; your **Fix connection** |
+| `app` | Sets the agent schema, runs `npm ci`, `ms app init` and adds the Studio data source | Registration approval; `ms` sign-in |
+
+Every phase checks live state before acting, so rerunning `up` resumes. It observes an accepted Fabric operation or an active notebook run instead of submitting another, and creates a fresh plan after a failed apply. Exit code `3` means a person must act; the output names the exact link or command. Exit code `4` means approval is required. Approve interactively, or rerun with `--approve <phase>=<sha256-prefix>` for the exact saved plan it printed (`terraform -chdir=infra show <plan>` shows it), or with `--approve agent-create`, `agent-connections`, `agent-publish` or `app-register`. `--yes` approves everything in that run except deletions and replacements, which also need `--allow-replace`. `up --through <phase>` stops after a phase; every run re-verifies the earlier phases, so no gate can be skipped. `status` summarizes receipts without cloud calls, and `--json` prints a machine-readable report.
+
+These choices are explicit flags, never automatic:
+
+- `--grant-admin-consent`: you are a tenant administrator and grant consent yourself for exactly the declared delegated scopes. Otherwise the runner waits and prints the administrator's approval link.
+- `--consent-confirmed`: an administrator confirmed consent, but your sign-in cannot read the tenant's consent grants to verify it.
+- `--register-search-serverless`: register the subscription's auto-approved `Microsoft.Search/Serverless` preview feature that the default Search tier needs, then re-register `Microsoft.Search`. Otherwise the runner prints both commands and waits, or you set `search_sku = "basic"`.
+- `--bootstrap-fallback notebooks`: when the tenant rejects attaching a deployment plan to Git sync (`FeatureNotAvailable`), sync the same reviewed commit without it and run `SeedScenario`, then `BindScenario`, as you.
+- `--retry-failed`: after you inspected and fixed a failed or unconfirmed operation, continue from live state; without it the runner never resubmits an accepted request.
+
+The runner refuses the reusable template, a different Git target, conflicts, non-additive incoming changes, any commit other than your pushed `HEAD`, ambient Terraform overrides (`TF_CLI_ARGS*`, `TF_WORKSPACE`, extra `TF_VAR_*`) and a Dataverse URL that belongs to another environment. It never prints or stores tokens. It still needs people for consent, MFA sign-ins, connector OAuth and the App Player check, so it is not unattended CI: the bundled binder and IQ connections need a delegated user. It does not promote, deploy or share the app, or tear anything down.
+
 ## Deploy from one prompt
 
 After these changes are included in the template's published branch:
@@ -75,7 +112,7 @@ After these changes are included in the template's published branch:
 2. Complete the one-time prerequisites below. Start `copilot` in the Codespace terminal, or open the derived repository in Copilot App with GitHub CLI access to the Codespace.
 3. Say **"Deploy the platform"**. In App, include **"Use my Codespace `<name>`"**; otherwise Copilot asks which one. Interactive mode is useful for initial sign-in and approvals.
 
-Copilot loads [`deploy-platform`](../.github/skills/deploy-platform/SKILL.md) and coordinates:
+Copilot loads [`deploy-platform`](../.github/skills/deploy-platform/SKILL.md), runs the [deterministic runner](#deploy-deterministically) and relays its gates:
 
 ```text
 choose host/state + configure -> review/apply Entra-only bootstrap
@@ -89,7 +126,7 @@ choose host/state + configure -> review/apply Entra-only bootstrap
 This is **one guided request**, not a zero-input or guaranteed unattended deployment. You still need:
 
 - **Target and consent:** choose subscription/tenant, region, project name and capacity admin; approve the actual Terraform plans and reviewed Git content. Quota, preview availability and RBAC propagation can still block a run.
-- **Entra setup and approval:** the initial Terraform identity needs directory permissions to create/configure the app, service principal and authorized clients. Copilot can prepare them through the reviewed Entra-only plan and hand the administrator the generated approval link and scope manifest. An administrator grants consent separately; subscription Owner alone is not enough, and Terraform does not grant itself consent.
+- **Entra setup and approval:** the initial Terraform identity needs directory permissions to create/configure the app, service principal and authorized clients. Copilot can prepare them through the reviewed Entra-only plan and hand the administrator the generated approval link and scope manifest. An administrator grants consent separately, in the portal or by running the runner with `--grant-admin-consent`; subscription Owner alone is not enough, and Terraform does not grant itself consent.
 - **Azure/Fabric user sign-in:** after consent, use the generated tenant/scope outputs and the administrator-owned tenant prerequisites from [getting started](getting-started.md). Copilot can guide device login, but cannot perform your MFA or bypass policy. Plain `az login`, app creation or consent alone is not proof that Fabric write/execute scopes and workspace roles are available.
 - **A secure Fabric Git PAT:** add a [Codespaces secret](https://docs.github.com/en/codespaces/managing-your-codespaces/managing-your-account-specific-secrets-for-github-codespaces) named `FABRIC_GITHUB_TOKEN`, restricted to the derived repository, with Contents read/write. Restart an already-running Codespace after adding it. The skill maps it to Terraform's ephemeral `TF_VAR_github_token` inside each plan/apply shell; it never copies it into files or chat. An existing `TF_VAR_github_token` is also supported. Copilot's login and the default Codespaces `GITHUB_TOKEN` are not this PAT.
 - **Agent and app access:** a Power Platform environment where you can create agents and apps, a Copilot Studio license and Managed Runtime licensing. You sign in to `pac` and `ms` yourself, connect your own IQ connections and approve agent creation, configuration and app registration.
@@ -97,7 +134,7 @@ This is **one guided request**, not a zero-input or guaranteed unattended deploy
 
 The App route uses GitHub's [authenticated Codespaces SSH transport](https://docs.github.com/en/codespaces/developing-in-a-codespace/using-github-codespaces-with-github-cli#ssh-into-a-codespace), not a claimed native App-to-Codespaces attachment. Do not publish port 2222, configure an SSH password or disable host-key verification. If the App host cannot access Codespaces, use CLI in the Codespace rather than silently deploying from the laptop.
 
-On a failed/paused run, say **"Resume deployment in the same Codespace and backend."** Copilot checks existing state and operation receipts instead of resetting knowledge inputs or submitting duplicate jobs. It reports **DEV ready** only after both document and live ontology retrieval succeed, then continues with the agent and app; incomplete authentication or ingestion is reported as blocked/unverified. TEST stays empty and PROD, promotion, hosted deployment and sharing remain separate. Review generated DEV binding changes before committing them and before any later promotion.
+On a failed/paused run, say **"Resume deployment in the same Codespace and backend."** Copilot reruns the runner, which checks existing state and operation receipts instead of resetting knowledge inputs or submitting duplicate jobs. It reports **DEV ready** only after both document and live ontology retrieval succeed, then continues with the agent and app; incomplete authentication or ingestion is reported as blocked/unverified. TEST stays empty and PROD, promotion, hosted deployment and sharing remain separate. Review generated DEV binding changes before committing them and before any later promotion.
 
 ## Use the repository skills
 
@@ -105,7 +142,7 @@ Open the derived repository in Copilot App, or start `copilot` at its root. [`AG
 
 | Ask Copilot | What it does |
 | --- | --- |
-| "Deploy the platform." | Uses `deploy-platform` for the full guided DEV deployment, including bootstrap, knowledge wiring and readiness checks. |
+| "Deploy the platform." | Uses `deploy-platform` to run the deterministic runner for the full DEV deployment, agent and app, relaying its approvals and sign-ins. |
 | "Use /initialize-project to configure this new repository." | Confirms project/region/admin choices, resolves the intended repository and published branch, and creates one ignored local tfvars file. No deployment. |
 | "Use /template-maintenance to check my changes." | Runs scoped static checks without touching deployment state or executing cloud operations. |
 | "Use /fabric-workspace to review these bindings." | Checks logical identities, model references and target-local binding rules; live bootstrap/promotion remains an explicit operation. |
@@ -131,6 +168,6 @@ The shipped workspace has **no physical workspace/lakehouse/ontology IDs, SQL ho
 
 For a non-Copilot setup, run the [initializer](../.github/skills/initialize-project/scripts/initialize_project.py) directly with `--help`, or follow the manual configuration in [getting started](getting-started.md). The helper uses Python's standard library and Git, offers `--dry-run`, creates the local file with owner-only permissions, and refuses existing tfvars/state. It never rewrites workspace definitions or changes Git remotes.
 
-During guided deployment, the [knowledge configuration helper](../.github/skills/deploy-platform/scripts/configure_knowledge.py) fills the two knowledge-stage settings using verified physical DEV IDs. It preserves unrelated inputs and rejects conflicting/custom registrations rather than replacing them. Neither helper authenticates or deploys resources; the skill coordinates ordinary native commands with explicit approvals.
+During deployment, the [knowledge configuration helper](../.github/skills/deploy-platform/scripts/configure_knowledge.py) fills the two knowledge-stage settings using verified physical DEV IDs. It preserves unrelated inputs and rejects conflicting/custom registrations rather than replacing them. Neither helper authenticates or deploys resources; the [deterministic runner](#deploy-deterministically) sequences them with native commands and explicit approvals.
 
 Once a derived DEV workspace is bound, its reviewed Git export legitimately contains environment-specific source details. Keep those out of the pristine template, and rebind every promoted target; see [binding ownership and review](ontology-knowledge.md#review-the-generated-binding). Do not use blanket GUID replacement to reset a deployed repository.

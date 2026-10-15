@@ -181,14 +181,21 @@ variable "knowledge_ontologies" {
 }
 
 variable "search_sku" {
-  description = "AI Search tier; Basic or Standard is required for managed identities and semantic ranking."
+  description = "AI Search tier. serverless (preview, default) is ready in seconds but needs the subscription's Microsoft.Search/Serverless feature and a region that offers it; it has no SLA, no tier migration, and while its preview defect lasts any Search setting or tag change replaces the service. basic or standard tiers take about 20 minutes to provision."
   type        = string
-  default     = "basic"
+  default     = "serverless"
 
   validation {
-    condition     = contains(["basic", "standard", "standard2", "standard3"], var.search_sku)
-    error_message = "search_sku must be basic, standard, standard2 or standard3."
+    condition     = contains(["serverless", "basic", "standard", "standard2", "standard3"], var.search_sku)
+    error_message = "search_sku must be serverless, basic, standard, standard2 or standard3."
   }
+}
+
+variable "search_identity_ready" {
+  description = "Leave true. deploy.py plans with false only when a plan would create or replace a serverless Search service after knowledge setup: that service gets its identity after creation, so its role assignments wait for the next plan."
+  type        = bool
+  default     = true
+  nullable    = false
 }
 
 variable "chat_model" {

@@ -8,7 +8,7 @@ Entra bootstrap -> admin consent/user sign-in -> Terraform platform
                                       reviewed DEV -> TEST -> approved TEST -> PROD
 ```
 
-There is no fabric-cicd dependency, `fab deploy` configuration, or custom deployment wrapper. Start with [getting started](../docs/getting-started.md); infrastructure and the project-specific user-auth registration use plain Terraform, one state and one local tfvars file. The registration prepares delegated Git/item/pipeline scopes, not tenant consent or a runtime user token. Derived repositories own unattended automation, tests and approval gates.
+There is no fabric-cicd dependency or `fab deploy` configuration. The [deterministic runner](../docs/development.md#deploy-deterministically) performs the initial DEV bootstrap below with exactly these native APIs. Start with [getting started](../docs/getting-started.md); infrastructure and the project-specific user-auth registration use plain Terraform, one state and one local tfvars file. The registration prepares delegated Git/item/pipeline scopes, not tenant consent or a runtime user token. Derived repositories own promotion automation, unattended CI, tests and approval gates.
 
 ## Ownership and included items
 
@@ -40,7 +40,7 @@ Git connection initialization is intentionally outside Terraform: the pinned Fab
 
 ### Automating the same operation
 
-Use the documented [Git automation APIs](https://learn.microsoft.com/fabric/cicd/git-integration/git-automation) and [deployment-plan API extension](https://learn.microsoft.com/fabric/cicd/deployment-plan/deployment-plan-automation), not another Terraform provisioner:
+Use the documented [Git automation APIs](https://learn.microsoft.com/fabric/cicd/git-integration/git-automation) and [deployment-plan API extension](https://learn.microsoft.com/fabric/cicd/deployment-plan/deployment-plan-automation), not another Terraform provisioner. The runner's `bootstrap` phase implements these steps for DEV, including the explicit `--bootstrap-fallback notebooks` path when a tenant rejects plan attachment:
 
 1. Authenticate to Fabric with Entra. The caller needs workspace permissions, the original API scopes, and `Item.Execute.All` when attaching a plan. The bundled binder uses a user-context NotebookUtils token; service-principal automation needs an explicitly configured authentication flow in the derived project, in addition to tenant/item support. See [binding authentication](../docs/ontology-knowledge.md#included-scenario).
 2. Read `terraform -chdir=infra output -json github_connect_request` and submit that body to `POST /v1/workspaces/{devWorkspaceId}/git/connect`. It contains the repository, branch, directory and credentials connection ID, not the PAT.

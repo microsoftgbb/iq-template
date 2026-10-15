@@ -7,7 +7,7 @@ description: Configure a new repository created from the Fabric and Foundry temp
 
 Read `AGENTS.md`, `docs/getting-started.md` and `infra/terraform.tfvars.example` from the repository root. Use the installed toolchain described in `docs/development.md`.
 
-If the user requested deployment rather than configuration only, let `deploy-platform` coordinate the full flow. Run this helper on its chosen execution host, then return to that workflow; do not treat generating tfvars as completing deployment. Reuse confirmed inputs instead of asking again.
+If the user requested deployment rather than configuration only, let `deploy-platform` coordinate the full flow. Its runner calls this helper on the chosen execution host when given `--project-name`, `--location` and `--capacity-admin`; do not treat generating tfvars as completing deployment. Reuse confirmed inputs instead of asking again.
 
 ## Resolve the inputs
 

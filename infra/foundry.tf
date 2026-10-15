@@ -97,11 +97,11 @@ resource "azapi_resource" "search_connection" {
     properties = {
       category      = "CognitiveSearch"
       authType      = "AAD"
-      target        = azurerm_search_service.knowledge.endpoint
+      target        = local.search_endpoint
       isSharedToAll = false
       metadata = {
         ApiType    = "Azure"
-        ResourceId = azurerm_search_service.knowledge.id
+        ResourceId = azapi_resource.search.id
       }
     }
   }

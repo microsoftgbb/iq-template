@@ -17,7 +17,7 @@ Read `AGENTS.md` and inspect the current diff before editing. Preserve unrelated
 | Foundry or knowledge retrieval | `infra/foundry.tf`, `infra/knowledge.tf`, `infra/outputs.tf`, `docs/ontology-knowledge.md` |
 | Workspace definitions or notebooks | The `fabric-workspace` skill and its linked guides |
 | Developer tools or initialization | `.devcontainer/`, the `initialize-project` skill and `docs/development.md` |
-| Guided deployment | The `deploy-platform` skill, its native-request reference and `cicd/README.md` |
+| Guided deployment | The `deploy-platform` skill, its runner (`scripts/deploy.py`), its native-request reference and `cicd/README.md` |
 | Studio agent or its helper | `agents/scenario-assistant/`, `.github/skills/deploy-platform/scripts/studio_agent.py`, `docs/runtime-integration.md` |
 | App shell | `app/`, root `package.json`/`index.html`, `generated/`, `docs/runtime-integration.md` |
 
@@ -28,6 +28,7 @@ Preserve the non-obvious infrastructure constraints:
 - Keep Git connection/initialization/sync outside Terraform: the pinned provider cannot attach a deployment plan. Keep GitHub integration, empty TEST, and administrator-owned tenant settings.
 - Use `Microsoft.CognitiveServices/accounts` projects, not ML hubs. Keep model versions/SKUs/quota configurable.
 - Manage Search sources/bases through data-plane `restful_resource`, not unsupported ARM types. Retain CRUD and drift detection, source rebuild triggers, and knowledge-base-before-source deletion ordering. The OneLake source owns its generated search assets.
+- Create a serverless Search service without a managed identity: its preview ends in `Failed` when one is requested and answers HTTP 500 to identity writes and to any change once an identity exists. Keep the runner's verified identity step, `ignore_changes = [identity]`, the identity grants gated until it exists (including `search_identity_ready` for the staged replacement plan), and replacement rather than update for serverless setting or tag changes. Read the admin key through the ephemeral action, never into state.
 - Look up Git-owned items rather than creating duplicate lakehouses/notebooks in Terraform. Keep DEV-only Search permissions and conditional knowledge resources when the lakehouse ID is null.
 - Keep deployment-pipeline replacement semantics visible when changing stages. Do not hide drift or paper over unsupported provider behavior.
 
@@ -56,11 +57,17 @@ mismatches, template refusal, CLI pins and credential-output redaction. Do not r
 the helper's live probes as a template-maintenance check; those require a chosen
 derived checkout and explicit permission.
 
-For the Studio agent helper, run its standard-library tests:
+For the deployment runner and Studio agent helper, run their standard-library tests:
 `python3 -B -m unittest discover -s .github/skills/deploy-platform/tests`.
-They render the shipped agent into a temporary workspace and check configuration,
-connection planning and readiness rules without cloud calls. Do not run its
-`connections`, `configure` or `check` subcommands as a template check.
+They use mocked native commands and HTTP. They cover saved-plan approval by hash,
+identity-target and destructive-change guards, Git sync refusals, the explicit
+plan-attachment fallback, notebook resume without duplicates, binding and
+retrieval evidence, consent and the agent/app gates, and render the shipped agent
+into a temporary workspace. Do not run the runner's `up` command or the helper's
+`connections`, `configure`, `check` or `find` subcommands as a template check;
+the runner refuses the template anyway. When changing a phase, keep it
+check-then-act, resumable and gated: persist a receipt before polling any
+accepted mutation, and update `docs/development.md`.
 
 For the app, run `npm ci`, `npm run lint`, `npm run build` and `npm test` from the
 repository root. Do not regenerate `generated/` or run `ms app init`/`dev` as a
