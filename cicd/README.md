@@ -2,11 +2,9 @@
 
 Use [Git integration](https://learn.microsoft.com/fabric/cicd/git-integration/intro-to-git-integration) for DEV and [native deployment pipelines](https://learn.microsoft.com/fabric/cicd/deployment-pipelines/intro-to-deployment-pipelines) for promotion. Attach a [deployment plan (preview)](https://learn.microsoft.com/fabric/cicd/deployment-plan/deployment-plan-overview) when item deployment must run seed notebooks or follow an explicit order.
 
-```text
-Entra bootstrap -> admin consent/user sign-in -> Terraform platform
-                   -> Git /workspace + Bootstrap -> seeded DEV -> Terraform knowledge
-                                      reviewed DEV -> TEST -> approved TEST -> PROD
-```
+[![Fabric lifecycle: explicitly attach Bootstrap to native Git sync into DEV, review and commit the target binding, then promote reviewed live definitions to TEST. PROD is separately provisioned and approved. Within DEV/TEST, Bootstrap orders lakehouse, seed, ontology and bind; definitions travel, but OneLake data does not.](../docs/diagrams/fabric-lifecycle.svg)](../docs/diagrams/fabric-lifecycle.svg)
+
+[Editable Excalidraw source](../docs/diagrams/fabric-lifecycle.excalidraw) | [Complete DEV deployment flow](../docs/deployment-flow.md) | [Icon sources](../docs/diagram-authoring.md#official-icon-sources)
 
 There is no fabric-cicd dependency or `fab deploy` configuration. The [deterministic runner](../docs/development.md#deploy-deterministically) performs the initial DEV bootstrap below with exactly these native APIs. Start with [getting started](../docs/getting-started.md); infrastructure and the project-specific user-auth registration use plain Terraform, one state and one local tfvars file. The registration prepares delegated Git/item/pipeline scopes, not tenant consent or a runtime user token. Derived repositories own promotion automation, unattended CI, tests and approval gates.
 

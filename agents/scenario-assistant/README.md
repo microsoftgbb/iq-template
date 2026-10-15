@@ -3,6 +3,8 @@
 The app-facing agent: a **standard-harness** Copilot Studio agent with two native
 MCP tools that run with each user's own credentials (`mode: Invoker`):
 
+[![Managed Runtime invokes the published Copilot Studio scenario assistant through its generated connector. The agent's Invoker-mode Fabric IQ and Foundry IQ tools use the signed-in user's connections for live ontology facts and document evidence.](../../docs/diagrams/agent-runtime.svg)](../../docs/runtime-integration.md#runtime-at-a-glance)
+
 | File | Purpose |
 | --- | --- |
 | `agent.mcs.yml` | Instructions: source routing, inline source names, unavailable-source behavior. |
