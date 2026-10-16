@@ -135,6 +135,43 @@ class StudioAgentTests(unittest.TestCase):
         self.assertIsNone(studio.NoRedirect().redirect_request(None, None, 302, "Found", {}, "https://elsewhere.example"))
         self.assertTrue(any(isinstance(handler, studio.NoRedirect) for handler in studio.OPENER.handlers))
 
+    def test_find_diagnoses_default_environments_before_looking_up_agents(self):
+        for prefix in ("Default-", "default-"):
+            with self.subTest(prefix=prefix):
+                organization = {"Detail": {"EnvironmentId": prefix + WORKSPACE, "TenantId": WORKSPACE}}
+                stderr = io.StringIO()
+                with mock.patch.object(studio, "token", return_value="token"), \
+                        mock.patch.object(studio, "call", return_value=organization), \
+                        mock.patch.object(studio, "dataverse") as dataverse, contextlib.redirect_stderr(stderr):
+                    code = studio.main(["find", "--tenant-id", WORKSPACE,
+                                        "--dataverse-url", "https://org.crm.dynamics.com",
+                                        "--agent-schema", SCHEMA, "--environment-id", WORKSPACE])
+                self.assertEqual(code, 2)
+                self.assertIn("non-Default environment", stderr.getvalue())
+                self.assertIn("dotnet pac env list", stderr.getvalue())
+                self.assertNotIn("EnvironmentId must be a GUID", stderr.getvalue())
+                dataverse.assert_not_called()
+
+    def test_find_still_checks_tenant_and_accepts_the_matching_environment(self):
+        for tenant, expected_code in ((WORKSPACE, 0), (ONTOLOGY, 2)):
+            with self.subTest(tenant=tenant):
+                organization = {"Detail": {"EnvironmentId": WORKSPACE, "TenantId": tenant}}
+                stderr, stdout = io.StringIO(), io.StringIO()
+                with mock.patch.object(studio, "token", return_value="token"), \
+                        mock.patch.object(studio, "call", return_value=organization), \
+                        mock.patch.object(studio, "dataverse", return_value=(mock.Mock(return_value=[]), None)) as dataverse, \
+                        contextlib.redirect_stderr(stderr), contextlib.redirect_stdout(stdout):
+                    code = studio.main(["find", "--tenant-id", WORKSPACE,
+                                        "--dataverse-url", "https://org.crm.dynamics.com",
+                                        "--agent-schema", SCHEMA, "--environment-id", WORKSPACE])
+                self.assertEqual(code, expected_code)
+                if expected_code:
+                    self.assertIn("another tenant", stderr.getvalue())
+                    dataverse.assert_not_called()
+                else:
+                    self.assertEqual(json.loads(stdout.getvalue()), {"status": "missing", "bot_id": None})
+                    dataverse.assert_called_once()
+
     def test_cloud_commands_validate_inputs_before_any_sign_in(self):
         stderr = io.StringIO()
         with contextlib.redirect_stderr(stderr):

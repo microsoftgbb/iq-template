@@ -98,8 +98,12 @@ PAT_STEPS = (
     "Never paste the PAT into chat, files or command arguments.",
 )
 APP_NEXT = (
+    "Before playback, open Power Apps Connections in the app's environment, select New connection -> "
+    "Microsoft Copilot Studio, and sign in as the app user (or verify that user's existing connection is Connected).",
     "Run `ms app dev` and open the App Player URL it prints.",
-    "Select Check connection, complete the consent link, then check again for the fresh challenge.",
+    "Select Check connection. Separately, follow the agent's Studio user-connections link to authorize "
+    "your own Fabric IQ and Foundry IQ connections when prompted, then check again for the fresh challenge. "
+    "Each user must authorize their own connections; registration is not app readiness.",
     'Ask "Which assets are in Maintenance and at which site?" and expect Pump B at North Works.',
     "Review and commit app/src/config.ts and ms.config.json, and review/commit the generated DEV "
     "ontology binding through Fabric source control before any promotion.",
@@ -2025,8 +2029,23 @@ def phase_app(ctx):
                                      "bound to this GitHub repository")
         receipts["init_started_at"] = utc_now()
         ctx.state.save()
-        checked(ctx, ["ms", "app", "init", "--display-name", name, "--environment-id", environment,
-                      "--build-path", "app/dist", "--build-command", "npm ci && npm run build"], "ms app init", **native)
+        try:
+            checked(ctx, ["ms", "app", "init", "--display-name", name, "--environment-id", environment,
+                          "--build-path", "app/dist", "--build-command", "npm ci && npm run build"], "ms app init", **native)
+        except Blocked as error:
+            message = error.message.lower()
+            repository_access = "github app" in message and "can't access the bound repository" in message
+            # Interactive CLI output goes directly to the terminal, not the captured error.
+            uncaptured = ctx.interactive and re.fullmatch(r"ms app init failed \(exit \d+\)\.", message)
+            if not repository_access and not uncaptured:
+                raise
+            prefix = "Ask" if repository_access else "If the terminal reported a GitHub App repository-access failure, ask"
+            raise Blocked(
+                error.message, *error.next_steps,
+                f"{prefix} the repository/organization administrator to install or configure the Microsoft Managed Apps "
+                "GitHub App for this repository: https://github.com/marketplace/microsoft-managed-apps . "
+                "Keep the existing registration receipt. Inspect `ms app list` / `ms app info` and recover any "
+                "existing registration; rerun with --retry-failed only after confirming no app was registered.") from None
         if not config.exists():
             raise Blocked("ms app init finished without creating ms.config.json; inspect it with `ms app info`.")
     if not studio_reference(config, environment):
@@ -2043,7 +2062,9 @@ def phase_app(ctx):
                           "Inspect ms.config.json; rerun with --retry-failed after review.")
     receipts.setdefault("registered_at", utc_now())
     ctx.state.save()
-    return "app registered with the Copilot Studio data source; verify it in the App Player (next steps)"
+    return ("app registered with the Copilot Studio data source; each user must authorize their own "
+            f"Microsoft Copilot Studio connection at https://make.powerapps.com/environments/{environment}/connections "
+            "before playback, then the agent's IQ connections when prompted. Verify it in the App Player (next steps).")
 
 
 def studio_reference(config, environment):

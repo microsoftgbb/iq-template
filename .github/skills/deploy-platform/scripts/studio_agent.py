@@ -328,8 +328,15 @@ def command_find(args):
         detail = call("GET", f"{base}/api/data/v9.2/RetrieveCurrentOrganization(AccessType=@p1)"
                              "?@p1=Microsoft.Dynamics.CRM.EndpointAccessType'Default'",
                       token(base, args.tenant_id)).get("Detail") or {}
-        if not detail.get("EnvironmentId") or guid(detail["EnvironmentId"], "EnvironmentId") != expected:
-            raise StudioError(f"{base} belongs to environment {detail.get('EnvironmentId')}, not {expected}.")
+        reported = detail.get("EnvironmentId") or ""
+        if isinstance(reported, str) and reported.lower().startswith("default-"):
+            raise StudioError(
+                f"{base} is the tenant's Default environment (EnvironmentId '{reported}'). "
+                "This deployment workflow requires a non-Default environment with a GUID ID. "
+                "Use `dotnet pac env list` to choose an existing environment, then pass its "
+                "ID and Org URL as --environment-id and --environment-url to deploy.py.")
+        if not reported or guid(reported, "EnvironmentId") != expected:
+            raise StudioError(f"{base} belongs to environment {reported}, not {expected}.")
         if detail.get("TenantId") and guid(detail["TenantId"], "TenantId") != guid(args.tenant_id, "tenant-id"):
             raise StudioError(f"{base} belongs to another tenant.")
     query, _ = dataverse(args)
