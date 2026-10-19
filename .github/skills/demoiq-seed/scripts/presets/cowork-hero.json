@@ -1,0 +1,36 @@
+{
+  "_preset": "Cowork Hero Demo - Agents Immersion VBD",
+  "_notes": "Project Phoenix cross-workload agents immersion. Use it with scripts/draft_config.ps1 -Preset cowork-hero, which adds the administrator, the five demo users and this deployment's DemoIQ app and Speech resource; demo-user passwords are typed in the Config Builder. Synthetic demo data only; non-production tenants only.",
+  "demoLanguage": "English (US)",
+  "industry": "Manufacturing & Automotive",
+  "scenarioIndex": null,
+  "customScenarioText": "Title: Project Phoenix - Cross-Workload Agents Immersion\nDescription: Contoso Manufacturing is driving Project Phoenix, its flagship transformation program, alongside a parallel Q2 Cloud Migration initiative, while defending against competitor Fabrikam. Across Outlook, Teams channels, meetings, and files, Copilot and agents reason over the full thread of work - surfacing risks, drafting executive updates, reconciling the project and migration plans, and preparing a competitive response - so leaders can immerse in how Cowork connects email, chat, documents, meetings, and calendar into one coherent narrative.\nExcel: Project_Phoenix_Program_Tracker.xlsx\nWord: Project_Phoenix_Executive_Brief.docx\nPowerPoint: Project_Phoenix_Agents_Immersion_VBD.pptx",
+  "contentTypes": [
+    "emails",
+    "channel",
+    "meetings",
+    "word",
+    "ppt",
+    "excel",
+    "aop"
+  ],
+  "aopSurfaces": [
+    "outlook",
+    "teams",
+    "excel",
+    "ppt",
+    "word",
+    "agents",
+    "copilotapp"
+  ],
+  "aopAgents": [
+    "wxp",
+    "facilitator",
+    "cowork",
+    "researcher"
+  ],
+  "options": {
+    "meetingCount": 4
+  },
+  "speechSpeedRate": 1.2
+}

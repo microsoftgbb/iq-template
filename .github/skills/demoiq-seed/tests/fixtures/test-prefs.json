@@ -1,0 +1,19 @@
+{
+  "adminUpn": "admin@fixturetest.onmicrosoft.com",
+  "adminPwd": "Fixture-Fake-Pw-1!",
+  "existingAppId": "00000000-0000-0000-0000-000000000001",
+  "existingCertThumbprint": "0123456789ABCDEF0123456789ABCDEF01234567",
+  "speechResourceId": "",
+  "demoLanguage": "English (US)",
+  "industry": "Technology & Software",
+  "scenarioIndex": 1,
+  "contentTypes": ["emails", "word", "ppt", "excel"],
+  "users": [
+    { "upn": "AdilE@fixturetest.onmicrosoft.com", "pwd": "Fixture-Fake-Pw-2!", "persona": "" },
+    { "upn": "BillieV@fixturetest.onmicrosoft.com", "pwd": "Fixture-Fake-Pw-2!", "persona": "" },
+    { "upn": "CoraT@fixturetest.onmicrosoft.com", "pwd": "Fixture-Fake-Pw-2!", "persona": "" },
+    { "upn": "CoreyG@fixturetest.onmicrosoft.com", "pwd": "Fixture-Fake-Pw-2!", "persona": "" },
+    { "upn": "DaichiM@fixturetest.onmicrosoft.com", "pwd": "Fixture-Fake-Pw-2!", "persona": "" }
+  ],
+  "options": { "wordDocs": 2, "pptDecks": 2, "excelWorkbooks": 2, "excelTables": 2 }
+}

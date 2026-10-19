@@ -1,0 +1,14 @@
+{
+  "_preset": "Template sample - asset operations (North Works / South Works)",
+  "_notes": "The template's own fictional sample story (workspace/SeedScenario.Notebook): North Works (North region) with Pump A (Operational) and Pump B (Maintenance); South Works (South region) with Conveyor A (Operational). scripts/draft_config.ps1 merges it with the administrator, the demo-user UPNs and this deployment's DemoIQ app and Speech resource from the receipts; demo-user passwords are typed in the Config Builder. Synthetic demo data for non-production tenants only. One-way: the seeded mail, chats, meetings and files are never fed into Foundry IQ knowledge.",
+  "demoLanguage": "English (US)",
+  "industry": "Manufacturing & Automotive",
+  "companyName": "",
+  "scenarioIndex": null,
+  "customScenarioText": "Title: Pump B Maintenance at North Works\nDescription: The operations team runs two fictional plants. North Works, in the North region, has Pump A, which is Operational, and Pump B, which is in Maintenance. South Works, in the South region, runs Conveyor A, which is Operational. Across email, a Teams channel, chats and a weekly operations sync, the team coordinates Pump B's maintenance window: confirming parts and contractor availability, assessing the throughput impact at North Works while Pump B is down, checking whether South Works can absorb volume, agreeing a return-to-service plan and preparing a status update for leadership. Every site, asset and status in this story is fictional.\nExcel: North_Works_Asset_Status.xlsx\nWord: Pump_B_Maintenance_Plan.docx\nPowerPoint: Asset_Operations_Weekly_Review.pptx",
+  "contentTypes": ["emails", "chats", "channel", "meetings", "word", "ppt", "excel", "aop"],
+  "aopSurfaces": ["outlook", "teams", "excel", "ppt", "word", "copilotapp"],
+  "aopAgents": ["researcher", "analyst"],
+  "options": { "meetingCount": 2 },
+  "speechSpeedRate": 1.2
+}

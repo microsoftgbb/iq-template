@@ -1,0 +1,64 @@
+{
+  "adminUpn": "admin@contoso.onmicrosoft.com",
+  "existingAppId": "00000000-0000-0000-0000-000000000000",
+  "speechResourceId": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-example/providers/Microsoft.CognitiveServices/accounts/ai-example",
+  "demoLanguage": "English (US)",
+  "industry": "Municipalities",
+  "scenarioIndex": 1,
+  "customScenarioText": "",
+  "contentTypes": [
+    "emails",
+    "chats",
+    "channel",
+    "meetings",
+    "word",
+    "ppt",
+    "excel",
+    "aop"
+  ],
+  "aopSurfaces": [
+    "outlook",
+    "teams",
+    "excel",
+    "ppt",
+    "word",
+    "agents"
+  ],
+  "aopAgents": [
+    "cowork",
+    "researcher"
+  ],
+  "users": [
+    {
+      "upn": "DakotaS@contoso.onmicrosoft.com",
+      "pwd": "",
+      "persona": ""
+    },
+    {
+      "upn": "EkaS@contoso.onmicrosoft.com",
+      "pwd": "",
+      "persona": ""
+    },
+    {
+      "upn": "HadarC@contoso.onmicrosoft.com",
+      "pwd": "",
+      "persona": ""
+    },
+    {
+      "upn": "KaiC@contoso.onmicrosoft.com",
+      "pwd": "",
+      "persona": ""
+    },
+    {
+      "upn": "MarioR@contoso.onmicrosoft.com",
+      "pwd": "",
+      "persona": ""
+    }
+  ],
+  "options": {
+    "emailThreads": 1,
+    "emailReplies": 5,
+    "meetingCount": 4
+  },
+  "speechSpeedRate": 1.2
+}
