@@ -70,7 +70,11 @@ plugin or copy a personal MCP config into the repository.
   Installing the plugin does not enable Work IQ in the app or grant access to
   Microsoft 365. Keep it opt-in; never query mail, meetings or documents during
   toolchain checks. Writes, sends and permission changes require explicit user
-  approval.
+  approval. To give Work IQ something to find in a demo, the optional
+  [`demoiq-seed`](../.github/skills/demoiq-seed/SKILL.md) skill (powered by
+  [DemoIQ](https://aka.ms/demoiq)) seeds fictional content into a non-production
+  demo tenant. It is separate from the Work IQ plugin and needs its own explicit
+  request and confirmations.
 - Fabric MCP access is not evidence that an ontology is bound, a graph is
   materialized or a semantic model is refreshed. Preserve the native
   `workspace/` ownership and target-local binding/readiness gates. Do not install

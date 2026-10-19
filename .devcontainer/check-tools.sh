@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-for tool in az azmcp terraform copilot ms dotnet git git-credential-manager gh node npm python3 jq rg curl ssh sshd make g++ pkg-config xdg-open; do
+for tool in az azmcp terraform copilot ms dotnet pwsh git git-credential-manager gh node npm python3 jq rg curl ssh sshd make g++ pkg-config xdg-open; do
     if ! command -v "$tool" >/dev/null 2>&1; then
         printf 'Required tool is missing: %s\n' "$tool" >&2
         exit 1
@@ -30,6 +30,11 @@ if (major < 24 || (major === 24 && minor < 11)) {
 npm --version
 ms --version
 dotnet --version
+# PowerShell runs the optional DemoIQ skill (.github/skills/demoiq-seed).
+pwsh -NoProfile -NoLogo -Command '
+if ($PSVersionTable.PSVersion -lt [version]"7.4") { [Console]::Error.WriteLine("DemoIQ requires PowerShell >= 7.4."); exit 1 }
+"PowerShell $($PSVersionTable.PSVersion)"
+'
 # The repository's tool manifest pins the Power Platform CLI used for Copilot Studio agents.
 dotnet pac help | sed -n '2p'
 python3 --version

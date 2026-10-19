@@ -22,6 +22,7 @@ Load the matching repository skill before its workflow:
 | Edit Fabric items, inspect bindings, bootstrap or promote | [fabric-workspace](.github/skills/fabric-workspace/SKILL.md) |
 | Preflight the agent/app route, prove shell readiness or re-validate a blocked route | [runtime-integration](.github/skills/runtime-integration/SKILL.md) |
 | Add a domain workflow, ontology/seed work package or explicit IQ opt-in | [scenario-authoring](.github/skills/scenario-authoring/SKILL.md) |
+| Optionally seed fictional Microsoft 365 demo content (DemoIQ) for Work IQ demos in the deploying user's tenant | [demoiq-seed](.github/skills/demoiq-seed/SKILL.md) |
 
 ## Always-on guardrails
 
@@ -39,6 +40,7 @@ Load the matching repository skill before its workflow:
 - Surface failures and documented preview/cost/public-networking limitations. A successful seed, deployment or registration is not proof of indexing, binding, graph or query readiness.
 - The app calls only the published standard-harness Studio agent through the generated Copilot Studio service. Keep its IQ tools in `Invoker` mode with **Agent readers** access and grounding off; never use `Maker` mode or widen access to pass a check. Never edit `generated/` or commit rendered PAC workspaces or `.mcs/`.
 - Prove consuming apps through native generated connector services with end-user authorization and isolation. A reviewed transport-only adapter may use their generated metadata through the public SDK; it must preserve connections, operations and governance, never mutate generated files or expose credentials. Allowed catalogs, cached sign-in and the current Fabric/knowledge DEV-ready report are not application-shell readiness. Never silently add a backend, change tenant policy, publish private Codespaces ports or recreate a partially registered app to bypass a blocked integration. For App Player loopback OAuth failures, use the per-user connection guidance in [runtime integration](docs/runtime-integration.md#local-player-boundary).
+- DemoIQ (`demoiq-seed`) is optional Microsoft 365 demo seeding. Its only cloud setup is the runner's opt-in `demoiq` phase (`--with-demoiq`): a Terraform-declared, delegated-only app with no application permissions or credentials, whose scopes include Conditional Access and per-user MFA administration. That is the one sanctioned exception to "no directory-management permissions": keep it delegated-only and credential-free, and leave its consent to an administrator (`--grant-demoiq-consent`, never `--grant-admin-consent`). Seed or clean up only on an explicit, attended request, in the deploying user's tenant after that user confirms it is a non-production demo tenant, because a run temporarily relaxes MFA/Conditional Access for demo users. Never run it in CI, deployment or maintenance checks, and never write its configs or outputs into the repository. Run its tenant cleanup before destroying the platform, because teardown deletes the app.
 
 ## Conventions and learning
 

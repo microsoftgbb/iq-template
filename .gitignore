@@ -44,6 +44,16 @@ __pycache__/
 # Disposable verification checkouts and generated runtime artifacts.
 .artifacts/
 
+# DemoIQ keeps its configs (with demo-user passwords), runs and seeded content in
+# ~/.copilot/DemoIQ-Output-Scout; never commit stray copies of them, or of files an upstream
+# DemoIQ-Scout install may leave in the skill folder.
+DemoIQ_config*.json
+!.github/skills/demoiq-seed/scripts/presets/DemoIQ_config.template.json
+DemoIQ-Output/
+DemoIQ-Deliverables/
+.github/skills/demoiq-seed/**/app_registration.json
+.github/skills/demoiq-seed/**/speech_resource.json
+
 # App dependencies, builds and the Managed Runtime CLI's local cache.
 node_modules/
 dist/

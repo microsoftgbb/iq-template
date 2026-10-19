@@ -20,6 +20,7 @@ Read `AGENTS.md` and inspect the current diff before editing. Preserve unrelated
 | Guided deployment | The `deploy-platform` skill, its runner (`scripts/deploy.py`), its native-request reference and `cicd/README.md` |
 | Studio agent or its helper | `agents/scenario-assistant/`, `.github/skills/deploy-platform/scripts/studio_agent.py`, `docs/runtime-integration.md` |
 | App shell | `app/`, root `package.json`/`index.html`, `generated/`, `docs/runtime-integration.md` |
+| Optional DemoIQ seeding skill | `.github/skills/demoiq-seed/` (`SKILL.md`, `NOTICE.md`, `references/`, `scripts/`, `tests/`); its cloud setup is `infra/demoiq.tf` (delegated-only app, opt-in `demoiq_enabled`) and the runner's `demoiq` phase with `scripts/configure_demoiq.py` |
 
 Preserve the non-obvious infrastructure constraints:
 
@@ -62,7 +63,8 @@ For the deployment runner and Studio agent helper, run their standard-library te
 They use mocked native commands and HTTP. They cover saved-plan approval by hash,
 identity-target and destructive-change guards, Git sync refusals, the explicit
 plan-attachment fallback, notebook resume without duplicates, binding and
-retrieval evidence, consent and the agent/app gates, and render the shipped agent
+retrieval evidence, consent and the agent/app gates, the optional DemoIQ phase
+(plan scope, separate consent flag, audio check) and render the shipped agent
 into a temporary workspace. Do not run the runner's `up` command or the helper's
 `connections`, `configure`, `check` or `find` subcommands as a template check;
 the runner refuses the template anyway. When changing a phase, keep it
@@ -72,6 +74,16 @@ accepted mutation, and update `docs/development.md`.
 For the app, run `npm ci`, `npm run lint`, `npm run build` and `npm test` from the
 repository root. Do not regenerate `generated/` or run `ms app init`/`dev` as a
 template check; they need a chosen environment.
+
+For the optional DemoIQ skill, run its offline suite with PowerShell 7.4+ and Node 18+:
+`pwsh -NoProfile -File .github/skills/demoiq-seed/tests/run_tests.ps1`.
+It stubs Microsoft Graph, isolates `HOME`, `TMPDIR` and its session folder on macOS/Linux
+and never signs in. Keep
+`engine/DemoIQ.html` byte-identical and both HTML pages CRLF (the skill's
+`.gitattributes` marks them `-text`); a drifted seeder-patch anchor or a reintroduced
+credential construct must fail the suite (exit 10), not be loosened. Never run its
+sign-in, seeding, cleanup or Work IQ steps as a template check. Follow its `NOTICE.md` to
+take a new DemoIQ release.
 
 For devcontainer changes, validate the configuration against the Dev Container schema and inspect feature options against their published definitions. If Docker is available, build/start an isolated checkout without local credentials/state, run `.devcontainer/check-tools.sh`, then stop/remove only that test container. A container check must not sign in, initialize Terraform, seed or deploy.
 

@@ -167,7 +167,7 @@ deployment and sharing are separate approval gates.
 
 | Capability | Required addition and exit evidence |
 | --- | --- |
-| Work IQ | A native approved user-delegated connection/tool, scoped read-only first, tenant consent/licensing and cited accessible work context. No mailbox clone or fixture masquerading as real work data. |
+| Work IQ | A native approved user-delegated connection/tool, scoped read-only first, tenant consent/licensing and cited accessible work context. No mailbox clone or fixture masquerading as real work data. Content seeded into a non-production demo tenant by the optional [`demoiq-seed`](../.github/skills/demoiq-seed/SKILL.md) skill is tenant data that Work IQ reads natively; seeding it is not a runtime integration and does not satisfy this opt-in. |
 | Web IQ | Approved service availability/terms, public-only query fields, citations and freshness/conflict checks. Replay and live modes are explicitly different. |
 | Fabric graph | An approved native ontology projection/model, target-local bindings, materialization/refresh and bounded path-result checks. No second hand-authored relationship vocabulary. |
 | Semantic model | Native `.platform`, `definition.pbism` and exported TMDL definition parts, explicit binding/refresh action and exact governed calculation checks. |
