@@ -243,3 +243,10 @@ variable "contributor_principal_id" {
   type        = string
   default     = null
 }
+
+variable "demoiq_enabled" {
+  description = "Optional DemoIQ Microsoft 365 demo seeding: registers a delegated-only Entra app (no application permissions, no credentials) in the deploying tenant. An administrator grants its consent separately; enable it with deploy.py up --with-demoiq."
+  type        = bool
+  default     = false
+  nullable    = false
+}
