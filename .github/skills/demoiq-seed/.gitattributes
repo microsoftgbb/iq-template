@@ -1,4 +1,0 @@
-# Upstream DemoIQ pages are kept byte-identical to the DemoIQ release they came
-# from (CRLF included) so they can be diffed and refreshed from upstream.
-engine/DemoIQ.html -text
-DemoIQ-Config-Builder.html -text
