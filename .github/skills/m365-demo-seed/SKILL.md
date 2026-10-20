@@ -187,7 +187,7 @@ client secret - and only to create their own demo content.
 | `status` | Meaning and next step |
 | --- | --- |
 | `ok` | Signed in; `licenses` shows the Exchange, SharePoint and Teams plans. |
-| `ok-pending-mfa` | The password is valid; MFA or Conditional Access blocks password sign-in now. A run relaxes both for the demo users only, so this passes then. |
+| `ok-pending-mfa` | The password is valid; MFA or Conditional Access blocks password sign-in now, including Entra asking the user to register for MFA and blocking that registration as risky (AADSTS53004). A run relaxes both for the demo users only, so this passes then. |
 | `bad-password`, `password-expired`, `no-password` | The user reruns `users set` for that account in their own terminal (or resets the password in the tenant first). |
 | `not-found`, `disabled`, `locked` | Fix the account in the tenant, or correct the demo's people. |
 | `consent-needed` | An administrator grants (or completes) the demo app's consent: relay `next`. |

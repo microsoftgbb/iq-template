@@ -70,6 +70,8 @@ class FakeTenant:
         self.granted = list(SCOPES)
         self.users = {}
         self.by_id = {}
+        # The AADSTS code of a password sign-in that MFA or Conditional Access blocks (53004: blocked MFA registration).
+        self.mfa_code = 50076
         self.device_script = []
         self.device_account = ADMIN
         self.device_interval = 0
@@ -304,7 +306,7 @@ class FakeTenant:
             if form.get("password") != user["password"]:
                 return oauth_failure("invalid_grant", [50126])
             if self.mfa_blocks(user):
-                return oauth_failure("invalid_grant", [50076])
+                return oauth_failure("invalid_grant", [self.mfa_code])
             return self.issue(user["upn"])
         if grant == "refresh_token":
             upn = self.refresh.pop(form.get("refresh_token"), None)

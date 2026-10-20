@@ -218,7 +218,8 @@ class PasswordSignInTests(TenantCase):
     def test_failures_are_classified(self):
         cases = {50126: ("bad-password", False), 50034: ("not-found", False), 50057: ("disabled", False),
                  50053: ("locked", False), 50055: ("password-expired", False), 50076: ("ok-pending-mfa", True),
-                 50079: ("ok-pending-mfa", True), 53003: ("ok-pending-mfa", True), 65001: ("consent-needed", True),
+                 50079: ("ok-pending-mfa", True), 53003: ("ok-pending-mfa", True), 53004: ("ok-pending-mfa", True),
+                 65001: ("consent-needed", True),
                  700016: ("app-not-found", False), 7000218: ("app-not-public-client", False), 12345: ("error", False)}
         for code, (status, valid) in cases.items():
             upn = f"user{code}@contoso-demo.example"

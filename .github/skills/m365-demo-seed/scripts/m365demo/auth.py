@@ -34,6 +34,10 @@ USER_SIGN_IN = (
     ({50072, 50074, 50076, 50079, 50158, 53003}, "ok-pending-mfa", True,
      "{upn}'s password is valid; MFA or Conditional Access blocks password sign-in right now. A seed run relaxes "
      "both for the demo users only and restores them afterwards."),
+    ({53004}, "ok-pending-mfa", True,
+     "{upn}'s password is valid; Entra asks {upn} to register for MFA and blocks that registration as risky. A seed "
+     "run relaxes MFA and Conditional Access for the demo users only, which removes that request; if it persists "
+     "during a run, an administrator reviews the user's risk in Microsoft Entra ID Protection."),
     ({65001}, "consent-needed", True,
      "{upn}'s password is valid, but the demo app has no administrator consent yet. " + CONSENT_HINT),
     ({700016}, "app-not-found", False, f"The demo app was not found in this tenant. Rerun: {receipts.SETUP}"),

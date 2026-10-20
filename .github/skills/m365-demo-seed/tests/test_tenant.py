@@ -60,6 +60,20 @@ class TenantTests(TenantCase):
         self.assertEqual(self.can_sign_in(MEGAN, "m-pw"), "ok-pending-mfa")
         self.assertFalse(self.state.needs_restore)
 
+    def test_a_blocked_mfa_registration_waits_for_the_prepared_tenant(self):
+        # AADSTS53004: Entra asks the user to register for MFA and blocks the registration as risky.
+        self.fake.mfa_code = 53004
+        self.fake.add_policy("Multifactor authentication for all users")
+        session, verdict = auth.password_sign_in(self.fake.receipt(), MEGAN, "m-pw")
+        self.assertIsNone(session)
+        self.assertEqual((verdict["status"], verdict["passwordValid"]), ("ok-pending-mfa", True))
+        self.assertIn("register for MFA", verdict["hint"])
+
+        tenant.prepare(self.graph, self.users, self.state, self.logs.append)
+        self.assertEqual(self.can_sign_in(MEGAN, "m-pw"), "ok")
+        self.assertEqual(tenant.restore(self.graph, self.state, self.logs.append), [])
+        self.assertEqual(self.can_sign_in(MEGAN, "m-pw"), "ok-pending-mfa")
+
     def test_a_look_alike_group_is_never_used(self):
         eve = self.fake.add_user("eve@contoso-demo.example", "e-pw")
         decoy = {"id": "aaaaaaaa-0000-4000-8000-000000000001", "displayName": tenant.GROUP_NAME,
