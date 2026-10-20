@@ -899,6 +899,9 @@ class ConfigureM365DemoTests(unittest.TestCase):
         self.assertEqual(configure_m365_demo.configure('a = 1'), 'a = 1\nm365_demo_enabled = true\n')
         self.assertEqual(configure_m365_demo.configure('a = 1\r\nm365_demo_enabled = false # off\r\n'),
                          'a = 1\r\nm365_demo_enabled = true # off\r\n')
+        example_comment = '# m365_demo_enabled = true\n'
+        self.assertEqual(configure_m365_demo.configure(example_comment),
+                         example_comment + 'm365_demo_enabled = true\n')
         for text in ('m365_demo_enabled = true\nm365_demo_enabled = false\n', 'm365_demo_enabled = var.x\n'):
             with self.assertRaises(ValueError):
                 configure_m365_demo.configure(text)

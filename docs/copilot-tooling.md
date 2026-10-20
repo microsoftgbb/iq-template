@@ -71,7 +71,7 @@ plugin or copy a personal MCP config into the repository.
   Microsoft 365. Keep it opt-in; never query mail, meetings or documents during
   toolchain checks. Writes, sends and permission changes require explicit user
   approval. To give Work IQ something to find in a demo, the optional
-  [`demoiq-seed`](../.github/skills/demoiq-seed/SKILL.md) skill (powered by
+  [`m365-demo-seed`](../.github/skills/m365-demo-seed/SKILL.md) skill (inspired by
   [DemoIQ](https://aka.ms/demoiq)) seeds fictional content into a non-production
   demo tenant. It is separate from the Work IQ plugin and needs its own explicit
   request and confirmations.

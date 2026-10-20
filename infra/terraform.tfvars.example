@@ -16,6 +16,11 @@ knowledge_ontologies   = {}
 # The runner's public-only search probe reads WEB_IQ_API_KEY from the environment.
 # Never put that key in tfvars, source control or the browser app.
 
+# Optional Microsoft 365 demo seeding for Work IQ demos (m365-demo-seed skill), in a
+# non-production demo tenant only. `deploy.py up --with-m365-demo` sets this for you.
+# It adds a delegated-only app; an administrator grants its consent separately.
+# m365_demo_enabled = true
+
 # Edit all six values for your derived repository, or use the initialize-project skill.
 # project_name: 3-16 lowercase letters/digits/single hyphens; start with a letter.
 # Capacity admins: user UPNs or service-principal object IDs.

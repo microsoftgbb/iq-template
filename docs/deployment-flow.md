@@ -42,6 +42,6 @@ A successful Terraform apply, notebook run or source registration is not proof o
 
 The guided flow leaves TEST empty. It does not create PROD, deploy or share the app beyond local App Player use, or verify a second user's isolation. Those are separate, explicit tasks. See [native runtime integration](runtime-integration.md) and [promotion to TEST and PROD](../cicd/README.md#promoting-through-test-and-prod).
 
-After DEV ready, Copilot offers one optional step: seeding fictional Microsoft 365 demo content for Work IQ with DemoIQ. Only if you say yes, the runner's `demoiq` phase (`--with-demoiq`) adds a delegated-only app with its own plan approval and administrator consent; the `demoiq-seed` skill then seeds your confirmed non-production demo tenant. See [optional demo content](getting-started.md#optional-seed-microsoft-365-demo-content).
+After DEV ready, Copilot offers one optional step: seeding fictional Microsoft 365 demo content for Work IQ. Only if you say yes, the runner's `m365-demo` phase (`--with-m365-demo`) adds a delegated-only app with its own plan approval and administrator consent; the `m365-demo-seed` skill then seeds your confirmed non-production demo tenant. See [optional demo content](getting-started.md#optional-seed-microsoft-365-demo-content).
 
 [Editable Excalidraw source](diagrams/deployment-flow.excalidraw) | [Authoring and icon sources](diagram-authoring.md)

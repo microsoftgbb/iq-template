@@ -49,7 +49,7 @@ than redesigning the platform.
 1. Select **Use this template** to create your own repository.
 2. Open its **Codespace** for the prepared toolchain, or follow [developer setup](docs/development.md) for a local environment.
 3. Tell Copilot **"Deploy the platform"**. When using Copilot App with Codespaces, name the Codespace to keep deployment in that checkout and state. It finishes with the agent and app running in the App Player. To skip the agent, run the same [deterministic runner](docs/development.md#deploy-deterministically) yourself: `python3 .github/skills/deploy-platform/scripts/deploy.py up`.
-4. Optional: say **"Seed demo content for Work IQ"** to fill your non-production Microsoft 365 demo tenant with fictional mail, Teams, meetings and files. This uses [DemoIQ](https://aka.ms/demoiq), adapted for GitHub Copilot as the [`demoiq-seed` skill](.github/skills/demoiq-seed/SKILL.md); see [optional demo content](docs/getting-started.md#optional-seed-microsoft-365-demo-content).
+4. Optional: say **"Seed demo content for Work IQ"** to fill your non-production Microsoft 365 demo tenant with fictional mail, Teams, meetings and files. The [`m365-demo-seed` skill](.github/skills/m365-demo-seed/SKILL.md), inspired by [DemoIQ](https://aka.ms/demoiq), does it from GitHub Copilot on Windows, macOS and Linux; see [optional demo content](docs/getting-started.md#optional-seed-microsoft-365-demo-content).
 
 Review [prerequisites and manual steps](docs/getting-started.md) before deploying. You choose the target, sign in, arrange administrator consent and approve the plans. For **configuration only**, use **/initialize-project**.
 
