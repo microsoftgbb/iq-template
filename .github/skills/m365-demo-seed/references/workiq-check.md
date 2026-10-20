@@ -13,6 +13,11 @@ folders or the Studio agent).
 Right after a seed, say so and offer the check for later. A miss shortly after seeding is not
 a defect.
 
+The deployment's optional [Work IQ knowledge source](../../../../docs/getting-started.md#optional-work-iq-knowledge-source)
+reads the same tenant data for whoever signs in. The runner proves it as the deploying
+administrator, who received none of the seeded content, so that proof says nothing about the
+demo; this check does.
+
 ## Steps
 
 1. **Preconditions.** `status` reports `seeded`, with `lastRun.runId` as the run. The Work IQ

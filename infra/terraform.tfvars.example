@@ -21,6 +21,14 @@ knowledge_ontologies   = {}
 # It adds a delegated-only app; an administrator grants its consent separately.
 # m365_demo_enabled = true
 
+# Optional Work IQ (preview) knowledge source in its own knowledge base, queried as the
+# signed-in user. Read getting started's Work IQ section first: the tenant enabled for Work IQ
+# by a Global Administrator, a Copilot Studio usage-based billing plan with every querying user
+# assigned, administrator consent, Copilot Credits, data processed outside the Azure compliance
+# boundary and preview actions. The Studio agent and app cannot query it yet.
+# work_iq_enabled        = true
+# work_iq_terms_accepted = true
+
 # Edit all six values for your derived repository, or use the initialize-project skill.
 # project_name: 3-16 lowercase letters/digits/single hyphens; start with a letter.
 # Capacity admins: user UPNs or service-principal object IDs.

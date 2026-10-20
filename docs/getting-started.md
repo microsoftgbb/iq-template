@@ -77,6 +77,9 @@ eligibility is checked by resource creation. The runner's `verify` phase waits
 for portal AppID linking and `WEB_IQ_API_KEY`, then requires a cited public search.
 The default Fabric/Foundry IQ path has no Web IQ credential dependency.
 
+For an optional [Work IQ knowledge source](#optional-work-iq-knowledge-source), set `work_iq_enabled` and
+`work_iq_terms_accepted` only after its tenant prerequisites are in place.
+
 ## 3. Bootstrap the Fabric user-auth application
 
 Use the **same `infra/` root, tfvars, execution host and backend/state** for every stage. Configure the agreed secured backend before this first apply; do not create a separate identity state or deploy from another App worktree.
@@ -292,6 +295,16 @@ To demo Work IQ or Microsoft 365 Copilot next to the platform, tell Copilot **"S
 - **Requirements:** Python 3.10+ on the deployment host (standard library only; the devcontainer has it), and two to eight existing demo users with Microsoft 365 licenses (Exchange, SharePoint and Teams). You type their passwords yourself, masked, in your own terminal; they are stored in an owner-only file on that host, so use dedicated demo accounts.
 - **Seeded is not ready:** a seed proves the content was written. Copilot can optionally ask Work IQ some of the demo's prompts as a demo user and record whether its answers cite the seeded items; Microsoft 365 indexing can take hours.
 - **Lifecycle:** the app is in Terraform state, so teardown removes it. The seeded content is not: ask Copilot to **clean up seeded demo content** before tearing down the platform. Cleanup deletes exactly what each run recorded.
+
+## Optional: Work IQ knowledge source
+
+`work_iq_enabled = true` with `work_iq_terms_accepted = true` adds a [Work IQ knowledge source](https://learn.microsoft.com/azure/search/agentic-knowledge-source-how-to-work-iq) (preview) in its own knowledge base, `<project_name>-work-iq-knowledge`. It answers from the Microsoft 365 work context (mail, meetings, chats and files) that the signed-in user can access, live and without an index. It is how content seeded for [Work IQ demos](#optional-seed-microsoft-365-demo-content) becomes queryable through Foundry IQ.
+
+- **Tenant prerequisites, owned by administrators:** a Global Administrator enables Work IQ once (`az ad sp create --id fdcc1f02-fc51-4226-8753-f668596af7f7`), a Copilot Studio usage-based billing plan for Work IQ exists with every querying user assigned, and a spending policy covers it. The runner checks the first; `verify` proves the rest.
+- **What Terraform adds in the knowledge plan:** a customer-owned app that exposes `access_as_user`, requests `WorkIQAgent.Ask` and pre-authorizes Azure CLI, a federated credential that lets the Search identity act as that app (no secret), the source and its knowledge base. An administrator grants the `WorkIQAgent.Ask` consent: in the portal, or with `deploy.py up --grant-work-iq-consent`.
+- **What `verify` proves:** one retrieval as you, sending your own token for that app in `x-ms-query-work-iq-source-authorization`. It requires Work IQ activity without an error, records only counts and keeps no retrieved content. Your own mailbox decides what it finds: seeded content belongs to the demo users, so ask as one of them to see it.
+- **Not yet in the agent or app:** the Studio agent's Foundry IQ connector cannot send that token, so neither queries this knowledge base, and the scenario knowledge base never includes the source. See [routes to re-validate](runtime-integration.md#routes-to-re-validate).
+- **Cost and data:** Work IQ uses Copilot Credits, processes data under Microsoft 365 terms outside the Azure compliance boundary, can take a minute or more per answer, and in this preview may use capabilities that perform actions. Only accept its terms for a demo tenant and trusted users.
 
 ## Keep in mind
 

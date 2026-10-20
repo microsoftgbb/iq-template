@@ -76,7 +76,8 @@ PLATFORM_ADDRESSES = frozenset({
 VARIABLES = ("project_name", "location", "fabric_location", "search_location", "search_sku", "fabric_capacity_sku",
              "github_owner", "github_repository_name", "github_branch_name", "github_directory_name",
              "knowledge_lakehouse_id", "knowledge_ontologies", "chat_model", "embedding_model",
-             "web_iq_enabled", "web_iq_terms_accepted", "m365_demo_enabled")
+             "web_iq_enabled", "web_iq_terms_accepted", "m365_demo_enabled", "work_iq_enabled",
+             "work_iq_terms_accepted")
 WEB_IQ_API_VERSION = "2026-06-01-preview"
 WEB_IQ_SEARCH = "https://api.microsoft.ai/v3/search/web"
 WEB_IQ_PORTAL = "https://webiq.microsoft.ai/profiles"
@@ -98,6 +99,11 @@ DOCUMENT_QUESTION = ("According to the indexed starter document, what does Git s
                      "SeedScenario materialize, and which source should be used for current entity "
                      "values? Answer from the OneLake document and cite it.")
 EXPECTED_FACTS = ("Pump B", "North Works")
+# Optional Work IQ (preview) knowledge source: the Microsoft Work IQ application and its delegated permission.
+WORK_IQ_APP_ID = "fdcc1f02-fc51-4226-8753-f668596af7f7"
+WORK_IQ_ENABLE = f"az ad sp create --id {WORK_IQ_APP_ID}"
+# A question about the deploying user's own work; the proof is the Work IQ activity, not the answer.
+WORK_IQ_QUESTION = "What have I been working on recently?"
 # Optional Microsoft 365 demo seeding (.github/skills/m365-demo-seed): its only Terraform resources.
 M365_DEMO_ADDRESSES = frozenset({"azuread_application.m365_demo[0]", "azuread_service_principal.m365_demo[0]"})
 PAT_STEPS = (
@@ -975,6 +981,7 @@ def phase_preflight(ctx):
     notes = [f"user {user} in tenant {tenant}, subscription {subscription}"]
     values = variables(ctx)
     notes.append(check_web_iq(ctx, subscription, values))
+    notes.append(check_work_iq(ctx, values))
     check_pat(ctx, values)
     az_json(ctx, ["ad", "sp", "show", "--id", POWER_BI_APP_ID, "--query", "{id:id}"],
             "Reading the tenant's Microsoft Power BI Service principal", quiet=True)
@@ -1008,6 +1015,25 @@ def check_web_iq(ctx, subscription, values):
                       "Provider registration alone does not prove subscription eligibility.")
     return ("Web IQ global G3 opted in; Terraform registers Microsoft.WebIQ; paid-subscription eligibility "
             "is proven only by account creation; portal AppID linking remains manual")
+
+
+def check_work_iq(ctx, values):
+    if not values.get("work_iq_enabled"):
+        return "Work IQ disabled"
+    if not values.get("work_iq_terms_accepted"):
+        raise Waiting("Work IQ is enabled but its preview terms have not been accepted.",
+                      "Review the Work IQ section of docs/getting-started.md: Copilot Credits billing, data processed "
+                      "outside the Azure compliance boundary and preview capabilities that can perform actions.",
+                      "Only after accepting, set work_iq_terms_accepted = true in infra/terraform.tfvars.")
+    found = az_json(ctx, ["ad", "sp", "list", "--filter", f"appId eq '{WORK_IQ_APP_ID}'", "--query", "[].id"],
+                    "Reading the tenant's Work IQ service principal")
+    if not found:
+        raise Waiting("Work IQ is not enabled in this tenant.",
+                      f"A Global Administrator enables it once: {WORK_IQ_ENABLE}",
+                      "Then rerun deploy.py up.")
+    ctx.log("Not verified here: the Copilot Studio usage-based billing plan for Work IQ and your assignment to it; "
+            "verify proves them with a live Work IQ retrieval.")
+    return "Work IQ opted in; tenant enabled"
 
 
 def signed_in_account(ctx):
@@ -1720,10 +1746,12 @@ def phase_knowledge(ctx):
         problems.append("the scenario ontology source does not point at DEV")
     if problems:
         raise Blocked("Knowledge registration is incomplete: " + "; ".join(problems))
-    return f"{result}; knowledge base {values['knowledge_base_name']} with document and live ontology sources"
+    work_iq = f"; {work_iq_knowledge(ctx, values['work_iq'])}" if values.get("work_iq") else ""
+    return (f"{result}; knowledge base {values['knowledge_base_name']} with document and live ontology sources"
+            + work_iq)
 
 
-def search_call(ctx, method, url, body=None, *, user_header=False):
+def search_call(ctx, method, url, body=None, *, user_header=False, work_iq_token=None):
     token = access_token(ctx, resource=SEARCH_RESOURCE)
     if not token:
         raise Waiting("Azure CLI could not get a Search token for the signed-in user.", "Sign in again, then rerun.")
@@ -1731,6 +1759,9 @@ def search_call(ctx, method, url, body=None, *, user_header=False):
     if user_header:
         # The same delegated user token authenticates Search and the live Fabric source.
         headers["x-ms-query-source-authorization"] = token
+    if work_iq_token:
+        # The user's token for the Work IQ app, which Search exchanges for a delegated Work IQ token.
+        headers["x-ms-query-work-iq-source-authorization"] = work_iq_token
     try:
         return ctx.http.request(method, url, headers=headers, body=body, timeout=150)
     except TransportError:
@@ -1958,10 +1989,73 @@ def phase_verify(ctx):
         "includeReferences": True, "includeReferenceSourceData": True},
         lambda body: document_evidence(body, documents))
     web_iq = verify_web_iq(ctx)
+    work_iq = verify_work_iq(ctx, endpoint, version)
     ctx.state.section("verify").update(dev_ready_at=utc_now(), ingestion=ingestion, ontology=ontology, documents=document)
     ctx.state.save()
     return ("DEV ready: ingestion succeeded; live ontology and document retrieval verified with your identity"
-            + (f"; {web_iq}" if web_iq else ""))
+            + (f"; {web_iq}" if web_iq else "") + (f"; {work_iq}" if work_iq else ""))
+
+
+WORK_IQ_CHECKS = (
+    "Check the tenant prerequisites: Work IQ enabled for the tenant, a Copilot Studio usage-based billing plan for "
+    "Work IQ with you assigned to it, and a Work IQ spending policy.",
+    "Consent and the Search identity's federated credential can take minutes to take effect; then rerun deploy.py up.",
+)
+
+
+def work_iq_evidence(body, name):
+    """Structured proof that Work IQ answered for this source; its retrieved content is never kept."""
+    activity = [entry for entry in body.get("activity") or [] if entry.get("type") == "workIQ"
+                and entry.get("knowledgeSourceName") in (None, name)]
+    if not activity:
+        return [f"no workIQ activity for {name}"], {}
+    errors = [entry["error"] for entry in activity if entry.get("error")]
+    if errors:
+        details = [str(error.get("message") or error.get("code") or error) if isinstance(error, dict) else str(error)
+                   for error in errors]
+        return ["the workIQ activity reported an error: " + "; ".join(detail[:300] for detail in details)], {}
+    references = [entry for entry in body.get("references") or [] if entry.get("type") == "workIQ"]
+    return [], {"activity": len(activity), "references": len(references)}
+
+
+def verify_work_iq(ctx, endpoint, version):
+    work_iq = outputs(ctx).get("work_iq")
+    if not work_iq:
+        return None
+    base, source, scope = (work_iq.get(key) for key in ("knowledge_base_name", "knowledge_source_name", "user_scope"))
+    if not (base and source and isinstance(scope, str) and scope.startswith("api://")):
+        raise Blocked("The Work IQ knowledge outputs are incomplete; rerun the knowledge phase.")
+    token = access_token(ctx, scope=scope)
+    if not token:
+        raise Waiting(f"Azure CLI could not get your token for {scope}.",
+                      "The Work IQ app pre-authorizes Azure CLI: sign in again with az login, then rerun.")
+    url = (f"{endpoint}/knowledgebases/{urllib.parse.quote(base, safe='')}/retrieve"
+           f"?api-version={urllib.parse.quote(version, safe='')}")
+    # Work IQ can take a minute or more to answer.
+    body = {"messages": [{"role": "user", "content": [{"type": "text", "text": ctx.args.work_iq_question}]}],
+            "knowledgeSourceParams": [{"knowledgeSourceName": source, "kind": "workIQ", "includeReferences": True,
+                                       "includeReferenceSourceData": True}],
+            "includeActivity": True, "maxRuntimeInSeconds": 120}
+    problems = []
+    for attempt in range(1, 4):
+        response = search_call(ctx, "POST", url, body, work_iq_token=token)
+        if response.status in (200, 206, 502):
+            problems, evidence = work_iq_evidence(response.json(default={}), source)
+            if not problems:
+                ctx.state.section("work_iq").update(verified_at=utc_now(), **evidence)
+                ctx.state.save()
+                return (f"Work IQ retrieval verified with your identity ({evidence['references']} reference(s)); "
+                        "the Studio agent and app cannot query it yet")
+        else:
+            error = ServiceError(f"Retrieval from {source}", response)
+            if response.status not in (403, 408, 429, 500, 503, 504, 599):
+                raise Blocked(f"Work IQ retrieval failed: {error.message}", *WORK_IQ_CHECKS)
+            problems = [error.message]
+        ctx.log(f"Work IQ retrieval attempt {attempt} was not proven: {'; '.join(problems)}.")
+        if attempt == 3 or ctx.remaining() < 180:
+            break
+        ctx.sleep(30)
+    raise Blocked(f"Work IQ retrieval is not verified: {'; '.join(problems)}", *WORK_IQ_CHECKS)
 
 
 def m365_demo_requested(ctx, values):
@@ -1986,38 +2080,74 @@ def m365_demo_plan_check(summary):
                       "Converge the platform first with deploy.py up, then rerun with --with-m365-demo.")
 
 
-def m365_demo_consent(ctx, demo):
-    """Verify, or with --grant-m365-demo-consent grant, the demo app's tenant-wide delegated consent."""
-    scopes = sorted(demo.get("delegated_scopes") or [])
-    client, link = demo.get("client_id"), demo.get("api_permissions_url")
-    label = "Reading the Microsoft Graph service principal"
-    grant = delegated_grant_state(ctx, demo.get("service_principal_object_id"), MICROSOFT_GRAPH_APP_ID, scopes, label)
+def administrator_consent(ctx, *, what, api_name, api_app_id, registration, flag, granting, scope_note="",
+                          unverified_note=""):
+    """Verify, or with `flag` grant, a registration's tenant-wide consent for exactly its declared scopes on one API."""
+    scopes = sorted(registration.get("delegated_scopes") or [])
+    client, link = registration.get("client_id"), registration.get("api_permissions_url")
+    principal = registration.get("service_principal_object_id")
+    label = f"Reading the {api_name} service principal"
+    grant = delegated_grant_state(ctx, principal, api_app_id, scopes, label)
     if grant == "unverified":
-        ctx.log("This sign-in cannot read the demo app's consent grants; the administrator's sign-in at the "
-                "start of each seeding run shows whether consent is in place.")
+        ctx.log(f"This sign-in cannot read the consent grants of {what}{unverified_note}")
         return "unverified"
     if grant == "granted":
         return "granted"
-    if not ctx.args.grant_m365_demo_consent:
+    if not granting:
         lacking = f" (the existing grant lacks {', '.join(grant[1])})" if isinstance(grant, tuple) else ""
-        raise Waiting(f"Administrator consent is pending for the Microsoft 365 demo app {client}{lacking}.",
+        raise Waiting(f"Administrator consent is pending for {what} {client}{lacking}.",
                       f"An administrator opens {link} and selects Grant admin consent for the {len(scopes)} delegated "
-                      "Microsoft Graph scopes. They include Conditional Access and per-user MFA administration, "
-                      "which the skill uses only as the signed-in administrator while a seed or cleanup runs.",
-                      "If you are that administrator, rerun with --grant-m365-demo-consent.")
-    ctx.log(f"Granting tenant-wide consent for exactly {len(scopes)} declared delegated scopes of the demo app "
-            "as the signed-in administrator (--grant-m365-demo-consent).")
+                      f"{api_name} scopes.{scope_note}",
+                      f"If you are that administrator, rerun with {flag}.")
+    ctx.log(f"Granting tenant-wide consent for exactly {len(scopes)} declared delegated scopes of {what} "
+            f"as the signed-in administrator ({flag}).")
     result = run(ctx, ["az", "ad", "app", "permission", "grant", "--only-show-errors", "--id", client,
-                       "--api", MICROSOFT_GRAPH_APP_ID, "--scope", " ".join(scopes),
+                       "--api", api_app_id, "--scope", " ".join(scopes),
                        "--consent-type", "AllPrincipals", "--output", "none"])
     if result.code:
-        raise Blocked("Granting the demo app's consent failed; it needs an administrator role such as "
+        raise Blocked(f"Granting the consent of {what} failed; it needs an administrator role such as "
                       "Cloud Application Administrator.\n" + tail(result.stderr))
-    if delegated_grant_state(ctx, demo.get("service_principal_object_id"), MICROSOFT_GRAPH_APP_ID,
-                             scopes, label) != "granted":
-        raise Waiting("The demo app's consent was granted but is not complete or visible yet.",
+    if delegated_grant_state(ctx, principal, api_app_id, scopes, label) != "granted":
+        raise Waiting(f"The consent of {what} was granted but is not complete or visible yet.",
                       f"Rerun deploy.py up in a minute; if it persists, an administrator completes it at {link}.")
     return "granted"
+
+
+def m365_demo_consent(ctx, demo):
+    """Verify, or with --grant-m365-demo-consent grant, the demo app's tenant-wide delegated consent."""
+    return administrator_consent(
+        ctx, what="the Microsoft 365 demo app", api_name="Microsoft Graph", api_app_id=MICROSOFT_GRAPH_APP_ID,
+        registration=demo, flag="--grant-m365-demo-consent", granting=ctx.args.grant_m365_demo_consent,
+        scope_note=" They include Conditional Access and per-user MFA administration, which the skill uses only as "
+                   "the signed-in administrator while a seed or cleanup runs.",
+        unverified_note="; the administrator's sign-in at the start of each seeding run shows whether consent is "
+                        "in place.")
+
+
+def work_iq_consent(ctx, work_iq):
+    """Verify, or with --grant-work-iq-consent grant, the Work IQ app's WorkIQAgent.Ask consent."""
+    return administrator_consent(
+        ctx, what="the Work IQ app", api_name="Work IQ", api_app_id=WORK_IQ_APP_ID, registration=work_iq,
+        flag="--grant-work-iq-consent", granting=ctx.args.grant_work_iq_consent,
+        scope_note=" It lets Azure AI Search query Work IQ on behalf of each signed-in user.",
+        unverified_note="; the verify phase's Work IQ retrieval shows whether consent is in place.")
+
+
+def work_iq_knowledge(ctx, work_iq):
+    """The optional Work IQ knowledge base's registration and consent; verify proves its retrieval."""
+    if not (work_iq.get("knowledge_base_name") and work_iq.get("knowledge_source_name")):
+        raise Blocked("The Work IQ knowledge source is not registered yet: it follows the Search identity's grants.",
+                      "Rerun deploy.py up.")
+    tenant = guid(work_iq.get("tenant_id"), "work_iq tenant_id")
+    if not same_guid(tenant, ctx.target("tenant_id")):
+        raise Blocked("The Work IQ app registration's tenant differs from the signed-in deployment tenant.")
+    consent = work_iq_consent(ctx, work_iq)
+    ctx.state.section("work_iq").update(
+        client_id=guid(work_iq.get("client_id"), "work_iq client_id"), knowledge_base=work_iq["knowledge_base_name"],
+        consent=consent, checked_at=utc_now(),
+        agent_app_integration="blocked: the Foundry IQ connector cannot send the user's Work IQ token")
+    ctx.state.save()
+    return f"Work IQ knowledge base {work_iq['knowledge_base_name']}, consent {consent}"
 
 
 def phase_m365_demo(ctx):
@@ -2345,8 +2475,9 @@ def status_report(ctx):
     if pending:
         report["pending_plans"] = {phase: {"sha256": plan["sha256"], "summary": describe(plan["summary"]),
                                            "plan": plan["path"]} for phase, plan in pending.items()}
-    if ctx.state.data.get("m365_demo"):
-        report["m365_demo"] = ctx.state.data["m365_demo"]
+    for receipt in ("m365_demo", "work_iq"):
+        if ctx.state.data.get(receipt):
+            report[receipt] = ctx.state.data[receipt]
     report["next"] = ["Receipts only; `up` re-verifies live state before acting."]
     return OK, report
 
@@ -2432,9 +2563,15 @@ def parse_arguments(argv):
     group.add_argument("--grant-m365-demo-consent", action="store_true",
                        help="you are a tenant administrator: grant consent for exactly the demo app's declared "
                             "delegated scopes")
+    group = options.add_argument_group("optional Work IQ knowledge source (work_iq_enabled in tfvars)")
+    group.add_argument("--grant-work-iq-consent", action="store_true",
+                       help="you are a tenant administrator: grant consent for exactly the Work IQ app's "
+                            "WorkIQAgent.Ask delegated permission")
     group = options.add_argument_group("readiness evidence")
     group.add_argument("--ontology-question", default=ONTOLOGY_QUESTION)
     group.add_argument("--document-question", default=DOCUMENT_QUESTION)
+    group.add_argument("--work-iq-question", default=WORK_IQ_QUESTION,
+                       help="question asked as you of the optional Work IQ knowledge base")
     group.add_argument("--expect", action="append", help="fact required in live ontology source data (repeatable)")
     parser = Parser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="command", required=True, parser_class=Parser)

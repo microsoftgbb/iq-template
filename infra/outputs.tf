@@ -225,3 +225,20 @@ output "m365_demo" {
     api_permissions_url         = "https://portal.azure.com/#@${data.azuread_client_config.m365_demo[0].tenant_id}/view/Microsoft_AAD_RegisteredApps/ApplicationMenuBlade/~/CallAnAPI/appId/${azuread_application.m365_demo[0].client_id}/isMSAApp~/false"
   } : null
 }
+
+output "work_iq" {
+  description = "Optional Work IQ (preview) knowledge handoff (null unless work_iq_enabled at knowledge setup): the app whose user token a retrieve sends in x-ms-query-work-iq-source-authorization, its consent link and the Work IQ knowledge base. Registration does not prove consent, tenant enablement or billing; the Studio agent and app cannot query it yet."
+  value = local.work_iq ? {
+    tenant_id                   = data.azuread_client_config.work_iq[0].tenant_id
+    client_id                   = azuread_application.work_iq[0].client_id
+    service_principal_object_id = azuread_service_principal.work_iq[0].object_id
+    user_scope                  = "${azuread_application_identifier_uri.work_iq[0].identifier_uri}/access_as_user"
+    work_iq_app_id              = local.work_iq_client_id
+    delegated_scopes            = [local.work_iq_scope]
+    api_permissions_url         = "https://portal.azure.com/#@${data.azuread_client_config.work_iq[0].tenant_id}/view/Microsoft_AAD_RegisteredApps/ApplicationMenuBlade/~/CallAnAPI/appId/${azuread_application.work_iq[0].client_id}/isMSAApp~/false"
+    knowledge_source_name       = local.work_iq_ready ? restful_resource.work_iq_source[0].body.name : null
+    knowledge_base_name         = local.work_iq_ready ? restful_resource.work_iq_knowledge_base[0].body.name : null
+  } : null
+
+  depends_on = [azuread_application_pre_authorized.work_iq_azure_cli]
+}

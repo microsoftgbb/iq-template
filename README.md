@@ -25,6 +25,10 @@ Installation does not sign in, grant consent or enable optional runtime integrat
 opt-in Terraform account and runner's public-search probe. Portal AppID linking
 and native Studio/app integration remain separate; Web IQ is disabled by default.
 
+**Optional Work IQ knowledge:** `work_iq_enabled` adds a Work IQ (preview) knowledge source in its own
+knowledge base, verified with your own identity. The Studio agent and app cannot query it yet; see
+[getting started](docs/getting-started.md#optional-work-iq-knowledge-source).
+
 ## Platform at a glance
 
 [![Platform overview: GitHub, Copilot and Terraform author a Fabric and Azure platform. A Managed Runtime app calls a Copilot Studio agent, which uses Foundry IQ for documents and native Fabric IQ for live facts with each user's own connections. TEST starts empty.](docs/diagrams/platform-architecture.svg)](docs/diagrams/platform-architecture.svg)

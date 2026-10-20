@@ -105,7 +105,17 @@ are recorded separately from agent/app readiness; no content or keys are saved.
 See [preparation.md](../preparation.md) for the mandatory manual steps and the
 still-separate Studio integration. Disabled Web IQ makes no additional calls.
 
-Every phase checks live state before acting, so rerunning `up` resumes. It observes an accepted Fabric operation or an active notebook run instead of submitting another, and creates a fresh plan after a failed apply. Exit code `3` means a person must act; the output names the exact link or command. Exit code `4` means approval is required. Approve interactively, or rerun with `--approve <phase>=<sha256-prefix>` for the exact saved plan it printed (`terraform -chdir=infra show <plan>` shows it), or with `--approve agent-create`, `agent-connections`, `agent-publish` or `app-register`. `--yes` approves everything in that run except deletions and replacements, which also need `--allow-replace`. `up --through <phase>` stops after a phase; every run re-verifies the earlier phases, so no gate can be skipped. For example, `up --with-m365-demo --through m365-demo` sets up Microsoft 365 demo seeding without the agent and app. `status` summarizes receipts without cloud calls, and `--json` prints a machine-readable report, including the `m365_demo` receipt.
+When `work_iq_enabled = true`, `preflight` also requires `work_iq_terms_accepted`
+and the tenant's Work IQ service principal. The knowledge plan adds the Work IQ
+app, its federated credential, source and knowledge base; the `knowledge` phase
+then reads its `WorkIQAgent.Ask` consent. In `verify`, the runner gets your own
+token for that app from Azure CLI and requires Work IQ activity without an error
+in one retrieval (`--work-iq-question` overrides its question). It records counts,
+never content, and the `work_iq` receipt says the agent and app cannot use it yet:
+the Studio agent's Foundry IQ connector cannot send that token. See
+[the optional Work IQ knowledge source](getting-started.md#optional-work-iq-knowledge-source).
+
+Every phase checks live state before acting, so rerunning `up` resumes. It observes an accepted Fabric operation or an active notebook run instead of submitting another, and creates a fresh plan after a failed apply. Exit code `3` means a person must act; the output names the exact link or command. Exit code `4` means approval is required. Approve interactively, or rerun with `--approve <phase>=<sha256-prefix>` for the exact saved plan it printed (`terraform -chdir=infra show <plan>` shows it), or with `--approve agent-create`, `agent-connections`, `agent-publish` or `app-register`. `--yes` approves everything in that run except deletions and replacements, which also need `--allow-replace`. `up --through <phase>` stops after a phase; every run re-verifies the earlier phases, so no gate can be skipped. For example, `up --with-m365-demo --through m365-demo` sets up Microsoft 365 demo seeding without the agent and app. `status` summarizes receipts without cloud calls, and `--json` prints a machine-readable report, including the `m365_demo` and `work_iq` receipts.
 
 These choices are explicit flags, never automatic:
 
@@ -115,6 +125,7 @@ These choices are explicit flags, never automatic:
 - `--bootstrap-fallback notebooks`: when the tenant rejects attaching a deployment plan to Git sync (`FeatureNotAvailable`), sync the same reviewed commit without it and run `SeedScenario`, then `BindScenario`, as you.
 - `--retry-failed`: after you inspected and fixed a failed or unconfirmed operation, continue from live state; without it the runner never resubmits an accepted request.
 - `--with-m365-demo`: add optional Microsoft 365 demo seeding (the [`m365-demo-seed`](../.github/skills/m365-demo-seed/SKILL.md) skill, inspired by [DemoIQ](https://aka.ms/demoiq)) to this deployment. Its plan is approved like any other (`--approve m365-demo=<sha256-prefix>`); that approval alone continues the phase, and `m365_demo_enabled = true` reaches `infra/terraform.tfvars` only when the plan applies.
+- `--grant-work-iq-consent`: you are a tenant administrator and grant consent yourself for exactly the optional Work IQ app's `WorkIQAgent.Ask` permission. Neither other consent flag covers it; without it the runner waits and prints the administrator's link.
 - `--grant-m365-demo-consent`: you are a tenant administrator and grant consent yourself for exactly the demo app's declared delegated scopes. They include Conditional Access and per-user MFA administration, which the skill uses only as the signed-in administrator while a seed, cleanup or restore runs. `--grant-admin-consent` never covers them; without this flag the runner waits and prints the administrator's link.
 
 The runner refuses the reusable template, a different Git target, conflicts, non-additive incoming changes, any commit other than your pushed `HEAD`, ambient Terraform overrides (`TF_CLI_ARGS*`, `TF_WORKSPACE`, extra `TF_VAR_*`) and a Dataverse URL that belongs to another environment. It never prints or stores tokens. It still needs people for consent, MFA sign-ins, connector OAuth and the App Player check, so it is not unattended CI: the bundled binder and IQ connections need a delegated user. It does not promote, deploy or share the app, or tear anything down.

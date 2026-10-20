@@ -1201,6 +1201,162 @@ class AgentAndAppTests(unittest.TestCase):
         self.assertIn("registered_at", ctx.state.section("app"))
 
 
+WORK_IQ_CLIENT = "99999999-9999-4999-8999-999999999999"
+WORK_IQ_SP = "88888888-8888-4888-8888-888888888888"
+WORK_IQ_TOKEN = "header.eyJhdWQiOiAid29yay1pcSJ9.signature"
+WORK_IQ_RESOURCE = "77777777-7777-4777-8777-777777777777"
+
+
+class WorkIqTests(unittest.TestCase):
+    OUTPUT = {"tenant_id": TENANT, "client_id": WORK_IQ_CLIENT, "service_principal_object_id": WORK_IQ_SP,
+              "user_scope": f"api://{WORK_IQ_CLIENT}/access_as_user", "work_iq_app_id": deploy.WORK_IQ_APP_ID,
+              "delegated_scopes": ["WorkIQAgent.Ask"], "api_permissions_url": "https://portal.azure.com/#workiq",
+              "knowledge_source_name": "demo-work-iq", "knowledge_base_name": "demo-work-iq-knowledge"}
+    GRANTED = {"consentType": "AllPrincipals", "resourceId": WORK_IQ_RESOURCE, "scope": "WorkIQAgent.Ask"}
+    ENDPOINT = "https://srch.search.windows.net"
+    WORK_IQ_TOKEN_RULE = (lambda args: "get-access-token" in args and "--scope" in args
+                          and args[args.index("--scope") + 1] == f"api://{WORK_IQ_CLIENT}/access_as_user",
+                          deploy.Result(0, json.dumps({"accessToken": WORK_IQ_TOKEN, "expires_on": 9999999999})))
+
+    def context(self, http=None, rules=(), output=None, **overrides):
+        shell = FakeShell([*rules, (command("az", "ad", "sp", "show"), deploy.Result(0, json.dumps({"id": WORK_IQ_RESOURCE}))),
+                           self.WORK_IQ_TOKEN_RULE, TOKEN_RULE])
+        ctx = make_context(self, make_root(self), shell, http or FakeHttp(), **overrides)
+        ctx.cache["outputs"] = {"work_iq": self.OUTPUT if output is None else output}
+        ctx.state.section("target").update(tenant_id=TENANT, subscription_id="sub", user_object_id="user")
+        return ctx, shell
+
+    def grants(self, *answers):
+        http = FakeHttp()
+        http.add("GET", rf"/servicePrincipals/{WORK_IQ_SP}/oauth2PermissionGrants$", *answers)
+        return http
+
+    def answer(self, status=200, error=None, references=1):
+        activity = {"type": "workIQ", "knowledgeSourceName": "demo-work-iq", "count": references,
+                    "workIQArguments": {"search": "q"}}
+        if error:
+            activity["error"] = error
+        refs = [{"type": "workIQ", "sourceData": {"parts": [{"text": "Private work content"}]}}] * references
+        return reply(status, {"activity": [activity], "references": refs})
+
+    def test_disabled_work_iq_has_no_cloud_dependency(self):
+        ctx, shell = self.context(output={})
+        self.assertEqual(deploy.check_work_iq(ctx, {"work_iq_enabled": False}), "Work IQ disabled")
+        self.assertIsNone(deploy.verify_work_iq(ctx, self.ENDPOINT, "2026-08-01-preview"))
+        self.assertFalse(shell.calls)
+        self.assertFalse(ctx.http.calls)
+
+    def test_opt_in_requires_terms_and_a_tenant_enabled_for_work_iq(self):
+        ctx, shell = self.context()
+        with self.assertRaisesRegex(deploy.Waiting, "preview terms"):
+            deploy.check_work_iq(ctx, {"work_iq_enabled": True, "work_iq_terms_accepted": False})
+        self.assertFalse(shell.calls)
+        values = {"work_iq_enabled": True, "work_iq_terms_accepted": True}
+        ctx.shell = FakeShell([(command("az", "ad", "sp", "list"), deploy.Result(0, "[]"))])
+        with self.assertRaises(deploy.Waiting) as stop:
+            deploy.check_work_iq(ctx, values)
+        self.assertIn(f"az ad sp create --id {deploy.WORK_IQ_APP_ID}", " ".join(stop.exception.next_steps))
+        call, = ctx.shell.matching(command("az", "ad", "sp", "list"))
+        self.assertIn(f"appId eq '{deploy.WORK_IQ_APP_ID}'", call)
+        ctx.shell = FakeShell([(command("az", "ad", "sp", "list"), deploy.Result(0, json.dumps([WORK_IQ_RESOURCE])))])
+        self.assertEqual(deploy.check_work_iq(ctx, values), "Work IQ opted in; tenant enabled")
+
+    def test_missing_consent_waits_for_an_administrator(self):
+        ctx, shell = self.context(self.grants(reply(body={"value": []})))
+        with self.assertRaises(deploy.Waiting) as stop:
+            deploy.work_iq_knowledge(ctx, self.OUTPUT)
+        steps = " ".join(stop.exception.next_steps)
+        self.assertIn("https://portal.azure.com/#workiq", steps)
+        self.assertIn("--grant-work-iq-consent", steps)
+        self.assertFalse(shell.matching(command("az", "ad", "app", "permission")))
+
+    def test_an_administrator_grants_exactly_work_iq_agent_ask(self):
+        grant = (command("az", "ad", "app", "permission", "grant"), deploy.Result(0))
+        ctx, shell = self.context(self.grants(reply(body={"value": []}), reply(body={"value": [self.GRANTED]})),
+                                  [grant], grant_work_iq_consent=True)
+        self.assertEqual(deploy.work_iq_knowledge(ctx, self.OUTPUT),
+                         "Work IQ knowledge base demo-work-iq-knowledge, consent granted")
+        call, = shell.matching(command("az", "ad", "app", "permission", "grant"))
+        self.assertEqual((call[call.index("--id") + 1], call[call.index("--api") + 1], call[call.index("--scope") + 1]),
+                         (WORK_IQ_CLIENT, deploy.WORK_IQ_APP_ID, "WorkIQAgent.Ask"))
+        receipt = ctx.state.section("work_iq")
+        self.assertEqual((receipt["consent"], receipt["knowledge_base"]), ("granted", "demo-work-iq-knowledge"))
+        self.assertIn("Foundry IQ connector", receipt["agent_app_integration"])
+
+    def test_the_demo_consent_flag_never_grants_work_iq(self):
+        ctx, shell = self.context(self.grants(reply(body={"value": []})), grant_m365_demo_consent=True,
+                                  grant_admin_consent=True)
+        with self.assertRaises(deploy.Waiting):
+            deploy.work_iq_knowledge(ctx, self.OUTPUT)
+        self.assertFalse(shell.matching(command("az", "ad", "app", "permission")))
+
+    def test_another_tenant_or_a_missing_source_is_refused(self):
+        ctx, _ = self.context()
+        with self.assertRaisesRegex(deploy.Blocked, "not registered yet"):
+            deploy.work_iq_knowledge(ctx, dict(self.OUTPUT, knowledge_base_name=None))
+        with self.assertRaisesRegex(deploy.Blocked, "tenant differs"):
+            deploy.work_iq_knowledge(ctx, dict(self.OUTPUT, tenant_id="12121212-1212-4212-8212-121212121212"))
+
+    def test_retrieval_sends_both_user_tokens_and_keeps_no_content(self):
+        http = FakeHttp()
+        http.add("POST", r"/knowledgebases/demo-work-iq-knowledge/retrieve\?api-version=2026-08-01-preview$",
+                 self.answer())
+        ctx, _ = self.context(http)
+        result = deploy.verify_work_iq(ctx, self.ENDPOINT, "2026-08-01-preview")
+        self.assertIn("Work IQ retrieval verified with your identity (1 reference(s))", result)
+        self.assertIn("cannot query it yet", result)
+        _, _, body, headers = http.calls[0]
+        self.assertEqual(headers["Authorization"], f"Bearer {TOKEN}")
+        self.assertEqual(headers["x-ms-query-work-iq-source-authorization"], WORK_IQ_TOKEN)
+        self.assertNotIn("x-ms-query-source-authorization", headers)
+        self.assertEqual((body["knowledgeSourceParams"][0]["kind"], body["maxRuntimeInSeconds"]), ("workIQ", 120))
+        self.assertEqual(body["messages"][0]["content"][0]["text"], deploy.WORK_IQ_QUESTION)
+        receipt = json.dumps(ctx.state.data)
+        self.assertNotIn("Private work content", receipt)
+        self.assertNotIn(WORK_IQ_TOKEN, receipt)
+        self.assertEqual(ctx.state.section("work_iq")["references"], 1)
+        self.assertFalse((ctx.root / ".artifacts" / "deploy" / "evidence").exists(), "no Work IQ content on disk")
+
+    def test_a_failed_work_iq_source_is_retried_then_reported_with_the_prerequisites(self):
+        http = FakeHttp()
+        failure = self.answer(502, error={"code": "Forbidden", "message": "The user is not assigned to a billing plan."},
+                              references=0)
+        http.add("POST", r"/retrieve\?", failure, failure, failure)
+        ctx, _ = self.context(http)
+        with self.assertRaises(deploy.Blocked) as stop:
+            deploy.verify_work_iq(ctx, self.ENDPOINT, "2026-08-01-preview")
+        self.assertIn("not assigned to a billing plan", stop.exception.message)
+        self.assertIn("billing plan", " ".join(stop.exception.next_steps))
+        self.assertEqual(len(http.calls), 3)
+        self.assertNotIn("verified_at", ctx.state.section("work_iq"))
+
+    def test_a_rejected_request_stops_at_once(self):
+        http = FakeHttp()
+        http.add("POST", r"/retrieve\?", reply(400, {"error": {"code": "InvalidRequest",
+                                                               "message": "The Work IQ authorization header is missing."}}))
+        ctx, _ = self.context(http)
+        with self.assertRaisesRegex(deploy.Blocked, "authorization header is missing"):
+            deploy.verify_work_iq(ctx, self.ENDPOINT, "2026-08-01-preview")
+        self.assertEqual(len(http.calls), 1)
+
+    def test_no_work_iq_token_waits_for_a_fresh_sign_in(self):
+        ctx, _ = self.context()
+        ctx.shell = FakeShell([(command("az", "account", "get-access-token"), deploy.Result(1, "", "AADSTS65001"))])
+        with self.assertRaisesRegex(deploy.Waiting, "could not get your token"):
+            deploy.verify_work_iq(ctx, self.ENDPOINT, "2026-08-01-preview")
+
+    def test_status_reports_the_receipt_and_the_flags_parse(self):
+        ctx = make_context(self, make_root(self))
+        ctx.state.section("work_iq").update(client_id=WORK_IQ_CLIENT, consent="granted")
+        ctx.state.save()
+        _, report = deploy.status_report(ctx)
+        self.assertEqual(report["work_iq"]["client_id"], WORK_IQ_CLIENT)
+        args = deploy.parse_arguments(["up", "--grant-work-iq-consent", "--work-iq-question", "What is new?"])
+        self.assertEqual((args.grant_work_iq_consent, args.work_iq_question), (True, "What is new?"))
+        self.assertIn("work_iq_enabled", deploy.VARIABLES)
+        self.assertIn("work_iq_terms_accepted", deploy.VARIABLES)
+
+
 class WebIqTests(unittest.TestCase):
     RESOURCE_ID = "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.WebIQ/accounts/demo"
 

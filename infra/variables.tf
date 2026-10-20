@@ -264,3 +264,17 @@ variable "m365_demo_enabled" {
   default     = false
   nullable    = false
 }
+
+variable "work_iq_enabled" {
+  description = "Opt in to a Work IQ (preview) knowledge source in its own Foundry IQ knowledge base, queried with the signed-in user's own token. Needs the tenant enabled for Work IQ, a Copilot Studio usage-based billing plan with every querying user assigned, and administrator consent. The Studio agent and app cannot use it yet: the Foundry IQ connector cannot send the user's Work IQ token."
+  type        = bool
+  default     = false
+  nullable    = false
+}
+
+variable "work_iq_terms_accepted" {
+  description = "Set true only after accepting Work IQ (preview) use: usage-based Copilot Credits, data processed outside the Azure compliance boundary under Microsoft 365 terms, and preview capabilities that can perform actions. Does not enable Work IQ in the tenant or assign billing."
+  type        = bool
+  default     = false
+  nullable    = false
+}
