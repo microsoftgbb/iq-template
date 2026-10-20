@@ -21,6 +21,10 @@ The devcontainer includes the [official Azure/Foundry IQ, Work IQ/M365 Agents
 Toolkit, Fabric/Fabric IQ and Managed Runtime Copilot packages](docs/copilot-tooling.md).
 Installation does not sign in, grant consent or enable optional runtime integrations.
 
+**Optional Web IQ:** [preparation and manual gates](preparation.md) covers the
+opt-in Terraform account and runner's public-search probe. Portal AppID linking
+and native Studio/app integration remain separate; Web IQ is disabled by default.
+
 ## Platform at a glance
 
 [![Platform overview: GitHub, Copilot and Terraform author a Fabric and Azure platform. A Managed Runtime app calls a Copilot Studio agent, which uses Foundry IQ for documents and native Fabric IQ for live facts with each user's own connections. TEST starts empty.](docs/diagrams/platform-architecture.svg)](docs/diagrams/platform-architecture.svg)

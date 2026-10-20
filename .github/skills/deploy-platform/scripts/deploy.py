@@ -74,7 +74,12 @@ PLATFORM_ADDRESSES = frozenset({
 })
 VARIABLES = ("project_name", "location", "fabric_location", "search_location", "search_sku", "fabric_capacity_sku",
              "github_owner", "github_repository_name", "github_branch_name", "github_directory_name",
-             "knowledge_lakehouse_id", "knowledge_ontologies", "chat_model", "embedding_model")
+             "knowledge_lakehouse_id", "knowledge_ontologies", "chat_model", "embedding_model",
+             "web_iq_enabled", "web_iq_terms_accepted")
+WEB_IQ_API_VERSION = "2026-06-01-preview"
+WEB_IQ_SEARCH = "https://api.microsoft.ai/v3/search/web"
+WEB_IQ_PORTAL = "https://webiq.microsoft.ai/profiles"
+WEB_IQ_QUESTION = "Microsoft Web IQ documentation"
 SEARCH_OFFERINGS = f"{ARM_API}/providers/Microsoft.Search/fetchOfferings?api-version=2026-09-01-preview"
 SEARCH_SERVICE_PATH = re.compile(r"/subscriptions/[^/]+/resourceGroups/[^/]+/providers/Microsoft\.Search/searchServices/[^/]+",
                                  re.IGNORECASE)
@@ -960,6 +965,7 @@ def phase_preflight(ctx):
         raise Blocked(str(error)) from None
     notes = [f"user {user} in tenant {tenant}, subscription {subscription}"]
     values = variables(ctx)
+    notes.append(check_web_iq(ctx, subscription, values))
     check_pat(ctx, values)
     az_json(ctx, ["ad", "sp", "show", "--id", POWER_BI_APP_ID, "--query", "{id:id}"],
             "Reading the tenant's Microsoft Power BI Service principal", quiet=True)
@@ -974,6 +980,25 @@ def phase_preflight(ctx):
             "deployment-plan previews, OneLake external access)"
             + ("." if values["search_sku"] == "serverless" else " and dedicated Search new-service capacity."))
     return "; ".join(notes)
+
+
+def check_web_iq(ctx, subscription, values):
+    if not values["web_iq_enabled"]:
+        return "Web IQ disabled"
+    if not values["web_iq_terms_accepted"]:
+        raise Waiting("Web IQ is enabled but its terms and paid usage have not been accepted.",
+                      "Review https://www.microsoft.com/en-us/webiq/webiq-legal and preparation.md.",
+                      "Only after accepting, set web_iq_terms_accepted = true in infra/terraform.tfvars.")
+    provider = az_json(ctx, ["provider", "show", "--namespace", "Microsoft.WebIQ", "--subscription", subscription],
+                       "Reading the Web IQ resource provider")
+    types = (provider or {}).get("resourceTypes") or []
+    accounts = next((item for item in types if item.get("resourceType") == "accounts"), {})
+    if WEB_IQ_API_VERSION not in (accounts.get("apiVersions") or []):
+        raise Blocked("This subscription does not advertise the pinned Web IQ accounts API.",
+                      "Ask your Microsoft representative to enable Web IQ for a paid subscription; Azure credits do not work.",
+                      "Provider registration alone does not prove subscription eligibility.")
+    return ("Web IQ global G3 opted in; Terraform registers Microsoft.WebIQ; paid-subscription eligibility "
+            "is proven only by account creation; portal AppID linking remains manual")
 
 
 def signed_in_account(ctx):
@@ -1201,6 +1226,9 @@ def phase_platform(ctx):
     result = converge(ctx, "platform")
     workspace, name, _ = required_outputs(ctx, "dev_workspace_id", "dev_workspace_name", "github_connect_request")
     principal = ensure_search_identity(ctx, required=True)
+    if outputs(ctx).get("web_iq"):
+        ctx.log(f"Web IQ account provisioned; connect its resource_id output at {WEB_IQ_PORTAL}. "
+                "AppID onboarding, authenticated search and agent/app integration are not yet verified; see preparation.md.")
     return (f"{result}; DEV workspace {name} ({workspace}); Search identity {principal}; "
             "Git and knowledge setup pending")
 
@@ -1816,6 +1844,79 @@ def prove_retrieval(ctx, url, question, parameters, evaluate, attempts=3):
                   "Never accept a document-only answer as live ontology evidence.")
 
 
+def verify_web_iq(ctx):
+    account = outputs(ctx).get("web_iq")
+    if account is None:
+        return None
+    resource_id = account.get("resource_id") if isinstance(account, dict) else None
+    subscription = re.escape(ctx.target("subscription_id"))
+    if not isinstance(resource_id, str) or not re.fullmatch(
+            rf"/subscriptions/{subscription}/resourceGroups/[^/?#]+/providers/Microsoft\.WebIQ/accounts/[^/?#]+",
+            resource_id, re.IGNORECASE):
+        raise Blocked("The Web IQ output is not an account in the selected subscription.")
+    receipt = ctx.state.section("web_iq")
+    receipt.clear()
+    receipt.update(resource_id=resource_id, checked_at=utc_now(), status="provisioning_unverified",
+                   agent_app_integration="unverified")
+    ctx.state.save()
+    url = f"{ARM_API}{resource_id}?api-version={WEB_IQ_API_VERSION}"
+    response = arm(ctx, "GET", url)
+    if response.status != 200:
+        raise ServiceError("Reading the Web IQ account", response)
+    body = response.json(default={})
+    if not isinstance(body, dict) or str(body.get("id", "")).lower() != resource_id.lower():
+        raise Blocked("Web IQ returned a different or malformed account.")
+    properties = body.get("properties")
+    if not isinstance(properties, dict):
+        raise Blocked("Web IQ returned malformed account properties.")
+    state = properties.get("provisioningState")
+    if state != "Succeeded":
+        if state in ("Failed", "Canceled"):
+            raise Blocked(f"Web IQ account provisioning failed: {state}.")
+        raise Waiting(f"Web IQ account is not provisioned yet: {state}.", "Rerun after provisioning completes.")
+    receipt["status"] = "onboarding_pending"
+    ctx.state.save()
+    key = ctx.environ.get("WEB_IQ_API_KEY", "").strip()
+    if not key:
+        raise Waiting("Web IQ account is provisioned, but authenticated search is unverified.",
+                      f"Sign in to {WEB_IQ_PORTAL}, connect the deployed Web IQ resource and create its AppID/API key.",
+                      "Supply that resource's key only through WEB_IQ_API_KEY on the deployment host, then rerun.",
+                      "Never paste keys into chat, Terraform inputs, files or the browser app; see preparation.md.")
+    if any(ord(character) < 33 or ord(character) > 126 for character in key):
+        raise Blocked("WEB_IQ_API_KEY contains invalid HTTP header characters; supply a valid portal key.")
+    receipt["status"] = "search_unverified"
+    ctx.state.save()
+    response = ctx.http.request("POST", WEB_IQ_SEARCH, headers={"x-apikey": key}, body={
+        "query": WEB_IQ_QUESTION, "maxResults": 3, "contentFormat": "passage",
+        "maxLength": 1000, "safeSearch": "strict", "language": "en", "region": "US",
+    })
+    if response.status != 200:
+        # Do not echo data-plane error bodies: an upstream service may reflect credentials.
+        raise Blocked(f"Web IQ search failed with HTTP {response.status}; no successful search evidence was recorded.",
+                      "Check portal resource/AppID linking, the key's web permission and rate limits. "
+                      "The runner does not retry a billable search automatically.")
+    body = response.json(default={})
+    results = body.get("webResults") if isinstance(body, dict) else None
+    if not isinstance(results, list) or not results:
+        raise Blocked("Web IQ returned no web results; authenticated grounding is not verified.")
+    dated = 0
+    for result in results:
+        if not isinstance(result, dict):
+            raise Blocked("Web IQ returned a malformed web result.")
+        source = urllib.parse.urlparse(str(result.get("url") or ""))
+        if (source.scheme not in ("http", "https") or not source.hostname or source.username or source.password
+                or not isinstance(result.get("title"), str) or not result["title"].strip()
+                or not isinstance(result.get("content"), str) or not result["content"].strip()):
+            raise Blocked("Web IQ returned a result without a usable citation or grounding passage.")
+        dated += bool(result.get("crawledAt") or result.get("lastUpdatedAt"))
+    receipt.update(status="search_verified", verified_at=utc_now(), result_count=len(results),
+                   dated_result_count=dated, query=WEB_IQ_QUESTION)
+    ctx.state.save()
+    return (f"Web IQ public-only search verified ({len(results)} cited passages, {dated} with freshness metadata); "
+            "portal credential/resource association is operator-confirmed; scenario freshness/conflicts and "
+            "agent/app integration remain unverified")
+
+
 def phase_verify(ctx):
     values = outputs(ctx)
     endpoint = https_origin(values.get("search_endpoint"), "search_endpoint")
@@ -1841,9 +1942,11 @@ def phase_verify(ctx):
         "kind": "indexedOneLake", "knowledgeSourceName": documents,
         "includeReferences": True, "includeReferenceSourceData": True},
         lambda body: document_evidence(body, documents))
+    web_iq = verify_web_iq(ctx)
     ctx.state.section("verify").update(dev_ready_at=utc_now(), ingestion=ingestion, ontology=ontology, documents=document)
     ctx.state.save()
-    return "DEV ready: ingestion succeeded; live ontology and document retrieval verified with your identity"
+    return ("DEV ready: ingestion succeeded; live ontology and document retrieval verified with your identity"
+            + (f"; {web_iq}" if web_iq else ""))
 
 
 def power_platform(ctx):

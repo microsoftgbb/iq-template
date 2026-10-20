@@ -94,6 +94,16 @@ Without `infra/terraform.tfvars`, also pass `--project-name`, `--location` and `
 | `agent` | Creates or clones, renders, pushes, connects, configures, publishes and checks the Studio agent | Creation, connection and publish approvals; your **Fix connection** |
 | `app` | Sets the agent schema, runs `npm ci`, `ms app init` and adds the Studio data source | Registration approval; `ms` sign-in |
 
+When `web_iq_enabled = true`, `preflight` also requires explicit Web IQ terms
+acceptance and the pinned accounts API in the selected subscription. The normal
+platform/knowledge plan creates its global G3 account. In `verify`, the runner
+checks provisioning and makes one fixed public-only Web IQ search using
+`WEB_IQ_API_KEY` from the environment. Missing portal onboarding/credentials waits;
+API errors or missing citations block. Counts and optional freshness metadata
+are recorded separately from agent/app readiness; no content or keys are saved.
+See [preparation.md](../preparation.md) for the mandatory manual steps and the
+still-separate Studio integration. Disabled Web IQ makes no additional calls.
+
 Every phase checks live state before acting, so rerunning `up` resumes. It observes an accepted Fabric operation or an active notebook run instead of submitting another, and creates a fresh plan after a failed apply. Exit code `3` means a person must act; the output names the exact link or command. Exit code `4` means approval is required. Approve interactively, or rerun with `--approve <phase>=<sha256-prefix>` for the exact saved plan it printed (`terraform -chdir=infra show <plan>` shows it), or with `--approve agent-create`, `agent-connections`, `agent-publish` or `app-register`. `--yes` approves everything in that run except deletions and replacements, which also need `--allow-replace`. `up --through <phase>` stops after a phase; every run re-verifies the earlier phases, so no gate can be skipped. `status` summarizes receipts without cloud calls, and `--json` prints a machine-readable report.
 
 These choices are explicit flags, never automatic:
