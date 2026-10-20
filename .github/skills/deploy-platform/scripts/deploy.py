@@ -645,8 +645,11 @@ def discard_plan(ctx, phase):
         ctx.state.save()
 
 
-def converge(ctx, phase, target=None, check=None, variables=None):
-    """Plan, approve exactly that saved plan, apply it. Returns 'unchanged' or 'applied'."""
+def converge(ctx, phase, target=None, check=None, variables=None, before_apply=None):
+    """Plan, approve exactly that saved plan, apply it. Returns 'unchanged' or 'applied'.
+
+    `before_apply` runs once the plan is approved, just before it is applied.
+    """
     plans = ctx.state.section("pending_plans")
     pending = plans.get(phase)
     current = fingerprint(ctx)
@@ -706,6 +709,8 @@ def converge(ctx, phase, target=None, check=None, variables=None):
                             f"To apply exactly this plan, rerun with --allow-replace --approve {phase}={pending['sha256'][:12]}.",
                             approval=approval_record(phase, f"Apply the saved {phase} plan", pending))
     approve(ctx, phase, f"Apply the saved {phase} plan ({describe(summary)})", pending)
+    if before_apply:
+        before_apply()
     result = terraform(ctx, "apply", "-input=false", pending["path"], token=True, stream=True)
     discard_plan(ctx, phase)
     ctx.forget()
@@ -1960,7 +1965,18 @@ def phase_verify(ctx):
 
 
 def m365_demo_requested(ctx, values):
-    return bool(getattr(ctx.args, "with_m365_demo", False)) or values.get("m365_demo_enabled") is True
+    # Approving a saved demo plan by its hash also asks for the phase: tfvars only enables it once that plan applies.
+    approved = "m365-demo" in ctx.args.approve and "m365-demo" in ctx.state.section("pending_plans")
+    return bool(getattr(ctx.args, "with_m365_demo", False)) or values.get("m365_demo_enabled") is True or approved
+
+
+def enable_m365_demo(ctx):
+    """Record m365_demo_enabled = true in tfvars, so the full plans keep the demo app."""
+    result = run(ctx, [sys.executable, SCRIPTS / "configure_m365_demo.py"])
+    if result.code:
+        raise Blocked((result.stderr or result.stdout).strip(), "Review infra/terraform.tfvars, then rerun.")
+    ctx.log("Set m365_demo_enabled = true in infra/terraform.tfvars.")
+    ctx.forget()
 
 
 def m365_demo_plan_check(summary):
@@ -2012,13 +2028,14 @@ def phase_m365_demo(ctx):
     values = variables(ctx)
     if not m365_demo_requested(ctx, values):
         return "not enabled (optional Microsoft 365 demo seeding: deploy.py up --with-m365-demo)"
-    if values.get("m365_demo_enabled") is not True:
-        result = run(ctx, [sys.executable, SCRIPTS / "configure_m365_demo.py"])
-        if result.code:
-            raise Blocked((result.stderr or result.stdout).strip(), "Review infra/terraform.tfvars, then rerun.")
-        ctx.log("Set m365_demo_enabled = true in infra/terraform.tfvars.")
-        ctx.forget()
-    applied = converge(ctx, "m365-demo", check=m365_demo_plan_check)
+    # Until the app exists, only its own plan sets the variable. Enabling it in tfvars first would put the app into
+    # the earlier phases' full plans on the next run, ahead of this phase's approval.
+    enabling = values.get("m365_demo_enabled") is not True
+    applied = converge(ctx, "m365-demo", check=m365_demo_plan_check,
+                       variables={"m365_demo_enabled": "true"} if enabling else None,
+                       before_apply=(lambda: enable_m365_demo(ctx)) if enabling else None)
+    if enabling and applied == "unchanged":
+        enable_m365_demo(ctx)
     demo = required_outputs(ctx, "m365_demo")[0]
     tenant = guid(demo.get("tenant_id"), "m365_demo tenant_id")
     if not same_guid(tenant, ctx.target("tenant_id")):

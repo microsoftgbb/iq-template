@@ -772,8 +772,8 @@ class M365DemoTests(unittest.TestCase):
     GRANTED = {"consentType": "AllPrincipals", "resourceId": GRAPH_SP,
                "scope": "Policy.ReadWrite.ConditionalAccess User.Read offline_access"}
 
-    def demo_context(self, http, shell_rules=(), enabled=True, changes=(), output=None, **overrides):
-        root = make_root(self)
+    def demo_context(self, http, shell_rules=(), enabled=True, changes=(), output=None, root=None, **overrides):
+        root = root or make_root(self)
         demo = output or self.OUTPUT
         shell = FakeShell([
             *shell_rules, TOKEN_RULE,
@@ -801,15 +801,55 @@ class M365DemoTests(unittest.TestCase):
         self.assertFalse(http.calls)
         self.assertNotIn("m365_demo", ctx.state.data)
 
-    def test_with_m365_demo_sets_the_variable_and_plans_only_the_app_for_approval(self):
-        helper = (lambda args: len(args) > 1 and str(args[1]).endswith("configure_m365_demo.py"), deploy.Result(0))
-        changes = [("azuread_application.m365_demo[0]", ["create"]), ("azuread_service_principal.m365_demo[0]", ["create"])]
-        ctx, shell = self.demo_context(FakeHttp(), [helper], enabled=False, changes=changes, with_m365_demo=True)
+    HELPER = (lambda args: len(args) > 1 and str(args[1]).endswith("configure_m365_demo.py"), deploy.Result(0))
+    APP_CHANGES = [("azuread_application.m365_demo[0]", ["create"]),
+                   ("azuread_service_principal.m365_demo[0]", ["create"])]
+
+    def test_with_m365_demo_plans_only_the_app_for_approval_without_enabling_it_yet(self):
+        ctx, shell = self.demo_context(FakeHttp(), [self.HELPER], enabled=False, changes=self.APP_CHANGES,
+                                       with_m365_demo=True)
         with self.assertRaises(deploy.NeedsApproval) as stop:
             deploy.phase_m365_demo(ctx)
-        self.assertEqual(len(shell.matching(helper[0])), 1)
+        plan, = shell.matching(terraform("plan"))
+        self.assertIn("-var=m365_demo_enabled=true", plan)
+        self.assertFalse(shell.matching(self.HELPER[0]), "tfvars stays unchanged until the plan is approved")
         self.assertEqual(stop.exception.approval["key"], "m365-demo")
         self.assertEqual(stop.exception.approval["summary"]["counts"], {"create": 2})
+        self.assertFalse(shell.matching(terraform("apply")))
+
+    def test_approving_the_saved_plan_enables_the_variable_then_applies_it(self):
+        ctx, _ = self.demo_context(FakeHttp(), [self.HELPER], enabled=False, changes=self.APP_CHANGES,
+                                   with_m365_demo=True)
+        with self.assertRaises(deploy.NeedsApproval) as stop:
+            deploy.phase_m365_demo(ctx)
+        sha = stop.exception.approval["sha256"][:12]
+
+        # The rerun the runner asks for: only the approval, without --with-m365-demo.
+        ctx, shell = self.demo_context(self.ready_http(), [self.HELPER], enabled=False, changes=self.APP_CHANGES,
+                                       root=ctx.root, approve={"m365-demo": sha})
+        ctx.state.load()
+        ctx.state.section("target").update(tenant_id=TENANT, subscription_id="sub", user_object_id="user")
+        self.assertIn("applied; demo app", deploy.phase_m365_demo(ctx))
+        self.assertFalse(shell.matching(terraform("plan")), "the approved saved plan is applied, not a new one")
+        helper = shell.calls.index(shell.matching(self.HELPER[0])[0])
+        self.assertLess(helper, shell.calls.index(shell.matching(terraform("apply"))[0]))
+        self.assertEqual(ctx.state.section("m365_demo")["consent"], "granted")
+
+    def test_a_rerun_without_the_flag_or_its_approval_leaves_a_saved_plan_alone(self):
+        ctx, _ = self.demo_context(FakeHttp(), enabled=False, changes=self.APP_CHANGES, with_m365_demo=True)
+        with self.assertRaises(deploy.NeedsApproval):
+            deploy.phase_m365_demo(ctx)
+        ctx, shell = self.demo_context(FakeHttp(), [self.HELPER], enabled=False, changes=self.APP_CHANGES,
+                                       root=ctx.root, yes=True)
+        ctx.state.load()
+        self.assertIn("m365-demo", ctx.state.section("pending_plans"))
+        self.assertIn("not enabled", deploy.phase_m365_demo(ctx))
+        self.assertFalse(shell.calls)
+
+    def test_an_existing_app_gets_its_setting_recorded(self):
+        ctx, shell = self.demo_context(self.ready_http(), [self.HELPER], enabled=False, with_m365_demo=True)
+        self.assertIn("unchanged; demo app", deploy.phase_m365_demo(ctx))
+        self.assertEqual(len(shell.matching(self.HELPER[0])), 1)
         self.assertFalse(shell.matching(terraform("apply")))
 
     def test_the_plan_refuses_unrelated_changes(self):
