@@ -99,8 +99,11 @@ def plan(manifest_data, shared):
     return rows
 
 
-def digest(rows):
-    return hashlib.sha256(json.dumps(rows, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+def digest(run_id, tenant_id, rows):
+    """The approval hash of a plan: which run, in which tenant, and what it deletes or keeps."""
+    plan_text = json.dumps({"runId": run_id, "tenantId": tenant_id, "items": rows}, sort_keys=True,
+                           separators=(",", ":"))
+    return hashlib.sha256(plan_text.encode("utf-8")).hexdigest()
 
 
 class Cleaner:
@@ -229,9 +232,12 @@ class Cleaner:
 
     # --- mail ------------------------------------------------------------------------------
     def delete_mail(self, key, entry):
-        conversations = {sent.get("conversationId") for sent in entry.get("sent") or [] if sent.get("conversationId")}
-        internet_ids = {sent.get("internetMessageId") for sent in entry.get("sent") or []
-                        if sent.get("internetMessageId") and not sent.get("conversationId")}
+        # A pending draft's send may have gone through without being confirmed, so its delivered
+        # copies are found the same way as the confirmed messages.
+        records = list(entry.get("sent") or []) + ([entry["pending"]] if entry.get("pending") else [])
+        conversations = {record.get("conversationId") for record in records if record.get("conversationId")}
+        internet_ids = {record.get("internetMessageId") for record in records
+                        if record.get("internetMessageId") and not record.get("conversationId")}
         cleared = entry.setdefault("mailboxesCleared", [])
         for upn in entry.get("participants") or []:
             if upn in cleared:

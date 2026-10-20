@@ -53,6 +53,10 @@ as `keep` with `keptFor`.
 6. `cleaned-with-failures`: relay each `failures[].error`. A demo user who could not sign in
    keeps their items. Fix the cause, then plan again: the new plan lists only what remains.
 7. Rerun `status`. Once nothing remains, the demo can be seeded again without `--again`.
+   Once a cleanup starts deleting, its seed run can no longer be resumed (that would re-create
+   content no plan would find): finish the cleanup instead, then seed again. A cleanup that
+   stopped midway shows as `cleanup-incomplete`; plan and confirm it again. One that stopped
+   before deleting anything leaves the seed run as it was.
 
 ## Local cleanup
 

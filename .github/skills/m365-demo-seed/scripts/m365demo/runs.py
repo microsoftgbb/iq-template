@@ -128,6 +128,28 @@ def created_items(run):
     return content.Manifest(run.path("manifest.json")).created()
 
 
+def cleaned_up(run):
+    """True once a cleanup has touched this seed run: resuming it would re-create what was deleted."""
+    if run.info().get("cleanups"):
+        return True
+    items = (content.Manifest(run.path("manifest.json")).data.get("items") or {}).values()
+    return any(entry.get("deleted") or entry.get("deleteError") for entry in items)
+
+
+def record_cleanup(target, run_id, *, create=False, **fields):
+    """Add or update a cleanup run's record on the seed run it cleans."""
+    info = target.info()
+    records = info.setdefault("cleanups", [])
+    record = next((entry for entry in records if entry.get("runId") == run_id), None)
+    if record is None:
+        if not create:
+            return
+        record = {"runId": run_id}
+        records.append(record)
+    record.update(fields)
+    workspace.write_json(target.path("run.json"), info)
+
+
 def open_tenant_changes():
     """Runs whose tenant changes are not restored and whose worker is gone."""
     found = []
@@ -204,10 +226,11 @@ def start_seed(name, receipts_file, tenant_id, approve, again=False):
     previous = [run for run in all_runs() if run.info().get("kind") == "seed" and run.info().get("demo") == name
                 and run.info().get("tenantId") == receipt["tenant_id"] and created_items(run)]
     if previous and not again:
+        finish = (f"{CLI} cleanup --run {previous[0].id}" if cleaned_up(previous[0])
+                  else f"{CLI} resume --run {previous[0].id} --tenant {receipt['tenant_id']}")
         raise Usage("already-seeded", f"The demo {name!r} already has content in this tenant from {previous[0].id}; "
-                    "seeding it again creates a second copy. Resume that run to finish it, or add --again to seed a "
-                    "second copy anyway.", previousRun=previous[0].id,
-                    next=[f"{CLI} resume --run {previous[0].id} --tenant {receipt['tenant_id']}"])
+                    "seeding it again creates a second copy. Finish that run (resume it, or finish its cleanup), or "
+                    "add --again to seed a second copy anyway.", previousRun=previous[0].id, next=[finish])
     run = new_run("seed", name)
     try:
         workspace.write_private(run.path("demo.json"), raw)
@@ -232,8 +255,11 @@ def resume(run_id, receipts_file, tenant_id):
         raise Usage("not-a-seed", f"{run_id} is not a seed run.")
     if info.get("tenantId") != receipt["tenant_id"] or info.get("clientId") != receipt["client_id"]:
         raise Blocked("other-deployment", f"{run_id} belongs to another tenant or demo app.")
-    outcome = (run.result() or {}).get("outcome")
-    if outcome == "seeded":
+    if cleaned_up(run):
+        raise Usage("cleaned-up", f"{run_id} has been cleaned up (fully or partly); resuming it would re-create content "
+                    "no cleanup plan would find. Finish its cleanup, then seed the demo again.",
+                    next=[f"{CLI} cleanup --run {run_id}"])
+    if (run.result() or {}).get("outcome") == "seeded":
         raise Usage("complete", f"{run_id} already seeded everything.")
     _check_quiet(resuming=run_id)
     earlier = run.result()
@@ -301,7 +327,7 @@ def cleanup_plan(run_id):
     for row in rows:
         kinds.setdefault(row["kind"], {"delete": 0, "keep": 0})["keep" if row["action"] == "keep" else "delete"] += 1
     report = {"runId": run_id, "demo": info.get("demo"), "tenantId": info.get("tenantId"), "items": rows,
-              "counts": kinds, "sha256": cleanup.digest(rows)}
+              "counts": kinds, "sha256": cleanup.digest(run_id, info.get("tenantId"), rows)}
     if not rows:
         report.update(summary=f"{run_id} has nothing left in the tenant.", next=[])
         return report
@@ -322,7 +348,7 @@ def start_cleanup(run_id, receipts_file, tenant_id, approve):
     if info.get("tenantId") != receipt["tenant_id"]:
         raise Blocked("other-deployment", f"{run_id} seeded another tenant.")
     rows = cleanup_rows(target)
-    digest = cleanup.digest(rows)
+    digest = cleanup.digest(run_id, info.get("tenantId"), rows)
     if not rows:
         return {"runId": run_id, "state": "nothing-to-clean", "summary": f"{run_id} has nothing left in the tenant."}
     if (approve or "").strip().lower() != digest:
@@ -401,7 +427,8 @@ def snapshot(run):
         if tenant_state.needs_restore:
             steps.append(f"{CLI} restore --run {state_run.id} --tenant {tenant_id}")
         unfinished = state in ("interrupted", "failed", "cancelled") or outcome == "seeded-with-failures"
-        if kind == "seed" and unfinished and (not tenant_state.needs_restore or tenant_state.resumable):
+        if kind == "seed" and unfinished and (not tenant_state.needs_restore or tenant_state.resumable) \
+                and not cleaned_up(run):
             steps.append(f"{CLI} resume --run {run.id} --tenant {tenant_id}")
         if kind == "seed" and result and result.get("guide") and not tenant_state.needs_restore:
             steps.append(f"Open the presenter guide yourself: {result['guide']}")
@@ -516,6 +543,8 @@ def progress_writer(run, total):
 
 
 def seed_run(run, info):
+    if cleaned_up(run):
+        raise Blocked("cleaned-up", f"{run.id} has been cleaned up; seed the demo again instead.")
     doc, receipt = run.demo(), info["receipt"]
     people = {person["key"]: dict(person) for person in demo.people(doc)}
     passwords = passwords_for(people)
@@ -567,7 +596,7 @@ def cleanup_run(run, info):
     manifest = content.Manifest(target.path("manifest.json"))
     shared = cleanup.shared_with(_others(target, info["tenantId"]))
     rows = cleanup.plan(manifest.data, shared)
-    if cleanup.digest(rows) != info["planSha256"]:
+    if cleanup.digest(target.id, target.info().get("tenantId"), rows) != info["planSha256"]:
         raise Blocked("plan-changed", "The cleanup plan changed since the user approved it; plan and approve it again.",
                       next=[f"{CLI} cleanup --run {target.id}"])
     state = tenant.State(run.path("tenant_state.json"), run.id)
@@ -590,19 +619,16 @@ def cleanup_run(run, info):
         cleaner = cleanup.Cleaner(manifest, by_upn, admin, shared=shared, log=run.log, advance=advance,
                                   cancelled=run.cancel_requested, graph_for=graph_for)
         run.status("cleaning", progress=dict(progress))
+        # Recorded before the first deletion: from here on, resuming the seed run would re-create content.
+        record_cleanup(target, run.id, create=True, outcome="running", startedAt=utc_now())
         cleaner.run()
         run.status("restoring")
     for person in people.values():
         person.pop("session", None)
     remaining = manifest.created()
-    result = {"outcome": "cleaned-with-failures" if cleaner.failures or remaining else "cleaned",
-              "failures": cleaner.failures, "kept": cleaner.kept, "signInFailures": sign_in_failures,
-              "counts": cleaner.counts, "swept": cleaner.swept, "remaining": remaining}
-    target_info = target.info()
-    target_info.setdefault("cleanups", []).append({"runId": run.id, "outcome": result["outcome"],
-                                                   "remaining": remaining, "finishedAt": utc_now()})
-    workspace.write_json(target.path("run.json"), target_info)
-    return result
+    return {"outcome": "cleaned-with-failures" if cleaner.failures or remaining else "cleaned",
+            "failures": cleaner.failures, "kept": cleaner.kept, "signInFailures": sign_in_failures,
+            "counts": cleaner.counts, "swept": cleaner.swept, "remaining": remaining}
 
 
 def restore_run(run, info):
@@ -650,6 +676,12 @@ def work(run_id):
         final = "needs-restore" if open_changes else final_state(result.get("outcome"))
         # Each step on its own: none of them may keep the lock from being released.
         _quietly(lambda: workspace.write_json(run.path("result.json"), result))
+        if info.get("kind") == "cleanup":
+            def note_cleanup_end():
+                cleaned = Run(info["target"])
+                record_cleanup(cleaned, run_id, outcome=result.get("outcome"), remaining=created_items(cleaned),
+                               finishedAt=result["finishedAt"])
+            _quietly(note_cleanup_end)
         _quietly(lambda: run.log(f"Run ended: {result.get('outcome')} ({final})."))
         _quietly(lambda: run.status(final))
         _quietly(lambda: workspace.release_lock(run_id))

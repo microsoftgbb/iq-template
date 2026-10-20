@@ -66,14 +66,19 @@ def report(receipts_file=None, demo_name=None):
                            "created": last.get("created"), "guide": result.get("guide")}
         resume = f"{CLI} resume --run {last['runId']} --tenant {tenant}"
         cleanups = seeds[0].info().get("cleanups") or []
-        if cleanups and not last.get("created"):
-            base["lastRun"]["cleanedBy"] = cleanups[-1]["runId"]
-            return _result(base, "ready-to-seed", f"The content {last['runId']} seeded was cleaned up by "
-                           f"{cleanups[-1]['runId']}; the demo can be seeded again.",
-                           [f"{CLI} users check --demo {name}", f"{CLI} demo preview --demo {name}"])
-        if cleanups:
-            return _result(base, "cleanup-incomplete", f"The cleanup {cleanups[-1]['runId']} left {last['created']} "
-                           f"item(s) of {last['runId']} in the tenant.", [f"{CLI} cleanup --run {last['runId']}"])
+        if runs.cleaned_up(seeds[0]):
+            by = cleanups[-1] if cleanups else {}
+            if not last.get("created"):
+                base["lastRun"]["cleanedBy"] = by.get("runId")
+                return _result(base, "ready-to-seed", f"The content {last['runId']} seeded was cleaned up"
+                               + (f" by {by['runId']}" if by.get("runId") else "") + "; the demo can be seeded again.",
+                               [f"{CLI} users check --demo {name}", f"{CLI} demo preview --demo {name}"])
+            # "running" stays recorded when the worker died without reaching its end.
+            ended = (" stopped before finishing and" if by.get("outcome") == "running"
+                     else f" ended {by['outcome']} and" if by.get("outcome") else "")
+            return _result(base, "cleanup-incomplete", f"The cleanup {by.get('runId', 'of ' + last['runId'])}{ended} "
+                           f"left {last['created']} item(s) of {last['runId']} in the tenant; plan the cleanup again.",
+                           [f"{CLI} cleanup --run {last['runId']}"])
         if outcome in ("seeded", "seeded-with-failures"):
             summary = (f"The demo {name!r} was seeded by {last['runId']}"
                        + (" with some items not created" if outcome == "seeded-with-failures" else "")

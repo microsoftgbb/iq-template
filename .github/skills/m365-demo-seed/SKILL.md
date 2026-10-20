@@ -85,7 +85,7 @@ python3 .github/skills/m365-demo-seed/scripts/m365demo.py <command>
 | `seed --demo NAME --tenant ID --approve SHA256 [--again]` | Starts a detached seed run of the approved demo. |
 | `monitor --run ID [--wait SECONDS]` | A run's state and progress; with `--wait` (up to 600), returns when the state or step changes. |
 | `cancel --run ID` | Stops a run after its current item; the tenant is restored. |
-| `resume --run ID --tenant ID` | Continues an interrupted or partly failed seed run without repeating finished items. |
+| `resume --run ID --tenant ID` | Continues an interrupted or partly failed seed run without repeating finished items. Refused once a cleanup has started deleting that run's content. |
 | `restore --run ID --tenant ID` | Restores tenant settings a run left changed (a new run with its own sign-in). |
 | `cleanup --run ID` | Plans deleting what a seed run created (local, no tenant calls); returns the plan's `sha256`. |
 | `cleanup --run ID --tenant ID --approve SHA256` | Starts a detached cleanup run of the approved plan. |

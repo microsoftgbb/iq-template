@@ -3,7 +3,7 @@ import unittest
 from unittest import mock
 
 from support import TenantCase, WorkerCase, run_cli
-from fake_tenant import ADMIN
+from fake_tenant import ADMIN, Reply
 
 from m365demo import cleanup, content, runs, sample
 from m365demo.graph import Graph
@@ -144,12 +144,35 @@ class CleanerTests(TenantCase):
             self.clean(manifest)
         self.assertTrue(any(wait > 0.5 for wait in waits), waits)
 
-    def test_the_plan_hash_follows_the_plan(self):
+    def test_the_plan_hash_follows_the_plan_the_run_and_the_tenant(self):
         manifest = self.seed("run-1")
         rows = cleanup.plan(manifest.data, {})
-        self.assertEqual(cleanup.digest(rows), cleanup.digest(cleanup.plan(manifest.data, {})))
+        tenant = self.fake.tenant
+        self.assertEqual(cleanup.digest("run-1", tenant, rows),
+                         cleanup.digest("run-1", tenant, cleanup.plan(manifest.data, {})))
+        self.assertNotEqual(cleanup.digest("run-1", tenant, rows), cleanup.digest("run-2", tenant, rows),
+                            "an identical plan for another copy of the demo needs its own approval")
+        self.assertNotEqual(cleanup.digest("run-1", tenant, rows), cleanup.digest("run-1", "other-tenant", rows))
         manifest.item("mail:pump-b-window")["deleted"] = True
-        self.assertNotEqual(cleanup.digest(rows), cleanup.digest(cleanup.plan(manifest.data, {})))
+        self.assertNotEqual(cleanup.digest("run-1", tenant, rows),
+                            cleanup.digest("run-1", tenant, cleanup.plan(manifest.data, {})))
+
+    def test_a_first_message_whose_send_was_never_confirmed_is_still_found(self):
+        send = r"^/v1\.0/me/messages/(?P<mid>[^/]+)/send$"
+        self.fake.route("POST", send, self.fake.processed_then(self.fake.send_message, Reply(drop=True)))
+        manifest = content.Manifest(self.tmp / "run-1.json", "run-1", "launch")
+        seeder = content.Seeder(self.doc, self.people, self.admin, manifest, run_id="run-1", log=lambda line: None,
+                                advance=lambda n: None, cancelled=lambda: False, today=date(2026, 10, 14))
+        seeder.seed_mail()
+        threads = [manifest.item(f"mail:{t['key']}") for t in self.doc["mail"]]
+        self.assertTrue(all(t["sent"] == [] and t["pending"]["index"] == 0 for t in threads))
+        delivered = [m for box in self.fake.mailboxes.values() for m in box if m["folder"] == "inbox"
+                     and m.get("kind") is None]
+        self.assertTrue(delivered, "the sends went through before the timeout")
+        self.fake.route("POST", send, self.fake.send_message)
+        cleaner = self.clean(manifest)
+        self.assertEqual(cleaner.failures, [])
+        self.assertEqual([m for box in self.fake.mailboxes.values() for m in box if m.get("kind") is None], [])
 
 
 class CleanupRunTests(WorkerCase):
@@ -200,6 +223,66 @@ class CleanupRunTests(WorkerCase):
         self.wait_for(again["runId"], {"finished"})
         code, past, _ = run_cli("history")
         self.assertEqual([r["kind"] for r in past["runs"]], ["seed", "cleanup", "seed"])
+
+    def test_a_cleanup_stopped_midway_is_reported_and_blocks_resume(self):
+        def delete_then_cancel(request, gid):
+            answer = self.fake.delete_group(request, gid)
+            for folder in (self.home / "runs").glob("*-cleanup-*"):
+                (folder / "cancel").write_text("stop", encoding="utf-8")
+            return answer
+
+        self.fake.route("DELETE", r"^/v1\.0/groups/(?P<gid>[^/]+)$", delete_then_cancel)
+        code, plan, _ = run_cli("cleanup", "--run", self.seed_run)
+        code, started, _ = run_cli("cleanup", "--run", self.seed_run, "--tenant", self.fake.tenant,
+                                   "--approve", plan["sha256"], "--receipts-file", self.receipts)
+        code, stopped = self.wait_for(started["runId"], {"cancelled"})
+        self.assertEqual(stopped["tenant"]["phase"], "restored")
+        self.assertIn(f"cleanup --run {self.seed_run}", stopped["next"][0])
+
+        code, status, _ = run_cli("status", "--receipts-file", self.receipts)
+        self.assertEqual(status["state"], "cleanup-incomplete")
+        self.assertIn("cancelled", status["summary"])
+        code, seed_view, _ = run_cli("monitor", "--run", self.seed_run)
+        self.assertFalse([step for step in seed_view["next"] if " resume " in step])
+        code, refused, _ = run_cli("resume", "--run", self.seed_run, "--tenant", self.fake.tenant,
+                                   "--receipts-file", self.receipts)
+        self.assertEqual((code, refused["reason"]), (1, "cleaned-up"))
+        code, again, _ = run_cli("seed", "--demo", "launch", "--tenant", self.fake.tenant, "--approve", self.sha,
+                                 "--receipts-file", self.receipts)
+        self.assertEqual((code, again["reason"]), (1, "already-seeded"))
+        self.assertIn(f"cleanup --run {self.seed_run}", again["next"][0])
+
+        self.fake.route("DELETE", r"^/v1\.0/groups/(?P<gid>[^/]+)$", self.fake.delete_group)
+        code, plan, _ = run_cli("cleanup", "--run", self.seed_run)
+        self.assertNotIn("team", [row["kind"] for row in plan["items"]], "the deleted team is not planned again")
+        code, finishing, _ = run_cli("cleanup", "--run", self.seed_run, "--tenant", self.fake.tenant,
+                                     "--approve", plan["sha256"], "--receipts-file", self.receipts)
+        code, done = self.wait_for(finishing["runId"], {"finished"})
+        self.assertEqual(done["result"]["outcome"], "cleaned")
+        code, status, _ = run_cli("status", "--receipts-file", self.receipts)
+        self.assertEqual((status["state"], status["lastRun"]["cleanedBy"]), ("ready-to-seed", finishing["runId"]))
+        info = (self.home / "runs" / self.seed_run / "run.json").read_text(encoding="utf-8")
+        self.assertIn('"outcome": "cancelled"', info)
+
+    def test_a_cleanup_that_stops_before_deleting_leaves_the_seed_run_as_it_was(self):
+        refused = Reply(403, {"error": {"code": "Authorization_RequestDenied", "message": "Insufficient privileges."}})
+        self.fake.route("POST", r"^/v1\.0/groups$", lambda request: refused)
+        code, plan, _ = run_cli("cleanup", "--run", self.seed_run)
+        code, started, _ = run_cli("cleanup", "--run", self.seed_run, "--tenant", self.fake.tenant,
+                                   "--approve", plan["sha256"], "--receipts-file", self.receipts)
+        code, stopped = self.wait_for(started["runId"], {"failed"})
+        self.assertEqual(code, 2, stopped)
+        self.assertFalse(runs.cleaned_up(runs.Run(self.seed_run)))
+        code, status, _ = run_cli("status", "--receipts-file", self.receipts)
+        self.assertEqual(status["state"], "seeded")
+        code, unchanged, _ = run_cli("cleanup", "--run", self.seed_run)
+        self.assertEqual(unchanged["sha256"], plan["sha256"])
+
+    def test_a_cleanup_whose_worker_died_is_reported_as_stopped(self):
+        runs.record_cleanup(runs.Run(self.seed_run), "20250101-000000-cleanup-launch", create=True, outcome="running")
+        code, status, _ = run_cli("status", "--receipts-file", self.receipts)
+        self.assertEqual(status["state"], "cleanup-incomplete")
+        self.assertIn("20250101-000000-cleanup-launch stopped before finishing and left", status["summary"])
 
     def test_only_seed_runs_can_be_cleaned(self):
         code, plan, _ = run_cli("cleanup", "--run", self.seed_run)
