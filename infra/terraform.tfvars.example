@@ -8,15 +8,15 @@ github_branch_name     = "<published-bootstrap-branch>"
 knowledge_lakehouse_id = null
 knowledge_ontologies   = {}
 
-# Optional Web IQ account; disabled unless both choices are explicit.
-# Read preparation.md before opting in: paid subscription, public global service,
+# Web IQ is deployed with every platform. Set true only after accepting its terms.
+# Read preparation.md: paid subscription, public global service,
 # preview terms, manual portal AppID linking and a separate runtime integration.
-# web_iq_enabled        = true
-# web_iq_terms_accepted = true
+web_iq_terms_accepted = false
 # The runner's public-only search probe reads WEB_IQ_API_KEY from the environment.
 # Never put that key in tfvars, source control or the browser app.
 
-# Edit all six values for your derived repository, or use the initialize-project skill.
+# Edit all six placeholders for your derived repository, or use the initialize-project skill.
+# Explicitly accept Web IQ terms above before deployment.
 # project_name: 3-16 lowercase letters/digits/single hyphens; start with a letter.
 # Capacity admins: user UPNs or service-principal object IDs.
 # Select the new repository's published default branch, not a local agent worktree branch.

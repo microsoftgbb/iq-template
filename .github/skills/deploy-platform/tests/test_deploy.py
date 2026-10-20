@@ -10,6 +10,7 @@ import stat
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
@@ -622,8 +623,11 @@ class SearchTests(unittest.TestCase):
         ctx = self.search_context(http, plan_rules([], plan_code=0))
         ctx.cache["variables"] = {"knowledge_lakehouse_id": None}
         ctx.cache["outputs"].update(dev_workspace_id=WORKSPACE, dev_workspace_name="demo-dev",
-                                    github_connect_request=REQUEST)
+                                    github_connect_request=REQUEST, web_iq={"resource_id": "web-iq-account"})
         self.assertIn("Search identity " + "p" * 8, deploy.phase_platform(ctx))
+        del ctx.cache["outputs"]["web_iq"]
+        with self.assertRaisesRegex(deploy.Blocked, "Terraform outputs are missing: web_iq"):
+            deploy.phase_platform(ctx)
 
     def test_a_knowledge_plan_creating_serverless_search_is_applied_in_two_reviewed_plans(self):
         replaced = ("azapi_resource.search", ["delete", "create"])
@@ -1013,24 +1017,26 @@ class WebIqTests(unittest.TestCase):
             ctx.environ["WEB_IQ_API_KEY"] = key
         return ctx
 
-    def test_disabled_web_iq_has_no_cloud_or_credential_dependency(self):
+    def test_missing_web_iq_output_blocks_readiness_without_cloud_calls(self):
         ctx = make_context(self, make_root(self))
-        ctx.cache["outputs"] = {}
-        self.assertEqual(deploy.check_web_iq(ctx, "sub", {"web_iq_enabled": False}), "Web IQ disabled")
-        self.assertIsNone(deploy.verify_web_iq(ctx))
-        self.assertFalse(ctx.http.calls)
-        self.assertFalse(ctx.shell.calls)
+        for outputs in ({}, {"web_iq": None}, {"web_iq": {}}):
+            with self.subTest(outputs=outputs):
+                ctx.cache["outputs"] = outputs
+                with self.assertRaisesRegex(deploy.Blocked, "Terraform outputs are missing: web_iq"):
+                    deploy.verify_web_iq(ctx)
+                self.assertFalse(ctx.http.calls)
+                self.assertFalse(ctx.shell.calls)
 
-    def test_opt_in_requires_terms_and_the_pinned_subscription_api(self):
+    def test_every_deployment_requires_terms_and_the_pinned_subscription_api(self):
         ctx = make_context(self, make_root(self))
         with self.assertRaisesRegex(deploy.Waiting, "terms and paid usage"):
-            deploy.check_web_iq(ctx, "sub", {"web_iq_enabled": True, "web_iq_terms_accepted": False})
+            deploy.check_web_iq(ctx, "sub", {"web_iq_terms_accepted": False})
         self.assertFalse(ctx.shell.calls)
         for versions, succeeds in (([], False), ([deploy.WEB_IQ_API_VERSION], True)):
             provider = {"registrationState": "NotRegistered",
                         "resourceTypes": [{"resourceType": "accounts", "apiVersions": versions}]}
             ctx.shell = FakeShell([(command("az", "provider", "show"), deploy.Result(0, json.dumps(provider)))])
-            values = {"web_iq_enabled": True, "web_iq_terms_accepted": True}
+            values = {"web_iq_terms_accepted": True}
             if succeeds:
                 self.assertIn("portal AppID linking remains manual", deploy.check_web_iq(ctx, "sub", values))
             else:
@@ -1038,6 +1044,22 @@ class WebIqTests(unittest.TestCase):
                     deploy.check_web_iq(ctx, "sub", values)
             self.assertIn("sub", ctx.shell.calls[0])
             self.assertFalse(ctx.shell.matching(command("az", "provider", "register")))
+
+    def test_document_and_ontology_success_cannot_bypass_web_iq_readiness(self):
+        ctx = make_context(self, make_root(self))
+        ctx.cache["outputs"] = {
+            "search_endpoint": "https://demo.search.windows.net",
+            "knowledge_source_status_url": "https://demo.search.windows.net/knowledgesources/docs/status?api-version=test",
+            "knowledge_base_name": "knowledge",
+            "knowledge_source_name": "docs",
+            "ontology_knowledge_sources": {"scenario": {"knowledge_source_name": "ontology"}},
+        }
+        with mock.patch.object(deploy, "wait_ingestion", return_value={}), \
+                mock.patch.object(deploy, "prove_retrieval", return_value={}) as retrieval:
+            with self.assertRaisesRegex(deploy.Blocked, "Terraform outputs are missing: web_iq"):
+                deploy.phase_verify(ctx)
+        self.assertEqual(retrieval.call_count, 2)
+        self.assertNotIn("dev_ready_at", ctx.state.section("verify"))
 
     def test_a_provisioned_account_waits_for_portal_onboarding_not_automatic_keys(self):
         ctx = self.web_context()

@@ -70,12 +70,12 @@ PLATFORM_ADDRESSES = frozenset({
     "azurerm_resource_group.main", "azurerm_fabric_capacity.main", "fabric_workspace.dev",
     "fabric_workspace.test", "fabric_connection.github", "fabric_deployment_pipeline.main",
     "azapi_resource.foundry", "azapi_resource.chat_model", "azapi_resource.embedding_model",
-    "azapi_resource.search",
+    "azapi_resource.search", "azapi_resource.web_iq",
 })
 VARIABLES = ("project_name", "location", "fabric_location", "search_location", "search_sku", "fabric_capacity_sku",
              "github_owner", "github_repository_name", "github_branch_name", "github_directory_name",
              "knowledge_lakehouse_id", "knowledge_ontologies", "chat_model", "embedding_model",
-             "web_iq_enabled", "web_iq_terms_accepted")
+             "web_iq_terms_accepted")
 WEB_IQ_API_VERSION = "2026-06-01-preview"
 WEB_IQ_SEARCH = "https://api.microsoft.ai/v3/search/web"
 WEB_IQ_PORTAL = "https://webiq.microsoft.ai/profiles"
@@ -983,10 +983,8 @@ def phase_preflight(ctx):
 
 
 def check_web_iq(ctx, subscription, values):
-    if not values["web_iq_enabled"]:
-        return "Web IQ disabled"
     if not values["web_iq_terms_accepted"]:
-        raise Waiting("Web IQ is enabled but its terms and paid usage have not been accepted.",
+        raise Waiting("Web IQ is required, but its terms and paid usage have not been accepted.",
                       "Review https://www.microsoft.com/en-us/webiq/webiq-legal and preparation.md.",
                       "Only after accepting, set web_iq_terms_accepted = true in infra/terraform.tfvars.")
     provider = az_json(ctx, ["provider", "show", "--namespace", "Microsoft.WebIQ", "--subscription", subscription],
@@ -997,7 +995,7 @@ def check_web_iq(ctx, subscription, values):
         raise Blocked("This subscription does not advertise the pinned Web IQ accounts API.",
                       "Ask your Microsoft representative to enable Web IQ for a paid subscription; Azure credits do not work.",
                       "Provider registration alone does not prove subscription eligibility.")
-    return ("Web IQ global G3 opted in; Terraform registers Microsoft.WebIQ; paid-subscription eligibility "
+    return ("Web IQ global G3 required; Terraform registers Microsoft.WebIQ; paid-subscription eligibility "
             "is proven only by account creation; portal AppID linking remains manual")
 
 
@@ -1224,11 +1222,11 @@ def phase_platform(ctx):
     if variables(ctx)["knowledge_lakehouse_id"] is not None:
         return "covered by the knowledge phase's full plan"
     result = converge(ctx, "platform")
-    workspace, name, _ = required_outputs(ctx, "dev_workspace_id", "dev_workspace_name", "github_connect_request")
+    workspace, name, *_ = required_outputs(ctx, "dev_workspace_id", "dev_workspace_name",
+                                           "github_connect_request", "web_iq")
     principal = ensure_search_identity(ctx, required=True)
-    if outputs(ctx).get("web_iq"):
-        ctx.log(f"Web IQ account provisioned; connect its resource_id output at {WEB_IQ_PORTAL}. "
-                "AppID onboarding, authenticated search and agent/app integration are not yet verified; see preparation.md.")
+    ctx.log(f"Web IQ account provisioned; connect its resource_id output at {WEB_IQ_PORTAL}. "
+            "AppID onboarding, authenticated search and agent/app integration are not yet verified; see preparation.md.")
     return (f"{result}; DEV workspace {name} ({workspace}); Search identity {principal}; "
             "Git and knowledge setup pending")
 
@@ -1845,9 +1843,7 @@ def prove_retrieval(ctx, url, question, parameters, evaluate, attempts=3):
 
 
 def verify_web_iq(ctx):
-    account = outputs(ctx).get("web_iq")
-    if account is None:
-        return None
+    account, = required_outputs(ctx, "web_iq")
     resource_id = account.get("resource_id") if isinstance(account, dict) else None
     subscription = re.escape(ctx.target("subscription_id"))
     if not isinstance(resource_id, str) or not re.fullmatch(
@@ -1945,8 +1941,8 @@ def phase_verify(ctx):
     web_iq = verify_web_iq(ctx)
     ctx.state.section("verify").update(dev_ready_at=utc_now(), ingestion=ingestion, ontology=ontology, documents=document)
     ctx.state.save()
-    return ("DEV ready: ingestion succeeded; live ontology and document retrieval verified with your identity"
-            + (f"; {web_iq}" if web_iq else ""))
+    return ("DEV ready: ingestion succeeded; live ontology and document retrieval verified with your identity; "
+            f"{web_iq}")
 
 
 def power_platform(ctx):

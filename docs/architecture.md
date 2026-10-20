@@ -25,10 +25,11 @@ Select the image for the full-size SVG. The [deployment flow](deployment-flow.md
 | Fabric DEV items | `Scenario` lakehouse, `SeedScenario`, `ScenarioOntology`, `BindScenario` and the `Bootstrap` deployment plan. Notebooks insert missing demo content and bind to the current workspace. | [`workspace/`](../workspace/), [bootstrap and promotion](../cicd/README.md) |
 | Azure AI Search / Foundry IQ | Search service (serverless preview by default), indexed OneLake file source, optional live ontology sources and the knowledge base. Sources and knowledge base use Search data-plane resources. | [`infra/knowledge.tf`](../infra/knowledge.tf) |
 | Microsoft Foundry | Account, project, chat and embedding deployments, Search AAD connection, and knowledge-base MCP connection using the project managed identity. | [`infra/foundry.tf`](../infra/foundry.tf) |
+| Web IQ | Global G3 account, portal AppID linking and public-search verification. Studio integration is separate. | [`infra/web_iq.tf`](../infra/web_iq.tf), [runtime details](runtime-integration.md#web-iq) |
 | Copilot Studio agent | The published scenario assistant. Its Fabric IQ and Foundry IQ MCP tools run with each user's own connections (`Invoker` mode). Created with PAC, not Terraform. | [`agents/scenario-assistant/`](../agents/scenario-assistant/README.md), [step 7](getting-started.md#7-create-the-agent-and-app) |
 | Managed Runtime app | Calls the agent through the generated Copilot Studio connector service as the signed-in user, in the agent's environment. | [`app/`](../app/), [runtime integration](runtime-integration.md) |
 
-Terraform owns infrastructure, registrations and role assignments, not the Git-owned lakehouse or ontology definitions. The Azure resource group contains the capacity, Foundry and Search resources; Fabric workspaces/items and Entra objects have their own service boundaries.
+Terraform owns infrastructure, registrations and role assignments, not the Git-owned lakehouse or ontology definitions. The Azure resource group contains the capacity, Foundry, Search and Web IQ resources; Fabric workspaces/items and Entra objects have their own service boundaries.
 
 One explicitly selected region is the default. Approved `fabric_location` and
 `search_location` overrides allow a service-specific region without moving

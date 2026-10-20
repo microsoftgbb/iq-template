@@ -6,7 +6,7 @@ A starter for independent **Fabric + Foundry IQ** projects: Terraform infrastruc
 
 | Path | Contains |
 | --- | --- |
-| [`infra/`](infra/) | Terraform: Entra, Fabric, Foundry, Search and knowledge registration. |
+| [`infra/`](infra/) | Terraform: Entra, Fabric, Foundry, Search, Web IQ and knowledge registration. |
 | [`workspace/`](workspace/) | Fabric items: lakehouse, seed and bind notebooks, ontology and bootstrap plan. |
 | [`agents/scenario-assistant/`](agents/scenario-assistant/README.md) | The Copilot Studio agent: instructions plus its Fabric IQ and Foundry IQ tools. |
 | [`app/`](app/) | The Managed Runtime app; [`app/src/config.ts`](app/src/config.ts) holds its only setting. |
@@ -21,9 +21,10 @@ The devcontainer includes the [official Azure/Foundry IQ, Work IQ/M365 Agents
 Toolkit, Fabric/Fabric IQ and Managed Runtime Copilot packages](docs/copilot-tooling.md).
 Installation does not sign in, grant consent or enable optional runtime integrations.
 
-**Optional Web IQ:** [preparation and manual gates](preparation.md) covers the
-opt-in Terraform account and runner's public-search probe. Portal AppID linking
-and native Studio/app integration remain separate; Web IQ is disabled by default.
+**Before deployment:** complete the [manual preparation checklist](preparation.md)
+for permissions, tenant settings, licenses, sign-ins and approvals.
+[Web IQ runtime details](docs/runtime-integration.md#web-iq) cover the account,
+public-search probe and Studio integration.
 
 ## Platform at a glance
 
