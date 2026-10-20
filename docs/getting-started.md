@@ -69,6 +69,14 @@ printf '\n'
 export TF_VAR_github_token
 ```
 
+For optional Web IQ, complete [preparation and manual gates](../preparation.md)
+and explicitly set `web_iq_enabled` and `web_iq_terms_accepted` before the
+platform plan. This adds a billable global G3 account, not a Studio tool.
+Terraform conditionally registers `Microsoft.WebIQ`; paid-subscription
+eligibility is checked by resource creation. The runner's `verify` phase waits
+for portal AppID linking and `WEB_IQ_API_KEY`, then requires a cited public search.
+The default Fabric/Foundry IQ path has no Web IQ credential dependency.
+
 ## 3. Bootstrap the Fabric user-auth application
 
 Use the **same `infra/` root, tfvars, execution host and backend/state** for every stage. Configure the agreed secured backend before this first apply; do not create a separate identity state or deploy from another App worktree.

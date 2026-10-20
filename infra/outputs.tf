@@ -194,6 +194,17 @@ output "fabric_iq_connections" {
   }
 }
 
+output "web_iq" {
+  description = "Optional Web IQ account and public service endpoints. Provisioning is not AppID onboarding, authenticated retrieval or agent/app integration; see preparation.md."
+  value = var.web_iq_enabled ? {
+    resource_id     = azapi_resource.web_iq[0].id
+    management_url  = "https://management.azure.com${azapi_resource.web_iq[0].id}?api-version=2026-06-01-preview"
+    portal_url      = "https://webiq.microsoft.ai/profiles"
+    search_endpoint = "https://api.microsoft.ai/v3/search/web"
+    mcp_endpoint    = "https://api.microsoft.ai/v3/mcp"
+  } : null
+}
+
 output "studio_agent_schema_name" {
   description = "Prescribed schema name for the scenario's Copilot Studio agent, derived from project_name. PAC creates the agent; Terraform does not."
   value       = "iq_${replace(var.project_name, "-", "_")}_assistant"

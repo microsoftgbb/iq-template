@@ -7,11 +7,11 @@ provider "azurerm" {
   features {}
 
   resource_provider_registrations = "none"
-  resource_providers_to_register = [
+  resource_providers_to_register = concat([
     "Microsoft.CognitiveServices",
     "Microsoft.Fabric",
     "Microsoft.Search",
-  ]
+  ], var.web_iq_enabled && var.web_iq_terms_accepted ? ["Microsoft.WebIQ"] : [])
 }
 
 provider "fabric" {
