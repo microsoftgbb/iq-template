@@ -110,7 +110,7 @@ class Cleaner:
     def __init__(self, manifest, people, admin, *, shared, log, advance, cancelled, graph_for):
         """people maps a UPN to {upn, id}; graph_for(upn) returns that person's Graph client or raises Stop."""
         self.manifest, self.people, self.admin = manifest, people, admin
-        self.admin_graph = Graph(admin)
+        self.admin_graph = Graph(admin, log=log)
         self.shared, self.log, self._advance, self._cancelled = shared, log, advance, cancelled
         self.graph_for = graph_for
         self.failures, self.kept = [], []

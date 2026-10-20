@@ -13,6 +13,9 @@ RETRY_STATUSES = frozenset({429, 503, 504})
 # Throttling answers mean the request was not processed; a POST that timed out upstream (504) may have been.
 RETRY_POST = frozenset({429, 503})
 MAX_WAIT = 60
+# Conditional Access changes made for a run reach Teams and Exchange minutes after sign-in honours them. Until
+# then a call can answer a claims challenge; each account waits at most this schedule (about ten minutes) per run.
+CLAIMS_WAITS = (30, 60, 90, 120, 150, 150)
 
 
 class GraphError(Blocked):
@@ -34,9 +37,10 @@ class GraphError(Blocked):
 
 
 class Graph:
-    def __init__(self, session, *, version="v1.0", sleep=None, attempts=6):
+    def __init__(self, session, *, version="v1.0", sleep=None, attempts=6, log=None):
         self.session, self.version, self._attempts = session, version, attempts
         self._sleep = sleep or pace.sleep
+        self._log = log
 
     def url(self, path, version=None):
         base = transport.graph_url()
@@ -61,6 +65,18 @@ class Graph:
                 if method == "POST" or attempt >= self._attempts:
                     raise Blocked("network", str(error)) from None
                 self._sleep(min(2 ** attempt, MAX_WAIT))
+                continue
+            if response.status == 401 and claims_challenge(response):
+                # Renewing would not help (and can itself be refused while the change propagates): wait, then retry.
+                # A refused request created nothing, so even a POST is safe to repeat.
+                waited = getattr(self.session, "claims_waits", 0)
+                if waited >= len(CLAIMS_WAITS):
+                    return response
+                self.session.claims_waits = waited + 1
+                if self._log:
+                    self._log(f"Waiting {CLAIMS_WAITS[waited]}s: Conditional Access changes have not reached the "
+                              f"service yet (claims challenge on {method} {path.split('?', 1)[0]}).")
+                self._sleep(CLAIMS_WAITS[waited])
                 continue
             if response.status == 401 and not renewed:
                 renewed = True
@@ -116,6 +132,16 @@ class Graph:
 
     def me(self):
         return self.get("me?$select=id,userPrincipalName,displayName")
+
+
+def claims_challenge(response):
+    """A Conditional Access claims challenge: the service applies a policy the token does not satisfy (yet)."""
+    if "insufficient_claims" in str(response.headers.get("www-authenticate") or ""):
+        return True
+    body = response.json(default={})
+    error = body.get("error") if isinstance(body, dict) else None
+    message = str(error.get("message") or "") if isinstance(error, dict) else ""
+    return "additional claims required" in message.lower() or '"capolids"' in message
 
 
 def retry_after(response, attempt):

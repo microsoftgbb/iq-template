@@ -1,11 +1,11 @@
 import unittest
 
 from support import TenantCase
-from fake_tenant import Reply
+from fake_tenant import Reply, claims_challenge
 
 from m365demo import auth
 from m365demo.common import Blocked
-from m365demo.graph import Graph, GraphError, quote
+from m365demo.graph import CLAIMS_WAITS, Graph, GraphError, quote
 
 MEGAN = "megan@contoso-demo.example"
 
@@ -90,6 +90,37 @@ class GraphTests(TenantCase):
         with self.assertRaises(GraphError):
             self.graph.get("read")
         self.assertEqual(len(self.fake.calls("GET", "read$")), 6)
+
+    def refreshes(self):
+        return [r for r in self.fake.calls("POST", "token$") if r["form"].get("grant_type") == "refresh_token"]
+
+    def test_a_claims_challenge_waits_for_conditional_access_without_renewing_the_token(self):
+        logs = []
+        graph = Graph(self.session, sleep=self.sleeps.append, log=logs.append)
+        answers = [claims_challenge(header=False), claims_challenge(), Reply(201, {"id": "chat-1"})]
+        self.fake.route("POST", r"^/v1\.0/chats$", lambda request: answers.pop(0))
+        self.assertEqual(graph.post("chats", {}), {"id": "chat-1"})
+        self.assertEqual(self.sleeps, list(CLAIMS_WAITS[:2]))
+        self.assertFalse(self.refreshes(), "a renewed token cannot satisfy the challenge, and renewing can be refused")
+        self.assertIn("Conditional Access changes have not reached the service yet", logs[0])
+
+    def test_claims_challenges_stop_once_the_account_has_waited_its_share(self):
+        self.fake.route("POST", r"^/v1\.0/chats$", lambda request: claims_challenge())
+        with self.assertRaises(GraphError) as caught:
+            self.graph.post("chats", {})
+        self.assertEqual(caught.exception.status, 401)
+        self.assertEqual(self.sleeps, list(CLAIMS_WAITS))
+        with self.assertRaises(GraphError):
+            Graph(self.session, sleep=self.sleeps.append).post("chats", {})
+        self.assertEqual(self.sleeps, list(CLAIMS_WAITS), "the waiting budget belongs to the account, not one client")
+
+    def test_an_expired_token_is_still_renewed_once(self):
+        answers = [Reply(401, {"error": {"code": "InvalidAuthenticationToken", "message": "Lifetime validation failed."}}),
+                   Reply(200, {"ok": True})]
+        self.fake.route("GET", r"^/v1\.0/thing$", lambda request: answers.pop(0))
+        self.assertEqual(self.graph.get("thing"), {"ok": True})
+        self.assertEqual(len(self.refreshes()), 1)
+        self.assertEqual(self.sleeps, [])
 
     def test_a_post_is_never_repeated_after_the_connection_drops(self):
         self.fake.route("POST", r"^/v1\.0/act$", lambda request: Reply(drop=True))

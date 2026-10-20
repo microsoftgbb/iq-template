@@ -56,6 +56,13 @@ def graph_error(status, code, message):
     return Reply(status, {"error": {"code": code, "message": message}})
 
 
+def claims_challenge(header=True):
+    """A Conditional Access claims challenge: Graph's header form, or the message-only form Teams answered with."""
+    headers = {"WWW-Authenticate": 'Bearer realm="", error="insufficient_claims", claims="e30="'} if header else {}
+    message = 'Additional claims required {"access_token":{"capolids":{"essential":true,"values":["policy-1"]}}}'
+    return Reply(401, {"error": {"code": "Unauthorized", "message": message}}, headers)
+
+
 def lag(counter, key):
     """True (and one less to go) while a simulated delay for `key` lasts."""
     if counter.get(key, 0) > 0:
@@ -635,6 +642,17 @@ class FakeTenant:
         def route(request, **parts):
             handler(request, **parts)
             return reply
+        return route
+
+    def first_refused(self, handler, times, reply):
+        """A route that answers its first `times` calls with `reply` without processing them, then the real handler."""
+        left = {"times": times}
+
+        def route(request, **parts):
+            if left["times"] > 0:
+                left["times"] -= 1
+                return reply
+            return handler(request, **parts)
         return route
 
     def create_reply_all(self, request, mid):

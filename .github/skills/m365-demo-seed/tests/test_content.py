@@ -4,7 +4,7 @@ import unittest
 import zipfile
 
 from support import TenantCase
-from fake_tenant import ADMIN, Reply
+from fake_tenant import ADMIN, Reply, claims_challenge, graph_error
 
 from m365demo import content, sample
 
@@ -139,6 +139,27 @@ class SeederTests(TenantCase):
         self.fake.delays["roster"][self.people[self.doc["channel"]["channels"][0]["posts"][0]["from"]]["upn"]] = 3
         seeder = self.seed_all()
         self.assertEqual(seeder.failures, [])
+
+    def test_conditional_access_still_reaching_teams_is_waited_out(self):
+        teams = ((r"^/v1\.0/chats$", self.fake.create_chat),
+                 (r"^/v1\.0/chats/(?P<cid>[^/]+)/messages$", self.fake.chat_post),
+                 (r"^/v1\.0/teams/(?P<gid>[^/]+)/channels/(?P<cid>[^/]+)/messages$", self.fake.channel_post))
+        for pattern, handler in teams:
+            self.fake.route("POST", pattern, self.fake.first_refused(handler, 2, claims_challenge(header=False)))
+        seeder = self.seed_all()
+        self.assertEqual(seeder.failures, [])
+        self.assertTrue(any("Conditional Access changes have not reached" in line for line in self.logs))
+        normal = [c for c in self.fake.chats.values() if c["chatType"] != "meeting"]
+        self.assertEqual(sorted(len(c["messages"]) for c in normal),
+                         sorted(len(c["messages"]) for c in self.doc["chats"]), "no message is posted twice")
+
+    def test_a_reply_to_mail_that_was_only_just_delivered_is_retried(self):
+        refused = graph_error(404, "ErrorItemNotFound", "The specified object was not found in the store.")
+        self.fake.route("POST", r"^/v1\.0/me/messages/(?P<mid>[^/]+)/createReplyAll$",
+                        self.fake.first_refused(self.fake.create_reply_all, 2, refused))
+        seeder = self.seed_all()
+        self.assertEqual(seeder.failures, [])
+        self.assertEqual(self.sent_by_everyone(), sum(len(t["messages"]) for t in self.doc["mail"]))
 
     def test_replies_thread_by_conversation_when_drafts_lack_an_internet_message_id(self):
         self.fake.reply_without_internet_id = True

@@ -607,7 +607,7 @@ def cleanup_run(run, info):
         person = by_upn.get(upn)
         if not person or not person.get("session"):
             raise Stop("no-session", f"{upn} could not sign in, so their items were not deleted.")
-        return Graph(person["session"])
+        return Graph(person["session"], log=run.log)
 
     run.status("preparing-tenant")
     with tenant.prepared(graph, [{"upn": p["upn"], "id": p["id"]} for p in people.values()], state, run.log):

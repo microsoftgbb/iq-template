@@ -102,7 +102,7 @@ class Seeder:
     def __init__(self, doc, people, admin, manifest, *, run_id, log, advance, cancelled, today=None):
         """people maps a person key to {key, upn, name, id, session (or None when they could not sign in)}."""
         self.doc, self.people, self.admin, self.manifest = doc, people, admin, manifest
-        self.admin_graph = Graph(admin)
+        self.admin_graph = Graph(admin, log=log)
         self.run_id, self.log, self._advance, self._cancelled = run_id, log, advance, cancelled
         self.today = today or datetime.now(timezone.utc).date()
         self.links, self.failures, self._drives, self._on_roster = {}, [], set(), set()
@@ -142,7 +142,7 @@ class Seeder:
         person = self.people[key]
         if not person.get("session"):
             raise Stop("no-session", f"{person['upn']} could not sign in, so their content was skipped.")
-        return Graph(person["session"])
+        return Graph(person["session"], log=self.log)
 
     def upn(self, key):
         return self.people[key]["upn"]
@@ -225,6 +225,23 @@ class Seeder:
                 return max(found, key=lambda message: message.get("receivedDateTime") or "")
         return None
 
+    def reply_all_draft(self, graph, previous):
+        """A reply-all draft to the previous message, or None when it was not delivered in time.
+
+        Exchange can answer 404 for a message it has only just delivered; nothing was created, so try again.
+        """
+        for _, last in pace.waits(DELIVERY):
+            found = self.find_message(graph, previous)
+            if not found:
+                return None
+            path = f"me/messages/{found['id']}/createReplyAll"
+            response = graph.call("POST", path, json_body={})
+            if response.ok:
+                return response.json(default={}) or {}
+            if response.status != 404 or last:
+                raise GraphError("POST", path, response)
+        return None
+
     def mark_sent(self, entry):
         pending = entry.pop("pending")
         entry["sent"].append({key: pending.get(key) for key in ("index", "from", "internetMessageId",
@@ -280,11 +297,10 @@ class Seeder:
                             "toRecipients": [{"emailAddress": {"address": self.upn(k)}} for k in message["to"]],
                             "ccRecipients": [{"emailAddress": {"address": self.upn(k)}} for k in message.get("cc") or []]})
                     else:
-                        found = self.find_message(graph, sent[-1])
-                        if not found:
+                        draft = self.reply_all_draft(graph, sent[-1])
+                        if draft is None:
                             raise Stop("not-delivered", f"The previous message did not reach {self.upn(message['from'])} "
                                        "in time, so the reply was not sent.")
-                        draft = graph.post(f"me/messages/{found['id']}/createReplyAll", {})
                         merged = merge_reply((draft.get("body") or {}).get("content") or "", body)
                         graph.patch(f"me/messages/{draft['id']}", {"body": {"contentType": "HTML", "content": merged}})
                     if not draft.get("internetMessageId"):

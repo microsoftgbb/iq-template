@@ -157,9 +157,11 @@ Anything else stops.
    editor) and to sign in at `verificationUri` as `account` within the time limit. Never read
    the file yourself.
 5. **Monitor.** Run `monitor --run ID --wait 600` repeatedly and summarize `step` and
-   `progress` briefly. Team channel posts can wait several minutes for Teams to add members;
-   that is expected. On `failed`, relay `result.message` and `next`; on `interrupted` or
-   `needs-restore`, restore before anything else.
+   `progress` briefly. Team channel posts can wait several minutes for Teams to add members,
+   and Teams or Exchange calls up to about ten minutes for the run's Conditional Access
+   changes to reach them (the log says so); that is expected. On `failed`, relay
+   `result.message` and `next`; on `interrupted` or `needs-restore`, restore before anything
+   else.
 6. **Report honestly.** On `finished`, report `result.outcome`, any `failures` and
    `signInFailures`, confirm `tenant.phase` is `restored`, and give the presenter guide's
    path (`result.guide`). Say that Microsoft 365 indexes new content over minutes to hours,
