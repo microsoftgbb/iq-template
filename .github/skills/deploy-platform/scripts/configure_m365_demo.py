@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Turn on optional DemoIQ seeding (demoiq_enabled = true) in the local tfvars without deploying."""
+"""Turn on optional Microsoft 365 demo seeding (m365_demo_enabled = true) in the local tfvars without deploying."""
 
 import argparse
 import os
@@ -7,11 +7,11 @@ from pathlib import Path
 import re
 import tempfile
 
-SETTING = "demoiq_enabled"
+SETTING = "m365_demo_enabled"
 
 
 def configure(text):
-    """Return the tfvars text with exactly one `demoiq_enabled = true`, preserving everything else."""
+    """Return the tfvars text with exactly one `m365_demo_enabled = true`, preserving everything else."""
     newline = "\r\n" if "\r\n" in text else "\n"
     assignments = re.findall(rf"(?m)^{SETTING}[ \t]*=", text)
     if len(assignments) > 1:
@@ -66,15 +66,15 @@ def main():
     try:
         result = enable(infra, args.dry_run)
     except (OSError, ValueError, UnicodeDecodeError) as error:
-        parser.exit(1, f"DemoIQ configuration failed: {error}\n")
+        parser.exit(1, f"Microsoft 365 demo configuration failed: {error}\n")
     messages = {
-        "unchanged": "DemoIQ is already enabled; no files changed.",
+        "unchanged": "Microsoft 365 demo seeding is already enabled; no files changed.",
         "would enable": f"Would set {SETTING} = true; no files changed.",
         "enabled": f"Set {SETTING} = true in infra/terraform.tfvars with owner-only permissions.",
     }
     print(messages[result])
     if result == "enabled":
-        print("No cloud changes made. Review the DemoIQ Terraform plan before applying.")
+        print("No cloud changes made. Review the Microsoft 365 demo Terraform plan before applying.")
 
 
 if __name__ == "__main__":

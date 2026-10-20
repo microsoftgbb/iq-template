@@ -45,9 +45,9 @@ import preflight_runtime as runtime  # noqa: E402
 import studio_agent as studio  # noqa: E402
 
 PHASES = ("config", "preflight", "identity", "consent", "platform",
-          "bootstrap", "knowledge", "verify", "demoiq", "agent", "app")
+          "bootstrap", "knowledge", "verify", "m365-demo", "agent", "app")
 OK, USAGE, BLOCKED, WAITING, APPROVAL = 0, 1, 2, 3, 4
-PLAN_PHASES = ("identity", "platform", "knowledge", "demoiq")
+PLAN_PHASES = ("identity", "platform", "knowledge", "m365-demo")
 APPROVAL_KEYS = PLAN_PHASES + ("agent-create", "agent-connections", "agent-publish", "app-register")
 
 FABRIC_API = "https://api.fabric.microsoft.com"
@@ -55,7 +55,6 @@ SEARCH_RESOURCE = "https://search.azure.com"
 GRAPH_API = "https://graph.microsoft.com"
 ARM_API = "https://management.azure.com"
 GITHUB_API = "https://api.github.com"
-COGNITIVE_RESOURCE = "https://cognitiveservices.azure.com"
 POWER_BI_APP_ID = "00000009-0000-0000-c000-000000000000"
 MICROSOFT_GRAPH_APP_ID = "00000003-0000-0000-c000-000000000000"
 IDENTITY_TARGET = "module.fabric_user_auth"
@@ -76,7 +75,7 @@ PLATFORM_ADDRESSES = frozenset({
 })
 VARIABLES = ("project_name", "location", "fabric_location", "search_location", "search_sku", "fabric_capacity_sku",
              "github_owner", "github_repository_name", "github_branch_name", "github_directory_name",
-             "knowledge_lakehouse_id", "knowledge_ontologies", "chat_model", "embedding_model", "demoiq_enabled")
+             "knowledge_lakehouse_id", "knowledge_ontologies", "chat_model", "embedding_model", "m365_demo_enabled")
 SEARCH_OFFERINGS = f"{ARM_API}/providers/Microsoft.Search/fetchOfferings?api-version=2026-09-01-preview"
 SEARCH_SERVICE_PATH = re.compile(r"/subscriptions/[^/]+/resourceGroups/[^/]+/providers/Microsoft\.Search/searchServices/[^/]+",
                                  re.IGNORECASE)
@@ -94,12 +93,8 @@ DOCUMENT_QUESTION = ("According to the indexed starter document, what does Git s
                      "SeedScenario materialize, and which source should be used for current entity "
                      "values? Answer from the OneLake document and cite it.")
 EXPECTED_FACTS = ("Pump B", "North Works")
-# Optional DemoIQ seeding (.github/skills/demoiq-seed): its only Terraform resources, and the
-# voice and output format its seeder uses, so the readiness check proves exactly that audio path.
-DEMOIQ_ADDRESSES = frozenset({"azuread_application.demoiq[0]", "azuread_service_principal.demoiq[0]"})
-DEMOIQ_VOICE = "en-US-AvaMultilingualNeural"
-DEMOIQ_AUDIO_FORMAT = "audio-48khz-96kbitrate-mono-mp3"
-DEMOIQ_TOOLS = (("pwsh", (7, 4)), ("node", (18, 0)))
+# Optional Microsoft 365 demo seeding (.github/skills/m365-demo-seed): its only Terraform resources.
+M365_DEMO_ADDRESSES = frozenset({"azuread_application.m365_demo[0]", "azuread_service_principal.m365_demo[0]"})
 PAT_STEPS = (
     "Add a Codespaces secret FABRIC_GITHUB_TOKEN for this repository (fine-grained, Contents read/write) "
     "and restart the Codespace, or export TF_VAR_github_token in your own shell with `read -rs`.",
@@ -970,8 +965,6 @@ def phase_preflight(ctx):
     notes = [f"user {user} in tenant {tenant}, subscription {subscription}"]
     values = variables(ctx)
     check_pat(ctx, values)
-    if demoiq_requested(ctx, values):
-        notes.append(check_demoiq_tools(ctx))
     az_json(ctx, ["ad", "sp", "show", "--id", POWER_BI_APP_ID, "--query", "{id:id}"],
             "Reading the tenant's Microsoft Power BI Service principal", quiet=True)
     addresses = state_addresses(ctx)
@@ -1863,136 +1856,78 @@ def phase_verify(ctx):
     return "DEV ready: ingestion succeeded; live ontology and document retrieval verified with your identity"
 
 
-def demoiq_requested(ctx, values):
-    return bool(getattr(ctx.args, "with_demoiq", False)) or values.get("demoiq_enabled") is True
+def m365_demo_requested(ctx, values):
+    return bool(getattr(ctx.args, "with_m365_demo", False)) or values.get("m365_demo_enabled") is True
 
 
-def tool_version(text):
-    match = re.search(r"(\d+)\.(\d+)", text or "")
-    return (int(match.group(1)), int(match.group(2))) if match else None
-
-
-def check_demoiq_tools(ctx):
-    """DemoIQ seeding runs PowerShell 7.4+ and Node.js 18+ on this same host."""
-    found = []
-    for tool, minimum in DEMOIQ_TOOLS:
-        if not ctx.shell.which(tool):
-            raise Blocked(f"DemoIQ needs {tool} on this host; use the repository's devcontainer or Codespace.")
-        command = ([tool, "-NoProfile", "-NonInteractive", "-Command", "$PSVersionTable.PSVersion.ToString()"]
-                   if tool == "pwsh" else [tool, "--version"])
-        version = tool_version(checked(ctx, command, f"{tool} version", quiet=True).stdout)
-        if not version or version < minimum:
-            raise Blocked(f"DemoIQ needs {tool} {minimum[0]}.{minimum[1]} or later on this host.")
-        found.append(f"{tool} {version[0]}.{version[1]}")
-    return "DemoIQ tools: " + ", ".join(found)
-
-
-def demoiq_plan_check(summary):
-    other = [change["address"] for change in summary["changes"] if change["address"] not in DEMOIQ_ADDRESSES]
+def m365_demo_plan_check(summary):
+    other = [change["address"] for change in summary["changes"] if change["address"] not in M365_DEMO_ADDRESSES]
     if other:
-        raise Blocked("The DemoIQ plan would also change: " + ", ".join(other),
-                      "Converge the platform first with deploy.py up, then rerun with --with-demoiq.")
+        raise Blocked("The Microsoft 365 demo plan would also change: " + ", ".join(other),
+                      "Converge the platform first with deploy.py up, then rerun with --with-m365-demo.")
 
 
-def demoiq_consent(ctx, demoiq):
-    """Verify, or with --grant-demoiq-consent grant, the DemoIQ app's tenant-wide delegated consent."""
-    scopes = sorted(demoiq.get("delegated_scopes") or [])
-    client, link = demoiq.get("client_id"), demoiq.get("api_permissions_url")
+def m365_demo_consent(ctx, demo):
+    """Verify, or with --grant-m365-demo-consent grant, the demo app's tenant-wide delegated consent."""
+    scopes = sorted(demo.get("delegated_scopes") or [])
+    client, link = demo.get("client_id"), demo.get("api_permissions_url")
     label = "Reading the Microsoft Graph service principal"
-    grant = delegated_grant_state(ctx, demoiq.get("service_principal_object_id"), MICROSOFT_GRAPH_APP_ID, scopes, label)
+    grant = delegated_grant_state(ctx, demo.get("service_principal_object_id"), MICROSOFT_GRAPH_APP_ID, scopes, label)
     if grant == "unverified":
-        ctx.log("This sign-in cannot read the DemoIQ app's consent grants; the administrator's DemoIQ sign-in "
-                "shows whether consent is in place.")
+        ctx.log("This sign-in cannot read the demo app's consent grants; the administrator's sign-in at the "
+                "start of each seeding run shows whether consent is in place.")
         return "unverified"
     if grant == "granted":
         return "granted"
-    if not ctx.args.grant_demoiq_consent:
+    if not ctx.args.grant_m365_demo_consent:
         lacking = f" (the existing grant lacks {', '.join(grant[1])})" if isinstance(grant, tuple) else ""
-        raise Waiting(f"Administrator consent is pending for the DemoIQ app {client}{lacking}.",
+        raise Waiting(f"Administrator consent is pending for the Microsoft 365 demo app {client}{lacking}.",
                       f"An administrator opens {link} and selects Grant admin consent for the {len(scopes)} delegated "
                       "Microsoft Graph scopes. They include Conditional Access and per-user MFA administration, "
-                      "which DemoIQ uses only as the signed-in administrator while a seed or cleanup runs.",
-                      "If you are that administrator, rerun with --grant-demoiq-consent.")
-    ctx.log(f"Granting tenant-wide consent for exactly {len(scopes)} declared DemoIQ delegated scopes "
-            "as the signed-in administrator (--grant-demoiq-consent).")
+                      "which the skill uses only as the signed-in administrator while a seed or cleanup runs.",
+                      "If you are that administrator, rerun with --grant-m365-demo-consent.")
+    ctx.log(f"Granting tenant-wide consent for exactly {len(scopes)} declared delegated scopes of the demo app "
+            "as the signed-in administrator (--grant-m365-demo-consent).")
     result = run(ctx, ["az", "ad", "app", "permission", "grant", "--only-show-errors", "--id", client,
                        "--api", MICROSOFT_GRAPH_APP_ID, "--scope", " ".join(scopes),
                        "--consent-type", "AllPrincipals", "--output", "none"])
     if result.code:
-        raise Blocked("Granting DemoIQ consent failed; it needs an administrator role such as "
+        raise Blocked("Granting the demo app's consent failed; it needs an administrator role such as "
                       "Cloud Application Administrator.\n" + tail(result.stderr))
-    if delegated_grant_state(ctx, demoiq.get("service_principal_object_id"), MICROSOFT_GRAPH_APP_ID,
+    if delegated_grant_state(ctx, demo.get("service_principal_object_id"), MICROSOFT_GRAPH_APP_ID,
                              scopes, label) != "granted":
-        raise Waiting("DemoIQ consent was granted but is not complete or visible yet.",
+        raise Waiting("The demo app's consent was granted but is not complete or visible yet.",
                       f"Rerun deploy.py up in a minute; if it persists, an administrator completes it at {link}.")
     return "granted"
 
 
-def demoiq_audio(ctx, resource_id):
-    """Synthesize one short phrase on the platform's Foundry account with your own token.
+def phase_m365_demo(ctx):
+    """Optional Microsoft 365 demo seeding setup: a delegated-only app and administrator consent.
 
-    DemoIQ's seeder makes the same call for meeting audio. Audio is optional, so a failure is
-    recorded for the skill to report instead of stopping the deployment.
-    """
-    match = re.fullmatch(r"/subscriptions/[^/]+/resourceGroups/[^/]+/providers/Microsoft\.CognitiveServices"
-                         r"/accounts/([a-z0-9][a-z0-9-]{1,62})", str(resource_id or ""), re.IGNORECASE)
-    if not match:
-        raise Blocked("The demoiq output does not name the Foundry account used for meeting audio.")
-    account = match.group(1).lower()
-    token = access_token(ctx, resource=COGNITIVE_RESOURCE)
-    if not token:
-        return {"status": "unavailable", "account": account,
-                "detail": "Azure CLI returned no Cognitive Services token; sign in again and rerun deploy.py up"}
-    ssml = ("<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='en-US'>"
-            f"<voice name='{DEMOIQ_VOICE}'>DemoIQ meeting audio check.</voice></speak>")
-    try:
-        response = ctx.http.request("POST", f"https://{account}.cognitiveservices.azure.com/tts/cognitiveservices/v1",
-                                    headers={"Authorization": f"Bearer {token}", "Accept": "audio/mpeg",
-                                             "Content-Type": "application/ssml+xml",
-                                             "X-Microsoft-OutputFormat": DEMOIQ_AUDIO_FORMAT,
-                                             "User-Agent": "iq-template-deploy"},
-                                    raw=ssml.encode("utf-8"), timeout=60)
-    except TransportError as error:
-        return {"status": "unavailable", "account": account, "detail": error.message}
-    if response.status == 200 and response.body:
-        return {"status": "ready", "account": account, "voice": DEMOIQ_VOICE}
-    detail = f"text-to-speech answered HTTP {response.status}"
-    if response.status in (401, 403):
-        detail += "; your Foundry User role can take a few minutes to apply, so rerun deploy.py up to re-check"
-    ctx.log(f"Meeting audio is unavailable on {account} ({detail}); DemoIQ still seeds meetings and transcripts.")
-    return {"status": "unavailable", "account": account, "detail": detail}
-
-
-def phase_demoiq(ctx):
-    """Optional DemoIQ seeding setup: delegated-only app, administrator consent and an audio check.
-
-    Seeding itself is the demoiq-seed skill's job; it reads these receipts from deploy.py status.
+    Seeding itself is the m365-demo-seed skill's job; it reads these receipts from deploy.py status.
     """
     values = variables(ctx)
-    if not demoiq_requested(ctx, values):
-        return "not enabled (optional Microsoft 365 demo seeding: deploy.py up --with-demoiq)"
-    if values.get("demoiq_enabled") is not True:
-        result = run(ctx, [sys.executable, SCRIPTS / "configure_demoiq.py"])
+    if not m365_demo_requested(ctx, values):
+        return "not enabled (optional Microsoft 365 demo seeding: deploy.py up --with-m365-demo)"
+    if values.get("m365_demo_enabled") is not True:
+        result = run(ctx, [sys.executable, SCRIPTS / "configure_m365_demo.py"])
         if result.code:
             raise Blocked((result.stderr or result.stdout).strip(), "Review infra/terraform.tfvars, then rerun.")
-        ctx.log("Set demoiq_enabled = true in infra/terraform.tfvars.")
+        ctx.log("Set m365_demo_enabled = true in infra/terraform.tfvars.")
         ctx.forget()
-    applied = converge(ctx, "demoiq", check=demoiq_plan_check)
-    demoiq = required_outputs(ctx, "demoiq")[0]
-    tenant = guid(demoiq.get("tenant_id"), "demoiq tenant_id")
+    applied = converge(ctx, "m365-demo", check=m365_demo_plan_check)
+    demo = required_outputs(ctx, "m365_demo")[0]
+    tenant = guid(demo.get("tenant_id"), "m365_demo tenant_id")
     if not same_guid(tenant, ctx.target("tenant_id")):
-        raise Blocked("The DemoIQ registration's tenant differs from the signed-in deployment tenant.")
-    client = guid(demoiq.get("client_id"), "demoiq client_id")
-    consent = demoiq_consent(ctx, demoiq)
-    audio = demoiq_audio(ctx, demoiq.get("speech_resource_id"))
-    ctx.state.section("demoiq").update(
-        tenant_id=tenant, client_id=client, service_principal_object_id=demoiq.get("service_principal_object_id"),
-        api_permissions_url=demoiq.get("api_permissions_url"), speech_resource_id=demoiq.get("speech_resource_id"),
-        delegated_scopes=sorted(demoiq.get("delegated_scopes") or []),
-        consent=consent, audio=audio, checked_at=utc_now())
+        raise Blocked("The demo app registration's tenant differs from the signed-in deployment tenant.")
+    client = guid(demo.get("client_id"), "m365_demo client_id")
+    consent = m365_demo_consent(ctx, demo)
+    ctx.state.section("m365_demo").update(
+        tenant_id=tenant, client_id=client, service_principal_object_id=demo.get("service_principal_object_id"),
+        api_permissions_url=demo.get("api_permissions_url"),
+        delegated_scopes=sorted(demo.get("delegated_scopes") or []), consent=consent, checked_at=utc_now())
     ctx.state.save()
-    return (f"{applied}; DemoIQ app {client}, consent {consent}, meeting audio {audio['status']}; "
-            "seed demo content with the demoiq-seed skill")
+    return f"{applied}; demo app {client}, consent {consent}; seed demo content with the m365-demo-seed skill"
 
 
 def power_platform(ctx):
@@ -2233,7 +2168,7 @@ def studio_reference(config, environment):
 PHASE_FUNCTIONS = {
     "config": phase_config, "preflight": phase_preflight, "identity": phase_identity,
     "consent": phase_consent, "platform": phase_platform, "bootstrap": phase_bootstrap,
-    "knowledge": phase_knowledge, "verify": phase_verify, "demoiq": phase_demoiq, "agent": phase_agent,
+    "knowledge": phase_knowledge, "verify": phase_verify, "m365-demo": phase_m365_demo, "agent": phase_agent,
     "app": phase_app,
 }
 
@@ -2290,8 +2225,8 @@ def status_report(ctx):
     if pending:
         report["pending_plans"] = {phase: {"sha256": plan["sha256"], "summary": describe(plan["summary"]),
                                            "plan": plan["path"]} for phase, plan in pending.items()}
-    if ctx.state.data.get("demoiq"):
-        report["demoiq"] = ctx.state.data["demoiq"]
+    if ctx.state.data.get("m365_demo"):
+        report["m365_demo"] = ctx.state.data["m365_demo"]
     report["next"] = ["Receipts only; `up` re-verifies live state before acting."]
     return OK, report
 
@@ -2342,7 +2277,7 @@ def parse_arguments(argv):
     group.add_argument("--yes", action="store_true",
                        help="approve plans and creations in this run (never deletions or replacements)")
     group.add_argument("--approve", action="append", default=[], metavar="KEY[=SHA]",
-                       help="approve one saved plan by hash (identity|platform|knowledge|demoiq=SHA) or one action "
+                       help="approve one saved plan by hash (identity|platform|knowledge|m365-demo=SHA) or one action "
                             "(agent-create, agent-connections, agent-publish, app-register)")
     group.add_argument("--allow-replace", action="store_true", help="permit an approved plan that deletes or replaces")
     group.add_argument("--retry-failed", action="store_true", help="resubmit after a reviewed failed sync or notebook run")
@@ -2370,12 +2305,12 @@ def parse_arguments(argv):
                             "that the default serverless Search tier needs")
     group.add_argument("--bootstrap-fallback", choices=("notebooks",),
                        help="if plan-attached Git sync is FeatureNotAvailable, sync without it and run Seed then Bind")
-    group = options.add_argument_group("optional Microsoft 365 demo seeding (demoiq-seed skill)")
-    group.add_argument("--with-demoiq", action="store_true",
-                       help="enable DemoIQ: a delegated-only app in this tenant, its consent and a meeting-audio "
-                            "check; --through demoiq stops there, before the agent and app")
-    group.add_argument("--grant-demoiq-consent", action="store_true",
-                       help="you are a tenant administrator: grant consent for exactly the DemoIQ app's declared "
+    group = options.add_argument_group("optional Microsoft 365 demo seeding (m365-demo-seed skill)")
+    group.add_argument("--with-m365-demo", action="store_true",
+                       help="enable Microsoft 365 demo seeding: a delegated-only app in this tenant and its consent; "
+                            "--through m365-demo stops there, before the agent and app")
+    group.add_argument("--grant-m365-demo-consent", action="store_true",
+                       help="you are a tenant administrator: grant consent for exactly the demo app's declared "
                             "delegated scopes")
     group = options.add_argument_group("readiness evidence")
     group.add_argument("--ontology-question", default=ONTOLOGY_QUESTION)

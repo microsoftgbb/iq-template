@@ -13,7 +13,7 @@ import unittest
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-import configure_demoiq  # noqa: E402
+import configure_m365_demo  # noqa: E402
 import deploy  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[4]
@@ -760,176 +760,132 @@ class ConsentTests(unittest.TestCase):
         self.assertIn("consent granted", deploy.phase_consent(ctx))
 
 
-DEMOIQ_CLIENT = "ffffffff-ffff-4fff-8fff-ffffffffffff"
-DEMOIQ_SP = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+DEMO_CLIENT = "ffffffff-ffff-4fff-8fff-ffffffffffff"
+DEMO_SP = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
 GRAPH_SP = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
-FOUNDRY_ACCOUNT = ("/subscriptions/sub/resourceGroups/rg-demo/providers/Microsoft.CognitiveServices"
-                   "/accounts/ai-demo-abc123")
-DEMOIQ_TTS = r"^https://ai-demo-abc123\.cognitiveservices\.azure\.com/tts/cognitiveservices/v1$"
 
 
-class DemoIQTests(unittest.TestCase):
-    OUTPUT = {"tenant_id": TENANT, "client_id": DEMOIQ_CLIENT, "service_principal_object_id": DEMOIQ_SP,
+class M365DemoTests(unittest.TestCase):
+    OUTPUT = {"tenant_id": TENANT, "client_id": DEMO_CLIENT, "service_principal_object_id": DEMO_SP,
               "delegated_scopes": ["Policy.ReadWrite.ConditionalAccess", "User.Read", "offline_access"],
-              "api_permissions_url": "https://portal.azure.com/#demoiq", "speech_resource_id": FOUNDRY_ACCOUNT}
+              "api_permissions_url": "https://portal.azure.com/#m365demo"}
     GRANTED = {"consentType": "AllPrincipals", "resourceId": GRAPH_SP,
                "scope": "Policy.ReadWrite.ConditionalAccess User.Read offline_access"}
 
-    def demoiq_context(self, http, shell_rules=(), enabled=True, changes=(), output=None, **overrides):
+    def demo_context(self, http, shell_rules=(), enabled=True, changes=(), output=None, **overrides):
         root = make_root(self)
-        demoiq = output or self.OUTPUT
+        demo = output or self.OUTPUT
         shell = FakeShell([
             *shell_rules, TOKEN_RULE,
             (command("az", "ad", "sp", "show"), deploy.Result(0, json.dumps({"id": GRAPH_SP}))),
-            (terraform("output"), deploy.Result(0, json.dumps({"demoiq": {"value": demoiq}}))),
+            (terraform("output"), deploy.Result(0, json.dumps({"m365_demo": {"value": demo}}))),
             *plan_rules(list(changes), plan_code=2 if changes else 0),
         ])
         ctx = make_context(self, root, shell, http, **overrides)
         ctx.initialized = True
-        ctx.cache.update(variables={"demoiq_enabled": enabled}, outputs={"demoiq": demoiq})
+        ctx.cache.update(variables={"m365_demo_enabled": enabled}, outputs={"m365_demo": demo})
         ctx.state.section("target").update(tenant_id=TENANT, subscription_id="sub", user_object_id="user")
         return ctx, shell
 
-    def ready_http(self, grants=None, tts=None):
+    def ready_http(self, grants=None):
         http = FakeHttp()
-        http.add("GET", rf"/servicePrincipals/{DEMOIQ_SP}/oauth2PermissionGrants$",
+        http.add("GET", rf"/servicePrincipals/{DEMO_SP}/oauth2PermissionGrants$",
                  *(grants or [reply(body={"value": [self.GRANTED]})]))
-        http.add("POST", DEMOIQ_TTS, tts or deploy.Response(200, {"content-type": "audio/mpeg"}, b"ID3 mp3 bytes"))
         return http
 
-    def test_demoiq_is_skipped_unless_requested(self):
+    def test_the_phase_is_skipped_unless_requested(self):
         http = FakeHttp()
-        ctx, shell = self.demoiq_context(http, enabled=False)
-        self.assertIn("not enabled", deploy.phase_demoiq(ctx))
+        ctx, shell = self.demo_context(http, enabled=False)
+        self.assertIn("not enabled", deploy.phase_m365_demo(ctx))
         self.assertFalse(shell.matching(terraform("plan")))
         self.assertFalse(http.calls)
-        self.assertNotIn("demoiq", ctx.state.data)
+        self.assertNotIn("m365_demo", ctx.state.data)
 
-    def test_with_demoiq_sets_the_variable_and_plans_only_the_app_for_approval(self):
-        helper = (lambda args: len(args) > 1 and str(args[1]).endswith("configure_demoiq.py"), deploy.Result(0))
-        changes = [("azuread_application.demoiq[0]", ["create"]), ("azuread_service_principal.demoiq[0]", ["create"])]
-        ctx, shell = self.demoiq_context(FakeHttp(), [helper], enabled=False, changes=changes, with_demoiq=True)
+    def test_with_m365_demo_sets_the_variable_and_plans_only_the_app_for_approval(self):
+        helper = (lambda args: len(args) > 1 and str(args[1]).endswith("configure_m365_demo.py"), deploy.Result(0))
+        changes = [("azuread_application.m365_demo[0]", ["create"]), ("azuread_service_principal.m365_demo[0]", ["create"])]
+        ctx, shell = self.demo_context(FakeHttp(), [helper], enabled=False, changes=changes, with_m365_demo=True)
         with self.assertRaises(deploy.NeedsApproval) as stop:
-            deploy.phase_demoiq(ctx)
+            deploy.phase_m365_demo(ctx)
         self.assertEqual(len(shell.matching(helper[0])), 1)
-        self.assertEqual(stop.exception.approval["key"], "demoiq")
+        self.assertEqual(stop.exception.approval["key"], "m365-demo")
         self.assertEqual(stop.exception.approval["summary"]["counts"], {"create": 2})
         self.assertFalse(shell.matching(terraform("apply")))
 
-    def test_the_demoiq_plan_refuses_unrelated_changes(self):
-        changes = [("azuread_application.demoiq[0]", ["create"]), ("azapi_resource.search", ["update"])]
-        ctx, shell = self.demoiq_context(FakeHttp(), changes=changes, yes=True)
+    def test_the_plan_refuses_unrelated_changes(self):
+        changes = [("azuread_application.m365_demo[0]", ["create"]), ("azapi_resource.search", ["update"])]
+        ctx, shell = self.demo_context(FakeHttp(), changes=changes, yes=True)
         with self.assertRaisesRegex(deploy.Blocked, "azapi_resource.search"):
-            deploy.phase_demoiq(ctx)
+            deploy.phase_m365_demo(ctx)
         self.assertFalse(shell.matching(terraform("apply")))
 
     def test_a_registration_in_another_tenant_is_refused(self):
         output = dict(self.OUTPUT, tenant_id="12121212-1212-4212-8212-121212121212")
         http = self.ready_http()
-        ctx, _ = self.demoiq_context(http, output=output)
+        ctx, _ = self.demo_context(http, output=output)
         with self.assertRaisesRegex(deploy.Blocked, "tenant differs"):
-            deploy.phase_demoiq(ctx)
+            deploy.phase_m365_demo(ctx)
         self.assertFalse(http.calls)
 
     def test_missing_consent_waits_for_an_administrator(self):
         http = self.ready_http(grants=[reply(body={"value": []})])
-        ctx, shell = self.demoiq_context(http)
+        ctx, shell = self.demo_context(http)
         with self.assertRaises(deploy.Waiting) as stop:
-            deploy.phase_demoiq(ctx)
+            deploy.phase_m365_demo(ctx)
         steps = " ".join(stop.exception.next_steps)
-        self.assertIn("https://portal.azure.com/#demoiq", steps)
-        self.assertIn("--grant-demoiq-consent", steps)
+        self.assertIn("https://portal.azure.com/#m365demo", steps)
+        self.assertIn("--grant-m365-demo-consent", steps)
         self.assertFalse(shell.matching(command("az", "ad", "app", "permission")))
-        self.assertFalse(http.posts(DEMOIQ_TTS))
 
-    def test_an_administrator_grants_exactly_the_declared_demoiq_scopes(self):
+    def test_an_administrator_grants_exactly_the_declared_scopes(self):
         http = self.ready_http(grants=[reply(body={"value": []}), reply(body={"value": [self.GRANTED]})])
         grant = (command("az", "ad", "app", "permission", "grant"), deploy.Result(0))
-        ctx, shell = self.demoiq_context(http, [grant], grant_demoiq_consent=True)
-        self.assertIn("consent granted", deploy.phase_demoiq(ctx))
+        ctx, shell = self.demo_context(http, [grant], grant_m365_demo_consent=True)
+        self.assertIn("consent granted", deploy.phase_m365_demo(ctx))
         call, = shell.matching(command("az", "ad", "app", "permission", "grant"))
-        self.assertEqual(call[call.index("--id") + 1], DEMOIQ_CLIENT)
+        self.assertEqual(call[call.index("--id") + 1], DEMO_CLIENT)
         self.assertEqual(call[call.index("--api") + 1], deploy.MICROSOFT_GRAPH_APP_ID)
         self.assertEqual(call[call.index("--scope") + 1], "Policy.ReadWrite.ConditionalAccess User.Read offline_access")
         self.assertEqual(call[call.index("--consent-type") + 1], "AllPrincipals")
-        self.assertEqual(ctx.state.section("demoiq")["consent"], "granted")
+        receipt = ctx.state.section("m365_demo")
+        self.assertEqual((receipt["client_id"], receipt["consent"]), (DEMO_CLIENT, "granted"))
+        self.assertEqual(receipt["delegated_scopes"], ["Policy.ReadWrite.ConditionalAccess", "User.Read", "offline_access"])
+        self.assertEqual(stat.S_IMODE(os.stat(ctx.state.path).st_mode), 0o600)
 
-    def test_the_fabric_consent_flag_never_grants_demoiq_scopes(self):
+    def test_the_fabric_consent_flag_never_grants_the_demo_scopes(self):
         http = self.ready_http(grants=[reply(body={"value": []})])
-        ctx, shell = self.demoiq_context(http, grant_admin_consent=True)
+        ctx, shell = self.demo_context(http, grant_admin_consent=True)
         with self.assertRaises(deploy.Waiting):
-            deploy.phase_demoiq(ctx)
+            deploy.phase_m365_demo(ctx)
         self.assertFalse(shell.matching(command("az", "ad", "app", "permission")))
 
     def test_unreadable_grants_leave_consent_unverified_without_blocking(self):
         http = self.ready_http(grants=[reply(403, {"error": {"code": "Authorization_RequestDenied"}})])
-        ctx, _ = self.demoiq_context(http)
-        self.assertIn("consent unverified", deploy.phase_demoiq(ctx))
-        self.assertEqual(ctx.state.section("demoiq")["consent"], "unverified")
+        ctx, _ = self.demo_context(http)
+        self.assertIn("consent unverified", deploy.phase_m365_demo(ctx))
+        self.assertEqual(ctx.state.section("m365_demo")["consent"], "unverified")
 
-    def test_the_audio_check_uses_the_seeders_voice_on_the_foundry_account(self):
-        http = self.ready_http()
-        ctx, shell = self.demoiq_context(http)
-        detail = deploy.phase_demoiq(ctx)
-        self.assertIn("meeting audio ready", detail)
-        (method, url, body, headers), = [call for call in http.calls if call[0] == "POST"]
-        self.assertIn(deploy.DEMOIQ_VOICE.encode(), body)
-        self.assertEqual(headers["Content-Type"], "application/ssml+xml")
-        self.assertEqual(headers["X-Microsoft-OutputFormat"], deploy.DEMOIQ_AUDIO_FORMAT)
-        tokens = shell.matching(command("az", "account", "get-access-token"))
-        self.assertTrue(any(deploy.COGNITIVE_RESOURCE in call for call in tokens))
-        receipt = ctx.state.section("demoiq")
-        self.assertEqual((receipt["client_id"], receipt["speech_resource_id"]), (DEMOIQ_CLIENT, FOUNDRY_ACCOUNT))
-        self.assertEqual(receipt["delegated_scopes"], ["Policy.ReadWrite.ConditionalAccess", "User.Read", "offline_access"])
-        self.assertEqual(receipt["audio"]["status"], "ready")
-        self.assertEqual(stat.S_IMODE(os.stat(ctx.state.path).st_mode), 0o600)
-
-    def test_audio_failures_are_recorded_for_the_skill_not_fatal(self):
-        for status, hint in ((403, "few minutes"), (404, "HTTP 404")):
-            http = self.ready_http(tts=reply(status, {"error": {"code": "Denied"}}))
-            ctx, _ = self.demoiq_context(http)
-            self.assertIn("meeting audio unavailable", deploy.phase_demoiq(ctx))
-            self.assertIn(hint, ctx.state.section("demoiq")["audio"]["detail"])
-
-    def test_a_malformed_speech_resource_is_never_called(self):
-        output = dict(self.OUTPUT, speech_resource_id="https://evil.example/accounts/x")
-        http = self.ready_http()
-        ctx, _ = self.demoiq_context(http, output=output)
-        with self.assertRaisesRegex(deploy.Blocked, "Foundry account"):
-            deploy.phase_demoiq(ctx)
-        self.assertFalse(http.posts("."))
-
-    def test_status_reports_the_demoiq_receipt(self):
+    def test_status_reports_the_receipt(self):
         root = make_root(self)
         ctx = make_context(self, root)
-        ctx.state.section("demoiq").update(client_id=DEMOIQ_CLIENT, consent="granted")
+        ctx.state.section("m365_demo").update(client_id=DEMO_CLIENT, consent="granted")
         ctx.state.save()
         _, report = deploy.status_report(ctx)
-        self.assertEqual(report["demoiq"]["client_id"], DEMOIQ_CLIENT)
-        self.assertEqual(report["phases"]["demoiq"]["status"], "not run")
+        self.assertEqual(report["m365_demo"]["client_id"], DEMO_CLIENT)
+        self.assertEqual(report["phases"]["m365-demo"]["status"], "not run")
 
-    def test_demoiq_runs_after_verify_and_takes_a_plan_hash(self):
-        self.assertLess(deploy.PHASES.index("verify"), deploy.PHASES.index("demoiq"))
-        self.assertLess(deploy.PHASES.index("demoiq"), deploy.PHASES.index("agent"))
-        args = deploy.parse_arguments(["up", "--with-demoiq", "--through", "demoiq", "--approve", "demoiq=ABCDEF012345"])
-        self.assertEqual((args.with_demoiq, args.through, args.approve), (True, "demoiq", {"demoiq": "abcdef012345"}))
+    def test_the_phase_runs_after_verify_and_takes_a_plan_hash(self):
+        self.assertLess(deploy.PHASES.index("verify"), deploy.PHASES.index("m365-demo"))
+        self.assertLess(deploy.PHASES.index("m365-demo"), deploy.PHASES.index("agent"))
+        args = deploy.parse_arguments(["up", "--with-m365-demo", "--through", "m365-demo",
+                                       "--approve", "m365-demo=ABCDEF012345"])
+        self.assertEqual((args.with_m365_demo, args.through, args.approve),
+                         (True, "m365-demo", {"m365-demo": "abcdef012345"}))
         with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
-            deploy.parse_arguments(["up", "--approve", "demoiq"])
-
-    def test_demoiq_tools_are_checked_on_this_host(self):
-        rules = [(command("pwsh"), deploy.Result(0, "7.6.7\n")), (command("node", "--version"), deploy.Result(0, "v24.11.1\n"))]
-        ctx = make_context(self, make_root(self), FakeShell(rules))
-        self.assertEqual(deploy.check_demoiq_tools(ctx), "DemoIQ tools: pwsh 7.6, node 24.11")
-        ctx = make_context(self, make_root(self), FakeShell([(command("pwsh"), deploy.Result(0, "7.2.24\n"))]))
-        with self.assertRaisesRegex(deploy.Blocked, "pwsh 7.4"):
-            deploy.check_demoiq_tools(ctx)
-        shell = FakeShell()
-        shell.which = lambda name: None
-        with self.assertRaisesRegex(deploy.Blocked, "needs pwsh"):
-            deploy.check_demoiq_tools(make_context(self, make_root(self), shell))
+            deploy.parse_arguments(["up", "--approve", "m365-demo"])
 
 
-class ConfigureDemoIQTests(unittest.TestCase):
+class ConfigureM365DemoTests(unittest.TestCase):
     def infra(self, text):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
@@ -938,30 +894,30 @@ class ConfigureDemoIQTests(unittest.TestCase):
         return infra
 
     def test_it_appends_or_flips_the_one_setting_and_keeps_everything_else(self):
-        self.assertEqual(configure_demoiq.configure('project_name = "demo"\n'),
-                         'project_name = "demo"\ndemoiq_enabled = true\n')
-        self.assertEqual(configure_demoiq.configure('a = 1'), 'a = 1\ndemoiq_enabled = true\n')
-        self.assertEqual(configure_demoiq.configure('a = 1\r\ndemoiq_enabled = false # off\r\n'),
-                         'a = 1\r\ndemoiq_enabled = true # off\r\n')
-        for text in ('demoiq_enabled = true\ndemoiq_enabled = false\n', 'demoiq_enabled = var.x\n'):
+        self.assertEqual(configure_m365_demo.configure('project_name = "demo"\n'),
+                         'project_name = "demo"\nm365_demo_enabled = true\n')
+        self.assertEqual(configure_m365_demo.configure('a = 1'), 'a = 1\nm365_demo_enabled = true\n')
+        self.assertEqual(configure_m365_demo.configure('a = 1\r\nm365_demo_enabled = false # off\r\n'),
+                         'a = 1\r\nm365_demo_enabled = true # off\r\n')
+        for text in ('m365_demo_enabled = true\nm365_demo_enabled = false\n', 'm365_demo_enabled = var.x\n'):
             with self.assertRaises(ValueError):
-                configure_demoiq.configure(text)
+                configure_m365_demo.configure(text)
 
     def test_enable_writes_owner_only_once_and_refuses_ambiguous_inputs(self):
         infra = self.infra('project_name = "demo"\n')
-        self.assertEqual(configure_demoiq.enable(infra, dry_run=True), "would enable")
-        self.assertNotIn("demoiq_enabled", (infra / "terraform.tfvars").read_text())
-        self.assertEqual(configure_demoiq.enable(infra), "enabled")
+        self.assertEqual(configure_m365_demo.enable(infra, dry_run=True), "would enable")
+        self.assertNotIn("m365_demo_enabled", (infra / "terraform.tfvars").read_text())
+        self.assertEqual(configure_m365_demo.enable(infra), "enabled")
         self.assertEqual(stat.S_IMODE(os.stat(infra / "terraform.tfvars").st_mode), 0o600)
-        self.assertEqual(configure_demoiq.enable(infra), "unchanged")
+        self.assertEqual(configure_m365_demo.enable(infra), "unchanged")
         (infra / "extra.auto.tfvars").write_text("x = 1\n")
         with self.assertRaisesRegex(ValueError, "auto-loaded"):
-            configure_demoiq.enable(infra)
+            configure_m365_demo.enable(infra)
         linked = self.infra("")
         (linked / "terraform.tfvars").unlink()
         (linked / "terraform.tfvars").symlink_to(infra / "terraform.tfvars")
         with self.assertRaisesRegex(ValueError, "symlinked"):
-            configure_demoiq.enable(linked)
+            configure_m365_demo.enable(linked)
 
 
 class StateAndCliTests(unittest.TestCase):

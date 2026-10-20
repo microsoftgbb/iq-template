@@ -204,14 +204,13 @@ output "studio_agent_display_name" {
   value       = "${var.project_name} assistant"
 }
 
-output "demoiq" {
-  description = "Optional DemoIQ seeding handoff (null unless demoiq_enabled): the delegated-only app, its declared scopes, the administrator consent link and the Foundry account that synthesizes meeting audio. Registration does not prove consent."
-  value = var.demoiq_enabled ? {
-    tenant_id                   = data.azuread_client_config.demoiq[0].tenant_id
-    client_id                   = azuread_application.demoiq[0].client_id
-    service_principal_object_id = azuread_service_principal.demoiq[0].object_id
-    delegated_scopes            = sort(tolist(local.demoiq_delegated_scopes))
-    api_permissions_url         = "https://portal.azure.com/#@${data.azuread_client_config.demoiq[0].tenant_id}/view/Microsoft_AAD_RegisteredApps/ApplicationMenuBlade/~/CallAnAPI/appId/${azuread_application.demoiq[0].client_id}/isMSAApp~/false"
-    speech_resource_id          = azapi_resource.foundry.id
+output "m365_demo" {
+  description = "Optional Microsoft 365 demo seeding handoff (null unless m365_demo_enabled): the delegated-only app, its declared scopes and the administrator consent link. Registration does not prove consent."
+  value = var.m365_demo_enabled ? {
+    tenant_id                   = data.azuread_client_config.m365_demo[0].tenant_id
+    client_id                   = azuread_application.m365_demo[0].client_id
+    service_principal_object_id = azuread_service_principal.m365_demo[0].object_id
+    delegated_scopes            = sort(tolist(local.m365_demo_delegated_scopes))
+    api_permissions_url         = "https://portal.azure.com/#@${data.azuread_client_config.m365_demo[0].tenant_id}/view/Microsoft_AAD_RegisteredApps/ApplicationMenuBlade/~/CallAnAPI/appId/${azuread_application.m365_demo[0].client_id}/isMSAApp~/false"
   } : null
 }
