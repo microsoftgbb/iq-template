@@ -180,15 +180,8 @@ variable "knowledge_ontologies" {
   }
 }
 
-variable "web_iq_enabled" {
-  description = "Opt in to a billable global Microsoft Web IQ account (G3, preview). Requires a paid, Web IQ-enabled subscription; portal AppID linking and runtime integration remain separate."
-  type        = bool
-  default     = false
-  nullable    = false
-}
-
 variable "web_iq_terms_accepted" {
-  description = "Set true only after explicitly accepting https://www.microsoft.com/en-us/webiq/webiq-legal and paid public-endpoint usage. Does not grant service eligibility or perform portal onboarding."
+  description = "Required for deployment: set true only after explicitly accepting https://www.microsoft.com/en-us/webiq/webiq-legal and paid public-endpoint usage. Does not grant service eligibility or perform portal onboarding."
   type        = bool
   default     = false
   nullable    = false

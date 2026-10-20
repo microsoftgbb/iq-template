@@ -90,19 +90,20 @@ Without `infra/terraform.tfvars`, also pass `--project-name`, `--location` and `
 | `platform` | Saved untargeted plan, then apply; enables the serverless Search identity that Terraform cannot set and verifies it, because the preview answers HTTP 500 | Plan approval |
 | `bootstrap` | Git connect, credentials and initialize; syncs your pushed `HEAD` with the attached `Bootstrap` plan; verifies the target-local binding | Conflicts, non-additive changes, an unavailable plan attachment |
 | `knowledge` | Writes the discovered physical GUIDs with the knowledge helper; saved plan, then apply. A plan that creates or replaces serverless Search is applied as two plans: grants deferred, then granted after the identity exists | Plan approval |
-| `verify` | Waits for ingestion; proves live ontology and document retrieval with your own token | Running ingestion; missing evidence |
+| `verify` | Waits for ingestion; proves live ontology and document retrieval with your own token and an authenticated public Web IQ search | Running ingestion; portal onboarding, credentials or missing evidence |
 | `agent` | Creates or clones, renders, pushes, connects, configures, publishes and checks the Studio agent | Creation, connection and publish approvals; your **Fix connection** |
 | `app` | Sets the agent schema, runs `npm ci`, `ms app init` and adds the Studio data source | Registration approval; `ms` sign-in |
 
-When `web_iq_enabled = true`, `preflight` also requires explicit Web IQ terms
+Every deployment includes Web IQ. `preflight` requires explicit Web IQ terms
 acceptance and the pinned accounts API in the selected subscription. The normal
 platform/knowledge plan creates its global G3 account. In `verify`, the runner
 checks provisioning and makes one fixed public-only Web IQ search using
 `WEB_IQ_API_KEY` from the environment. Missing portal onboarding/credentials waits;
 API errors or missing citations block. Counts and optional freshness metadata
 are recorded separately from agent/app readiness; no content or keys are saved.
-See [preparation.md](../preparation.md) for the mandatory manual steps and the
-still-separate Studio integration. Disabled Web IQ makes no additional calls.
+See the [manual checklist](../preparation.md#web-iq) for required actions
+and [runtime details](runtime-integration.md#web-iq) for the still-separate
+Studio integration. Missing Web IQ outputs or credentials cannot be skipped.
 
 Every phase checks live state before acting, so rerunning `up` resumes. It observes an accepted Fabric operation or an active notebook run instead of submitting another, and creates a fresh plan after a failed apply. Exit code `3` means a person must act; the output names the exact link or command. Exit code `4` means approval is required. Approve interactively, or rerun with `--approve <phase>=<sha256-prefix>` for the exact saved plan it printed (`terraform -chdir=infra show <plan>` shows it), or with `--approve agent-create`, `agent-connections`, `agent-publish` or `app-register`. `--yes` approves everything in that run except deletions and replacements, which also need `--allow-replace`. `up --through <phase>` stops after a phase; every run re-verifies the earlier phases, so no gate can be skipped. `status` summarizes receipts without cloud calls, and `--json` prints a machine-readable report.
 
@@ -144,7 +145,7 @@ This is **one guided request**, not a zero-input or guaranteed unattended deploy
 
 The App route uses GitHub's [authenticated Codespaces SSH transport](https://docs.github.com/en/codespaces/developing-in-a-codespace/using-github-codespaces-with-github-cli#ssh-into-a-codespace), not a claimed native App-to-Codespaces attachment. Do not publish port 2222, configure an SSH password or disable host-key verification. If the App host cannot access Codespaces, use CLI in the Codespace rather than silently deploying from the laptop.
 
-On a failed/paused run, say **"Resume deployment in the same Codespace and backend."** Copilot reruns the runner, which checks existing state and operation receipts instead of resetting knowledge inputs or submitting duplicate jobs. It reports **DEV ready** only after both document and live ontology retrieval succeed, then continues with the agent and app; incomplete authentication or ingestion is reported as blocked/unverified. TEST stays empty and PROD, promotion, hosted deployment and sharing remain separate. Review generated DEV binding changes before committing them and before any later promotion.
+On a failed/paused run, say **"Resume deployment in the same Codespace and backend."** Copilot reruns the runner, which checks existing state and operation receipts instead of resetting knowledge inputs or submitting duplicate jobs. It reports **DEV ready** only after document retrieval, live ontology retrieval and an authenticated public Web IQ search succeed, then continues with the agent and app; incomplete authentication or ingestion is reported as blocked/unverified. TEST stays empty and PROD, promotion, hosted deployment and sharing remain separate. Review generated DEV binding changes before committing them and before any later promotion.
 
 ## Use the repository skills
 

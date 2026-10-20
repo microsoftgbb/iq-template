@@ -10,7 +10,7 @@ There is no fabric-cicd dependency or `fab deploy` configuration. The [determini
 
 ## Ownership and included items
 
-Terraform owns the project-specific user-auth registration, capacity, workspaces, permissions, the GitHub credentials connection, the DEV/TEST deployment pipeline, Foundry and Search. An administrator owns consent; shared Microsoft enterprise applications are read-only lookups, not Terraform-owned assets. Git owns workspace item definitions. The seeder owns only the insertion of missing demo keys and initial starter content. Do not manage the same lakehouse or notebook with both Terraform and Git.
+Terraform owns the project-specific user-auth registration, capacity, workspaces, permissions, the GitHub credentials connection, the DEV/TEST deployment pipeline, Foundry, Search and Web IQ. An administrator owns consent; shared Microsoft enterprise applications are read-only lookups, not Terraform-owned assets. Git owns workspace item definitions. The seeder owns only the insertion of missing demo keys and initial starter content. Do not manage the same lakehouse or notebook with both Terraform and Git.
 
 | Git item | Purpose |
 | --- | --- |

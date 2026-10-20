@@ -2,6 +2,9 @@
 
 Use this template for a **new project**, not an existing deployment. Each derived repository gets its own resources and Terraform state.
 
+Complete the [manual preparation checklist](../preparation.md) for permissions,
+tenant settings, licenses, sign-ins and approvals.
+
 For a visual overview, see the [platform architecture](architecture.md) and [deployment flow](deployment-flow.md). The prepared toolchain includes the [official Microsoft IQ Copilot packages](copilot-tooling.md); their MCP authentication and runtime connections remain separate from image installation.
 
 **Guided App/CLI path:** open the derived repository's Codespace and tell Copilot **"Deploy the platform"**. The [deployment skill](../.github/skills/deploy-platform/SKILL.md) carries out all stages below, asks for missing choices/sign-in and plan approvals, verifies document and live ontology retrieval, then creates the scenario agent and app. For App, direct it to that same Codespace through GitHub CLI SSH. See [single-prompt setup, credentials and state retention](development.md#deploy-from-one-prompt).
@@ -17,13 +20,14 @@ DEV readiness from the agent/app and later promotion.
 ## Prerequisites
 
 - **Tools:** open the included [Codespaces/devcontainer](development.md), or install Git, Bash, [Terraform 1.11+ (below 2.0)](https://developer.hashicorp.com/terraform/install), and [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) locally. The optional initializer also uses Python 3. The container includes Copilot CLI, Node.js 24, the .NET 10 SDK for the repository-pinned Power Platform CLI (`dotnet pac`), and the Copilot Managed Runtime plugin, `ms` CLI, Git Credential Manager and native build dependencies for the [agent and app stage](#7-create-the-agent-and-app). No local Spark, Fabric CLI or fabric-cicd installation is required; notebooks run in Fabric.
-- **Azure access:** subscription Owner, or Contributor plus Role Based Access Control Administrator/User Access Administrator. Allow registration of `Microsoft.Fabric`, `Microsoft.CognitiveServices`, and `Microsoft.Search`; Terraform handles registration and resource-scoped role assignments. The default serverless (preview) Search tier also needs the subscription's auto-approved `Microsoft.Search/Serverless` feature: run `az feature register --namespace Microsoft.Search --name Serverless`, then `az provider register --namespace Microsoft.Search`, or pass `--register-search-serverless` to the runner.
+- **Azure access:** subscription Owner, or Contributor plus Role Based Access Control Administrator/User Access Administrator. Allow registration of `Microsoft.Fabric`, `Microsoft.CognitiveServices`, `Microsoft.Search` and `Microsoft.WebIQ`; Terraform handles registration and resource-scoped role assignments. The default serverless (preview) Search tier also needs the subscription's auto-approved `Microsoft.Search/Serverless` feature: run `az feature register --namespace Microsoft.Search --name Serverless`, then `az provider register --namespace Microsoft.Search`, or pass `--register-search-serverless` to the runner.
+- **Web IQ:** enable Web IQ for the Azure subscription. Accept its terms and global public-endpoint usage, complete portal AppID linking after provisioning, and supply `WEB_IQ_API_KEY` securely for the required public-search proof. Follow the [manual checklist](../preparation.md#web-iq).
 - **Entra access:** an existing identity allowed to create/configure app registrations, owners, service principals and pre-authorized clients, and an administrator authorized to grant tenant consent. Azure subscription ownership does **not** grant these directory permissions. The [AzureAD provider](https://registry.terraform.io/providers/hashicorp/azuread/latest/docs) uses the existing sign-in, not the app it is creating. The tenant must already have the Microsoft **Power BI Service** enterprise application so its published scopes can be read; the template does not take ownership of that shared Microsoft application.
 - **Fabric access:** an authorized user allowed to create workspaces, connections and deployment pipelines, listed in `fabric_capacity_admins`. Step 3 prepares the provider's [CLI user authentication setup](https://registry.terraform.io/providers/microsoft/fabric/1.14.0/docs/guides/auth_app_reg_user); an administrator then grants consent. The identity connecting Git needs workspace Admin. Bootstrap notebooks need execution/write access, including `Item.ReadWrite.All` for ontology binding and SQL metadata refresh. An administrator must enable Git/GitHub synchronization, applicable cross-geography export, **Users can create ontology (preview) items**, and **Users can create deployment plan (preview) items** ([Git prerequisites](https://learn.microsoft.com/fabric/cicd/git-integration/git-get-started#prerequisites), [ontology settings](https://learn.microsoft.com/fabric/iq/ontology/overview-tenant-settings), [plan prerequisites](https://learn.microsoft.com/fabric/cicd/deployment-plan/how-to-create-deployment-plan)). This template does not change tenant settings.
 - **OneLake access:** Search and Fabric must share a tenant. Enable external-app OneLake access and service-principal Fabric APIs. The [OneLake indexer](https://learn.microsoft.com/azure/search/search-how-to-index-onelake-files#grant-permissions) requires **Contributor on DEV** for the Search managed identity; Terraform grants it, not access to TEST/PROD.
 - **Region and quota:** choose a region supporting [Fabric](https://learn.microsoft.com/fabric/admin/region-availability), [Search agentic retrieval](https://learn.microsoft.com/azure/search/search-region-support), the [serverless Search tier](https://learn.microsoft.com/azure/search/search-sku-tier#serverless-pricing-model-preview) (or set `search_sku` to a dedicated tier such as `basic`), and the model versions/SKUs in [`variables.tf`](../infra/variables.tf). Check actual available [Fabric CUs](https://learn.microsoft.com/fabric/enterprise/fabric-quotas), model quota, and, for dedicated Search tiers, Search's current new-service capacity restrictions; regional support alone is insufficient. Confirm quota or override `chat_model`/`embedding_model`.
 - **GitHub token:** a fine-grained PAT for the **new repository**, with **Contents: Read and write**, approved/SSO-authorized by your organization where required.
-- **Agent and app:** a Power Platform environment with Dataverse where you can create Copilot Studio agents and Managed Runtime apps, a Copilot Studio license or trial, and [Managed Runtime licensing](development.md#build-and-deploy-copilot-managed-runtime-apps). Connector policies must allow Copilot Studio, Fabric IQ and Foundry IQ. Binding the app to this repository requires GitHub Enterprise Cloud and the Microsoft Managed Apps GitHub App.
+- **Agent and app:** a Power Platform environment with Dataverse where you can create Copilot Studio agents and Managed Runtime apps, a [Copilot Studio license that permits publishing](https://learn.microsoft.com/en-us/microsoft-copilot-studio/requirements-licensing) with tenant billing/capacity, and [Managed Runtime licensing](development.md#build-and-deploy-copilot-managed-runtime-apps). Connector policies must allow Copilot Studio, Fabric IQ and Foundry IQ. Binding the app to this repository requires GitHub Enterprise Cloud and the Microsoft Managed Apps GitHub App.
 
 ## 1. Create your repository
 
@@ -69,13 +73,10 @@ printf '\n'
 export TF_VAR_github_token
 ```
 
-For optional Web IQ, complete [preparation and manual gates](../preparation.md)
-and explicitly set `web_iq_enabled` and `web_iq_terms_accepted` before the
-platform plan. This adds a billable global G3 account, not a Studio tool.
-Terraform conditionally registers `Microsoft.WebIQ`; paid-subscription
-eligibility is checked by resource creation. The runner's `verify` phase waits
-for portal AppID linking and `WEB_IQ_API_KEY`, then requires a cited public search.
-The default Fabric/Foundry IQ path has no Web IQ credential dependency.
+Complete the [Web IQ checklist](../preparation.md#web-iq) and set
+`web_iq_terms_accepted = true` before deployment. Terraform provisions the global
+G3 account; Studio integration is separate. The runner's `verify` phase requires
+portal AppID linking, `WEB_IQ_API_KEY` and a cited public search.
 
 ## 3. Bootstrap the Fabric user-auth application
 
@@ -149,7 +150,7 @@ terraform apply platform.tfplan
 terraform output
 ```
 
-Defaults provision F2 Fabric capacity, empty DEV/TEST workspaces, a GitHub credentials connection, a native DEV/TEST deployment pipeline, Foundry and its models, and serverless (preview) AI Search, which is ready in seconds instead of about 20 minutes for Basic. **Git is not yet connected and knowledge setup is pending.** No separate Blob account or private networking is created. Keep the PAT available for every plan and apply; it is ephemeral and not saved in state/plans. Increment `github_token_version` when rotating it.
+Defaults provision F2 Fabric capacity, empty DEV/TEST workspaces, a GitHub credentials connection, a native DEV/TEST deployment pipeline, Foundry and its models, a global G3 Web IQ account, and serverless (preview) AI Search, which is ready in seconds instead of about 20 minutes for Basic. **Git is not yet connected and knowledge setup is pending.** No separate Blob account or private networking is created. Keep the PAT available for every plan and apply; it is ephemeral and not saved in state/plans. Increment `github_token_version` when rotating it.
 
 The serverless preview fails provisioning when a managed identity is requested and answers HTTP 500 to identity updates while applying them. Terraform therefore creates it without one; the runner then enables the system-assigned identity, and the knowledge apply grants it. By hand:
 

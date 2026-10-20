@@ -1,110 +1,77 @@
-# Prepare optional Web IQ
+# Manual preparation checklist
 
-Web IQ is an explicit opt-in, not part of the default Fabric/Foundry IQ route.
-Terraform provisions its Azure billing account; it does not create the Web IQ
-portal application profile or connect the Studio agent.
+## Permissions and licenses
 
-## Prerequisites and approval
+- [ ] Obtain **Owner**, or **Contributor + Role Based Access Control Administrator / User Access Administrator**, on the target Azure subscription.
+- [ ] Obtain permission to register Azure resource providers and preview features in that subscription.
+- [ ] Obtain Entra permission to create/manage app registrations, service principals, application owners and pre-authorized clients, and read the existing Power BI Service enterprise application.
+- [ ] Arrange an Entra administrator authorized to grant tenant-wide consent for the [declared delegated Fabric permissions](docs/getting-started.md#3-bootstrap-the-fabric-user-auth-application).
+- [ ] Obtain Fabric permission to create workspaces, connections and deployment pipelines; include your deployment user in `fabric_capacity_admins`.
+- [ ] Have a Power Platform administrator grant environment access, **Environment Maker** permissions for apps/connections, and the [agent author](https://learn.microsoft.com/en-us/microsoft-copilot-studio/environments-first-run-experience) Dataverse security role for Studio authoring.
+- [ ] Have your Microsoft 365 administrator assign a publish-capable [Copilot Studio user license](https://learn.microsoft.com/en-us/microsoft-copilot-studio/requirements-licensing) and provision tenant billing/capacity.
+- [ ] Obtain **Power Apps Premium** or sufficient **Managed Application Copilot Credits** for each app user.
+- [ ] If using Copilot, enable your GitHub Copilot subscription and organization access.
+- [ ] Obtain GitHub access to create the derived repository, push its bootstrap branch and open its Codespace.
+- [ ] For repository-bound Managed Runtime apps, use a GitHub Enterprise Cloud organization and have its administrator install/authorize [Microsoft Managed Apps](https://github.com/marketplace/microsoft-managed-apps) for the repository.
 
-- Use a **paid Azure subscription enabled for Web IQ**. Azure credits do not
-  work. If creation reports that Web IQ is not enabled, ask your Microsoft
-  representative for access; registering the provider is not sufficient.
-- Review and accept the [Web IQ Terms of Use](https://www.microsoft.com/en-us/webiq/webiq-legal)
-  and usage charges. The account is `Microsoft.WebIQ/accounts`, kind
-  `WebIQ.Grounding`, SKU `G3`, API `2026-06-01-preview`, location `global`.
-  The resource group's region does not provide regional Web IQ residency.
-- Web IQ runs on a Microsoft-hosted, multi-tenant **public HTTPS endpoint**.
-  It does not support Private Link, private endpoints or VNet integration.
-  Send only approved public query fields, never private business data.
+## Tenant and environment
 
-In the derived project's ignored `infra/terraform.tfvars`, set:
+- [ ] Select the Azure subscription and Entra tenant; use that tenant for Fabric, Search and Power Platform.
+- [ ] Have a tenant administrator confirm that the **Microsoft Power BI Service** enterprise application exists.
+- [ ] Have a Fabric administrator enable Git integration and GitHub synchronization for the deployment user.
+- [ ] Have a Fabric administrator enable applicable cross-geography Git export, if required.
+- [ ] Have a Fabric administrator enable **Users can create ontology (preview) items**.
+- [ ] Have a Fabric administrator enable **Users can create deployment plan (preview) items**.
+- [ ] Have a Fabric administrator enable external-app OneLake access and service-principal Fabric APIs.
+- [ ] Select a **non-Default Power Platform environment with Dataverse**; record its GUID and Org URL from `dotnet pac env list` / `dotnet pac env who`.
+- [ ] Have a Power Platform administrator allow the **Microsoft Copilot Studio**, **Fabric IQ** and **Azure AI Search / Foundry IQ** connectors and their required operations.
+- [ ] Choose the Azure region and confirm Fabric CU quota, model availability/quota, and Search tier availability/capacity.
+- [ ] For serverless Search, authorize the runner's `--register-search-serverless`, or register `Microsoft.Search/Serverless` and re-register `Microsoft.Search` yourself.
+- [ ] Accept the platform's billable usage, preview features and authenticated public endpoints.
 
-```hcl
-web_iq_enabled        = true
-web_iq_terms_accepted = true
-```
+## Repository and deployment host
 
-Use the existing deployment runner and the same backend/state. Review its normal
-untargeted platform/knowledge plan; do not target Web IQ or create another
-deployment wrapper. Terraform registers `Microsoft.WebIQ` only when enabled and
-creates the account with statistics disabled. Leave both flags false to retain
-the default core without a Web IQ dependency. Disabling an already deployed
-account proposes its deletion, which requires a reviewed destructive plan.
-The pinned AzAPI 2.13 provider does not contain this resource's embedded schema,
-so schema validation is disabled only on the Web IQ resource; the pinned ARM
-API still validates its request. Other resources retain their existing checks.
+- [ ] Create your repository with **Use this template** and push the selected bootstrap branch.
+- [ ] Open its Codespace/devcontainer, or install the [documented local tools](docs/development.md); keep one deployment checkout and execution host.
+- [ ] Authenticate GitHub CLI with `gh auth login` if needed.
+- [ ] If using Copilot, sign in through its own login flow.
+- [ ] Create a fine-grained GitHub PAT for the derived repository with **Contents: Read and write**; obtain organization approval/SSO authorization where required.
+- [ ] Store the PAT as a repository-scoped Codespaces secret named `FABRIC_GITHUB_TOKEN`, or supply `TF_VAR_github_token` securely in the deployment shell; restart an existing Codespace after adding its secret.
+- [ ] Configure an encrypted, access-controlled Terraform backend and project-specific state key; grant the deployment identity backend read/write/locking access. For a single-user local-state demo, explicitly accept local state and arrange secure backup.
+- [ ] Configure the six placeholders in the ignored `infra/terraform.tfvars`: `project_name`, `location`, `fabric_capacity_admins`, `github_owner`, `github_repository_name` and `github_branch_name`.
+- [ ] Keep `knowledge_lakehouse_id = null` and `knowledge_ontologies = {}` until DEV bootstrap and binding succeed.
+- [ ] Sign in as the deployment user with `az login --use-device-code --tenant "<tenant-id>"`, complete MFA, and select the subscription with `az account set --subscription "<subscription-id>"`.
 
-## Manual portal steps
+## During deployment and first run
 
-1. After provisioning, read `terraform -chdir=infra output web_iq`. Sign in to
-   [Web IQ Profile Management](https://webiq.microsoft.ai/profiles) using the
-   account with access to that subscription.
-2. Select the deployed subscription and Web IQ resource, and finish linking
-   them. Confirm that the resulting **Web IQ AppID** is selected. An Azure
-   resource ID, an Entra application/client ID and a Web IQ AppID are different
-   identifiers.
-3. For the pilot, create an API key for **that resource's AppID** with Web Search
-   access. Supply it only as `WEB_IQ_API_KEY` in the deployment process's
-   environment, preferably injected by a secret manager. Never put it in chat,
-   shell command arguments/history, tfvars, `.env`, source control or the app.
-4. Rerun the deployment runner. Its `verify` phase checks the Azure account and
-   issues one billable, fixed public query, **Microsoft Web IQ documentation**.
-   It requires grounding passages and usable source URLs. It records counts and
-   the presence of optional freshness metadata, not keys or retrieved content.
-   Missing onboarding is a waiting state; denied, malformed or empty results
-   fail explicitly. There is no automatic billable-query retry.
+- [ ] Start the [deployment runner](docs/development.md#deploy-deterministically) with the selected subscription, backend and Power Platform environment.
+- [ ] Review and approve the initial identity-only Terraform plan.
+- [ ] Have the Entra administrator open the generated `api_permissions_url`, review the declared scopes and select **Grant admin consent**.
+- [ ] Sign in again using the generated `fabric_user_auth_tenant_id` and `fabric_user_auth_scope`; reselect the subscription and retain the same deployment user.
+- [ ] Review and approve the untargeted platform Terraform plan.
+- [ ] Confirm the deployment user has **Admin** on DEV for Git bootstrap and item/notebook execution permissions, including `Item.ReadWrite.All` and `Item.Execute.All`.
+- [ ] If Fabric service-principal access is restricted to security groups, have the administrator include the provisioned Search identity in an allowed group.
+- [ ] If plan-attached Git sync is unavailable, explicitly approve the runner's `--bootstrap-fallback notebooks` path.
+- [ ] Review the generated DEV ontology bindings; commit them through Fabric source control before promotion.
+- [ ] Review and approve the untargeted knowledge Terraform plan.
+- [ ] Sign in to PAC for the selected environment with `dotnet pac auth create --environment "<environment-id>" --deviceCode`.
+- [ ] Sign in to Managed Runtime with `ms auth login --device-code`.
+- [ ] Approve Studio agent creation, IQ connection creation, publication and Managed Runtime app registration when requested.
+- [ ] Open the IQ connection sign-in links and complete **Fix connection** for both Fabric IQ and Foundry IQ.
+- [ ] For each additional user, share both the agent and app, grant read access to the required DEV Fabric items, and assign **Search Index Data Reader** on the deployed Search service.
+- [ ] For each app user, open **Power Apps > selected environment > Connections** and create or reuse their own **Connected Microsoft Copilot Studio** connection.
+- [ ] Run `ms app dev`, open its App Player URL and select **Check connection**.
+- [ ] For each app user, follow the agent's Studio **user-connections** link and authorize their own Fabric IQ and Foundry IQ connections.
+- [ ] Repeat **Check connection** and confirm the fresh challenge; ask the sample question and confirm **Pump B at North Works**.
+- [ ] Review and commit `app/src/config.ts` and `ms.config.json`; retain and securely back up the deployment state.
 
-These manual actions cannot be replaced by subscription Owner permissions,
-Azure provider registration or `--yes`. No documented provisioning API for
-portal AppID linking or key creation was established by the pilot.
+## Web IQ
 
-For production authentication, the documented alternative is to bind an
-approved Entra application's client ID to the Web IQ AppID in the portal and
-use app-only tokens for `https://api.microsoft.ai/.default`. Availability can
-require Microsoft enablement. Do not create credentials on the Fabric deployment
-application or reuse its delegated-user token. The runner's pilot probe uses
-only the explicitly supplied API key, not this production authentication route.
-
-## Agent/app integration is a separate gate
-
-A successful public search proves API access with the supplied credential, not
-that the credential belongs to the Terraform account; the operator confirms
-that association in the portal. It also does not prove source freshness,
-conflict resolution, scenario answers, or a Web IQ tool inside the Studio agent.
-
-The documented native MCP endpoint is `https://api.microsoft.ai/v3/mcp`.
-Before adding it to the agent, establish an approved native Studio
-connection/tool, its account-scoped allowed tools, authentication and governance,
-then verify citations, freshness, conflicting sources and the consuming app.
-Do not install an authoring MCP server and call it an agent connection, enable
-ungoverned web grounding, put an API key in the browser, switch the existing IQ
-tools to Maker mode, or add a backend to bypass the integration gate.
-
-The shipped Studio agent and app continue to use their Fabric IQ/Foundry IQ
-tools; provisioning this opt-in does **not** silently add a third runtime tool.
-Live query evidence is distinct from replay or mocked test evidence.
-
-## Pilot evidence
-
-The isolated `iq-pilot` account was created and independently read back as
-`Succeeded`, with global location, G3 and statistics disabled. The subscription
-accepted the documented account creation request. The exact new Terraform
-resource was then imported and applied in the isolated pilot, and a second full
-pilot plan reported no changes. Fabric, Search, Foundry and the template's
-deployment state were not deployed or changed for this pilot.
-
-**Still pending:** portal resource/AppID linking, a credential, an authenticated
-Web IQ search and native Studio/app integration. The pilot account and resource
-group are retained; deleting them is a separate explicit operation.
-Their local Terraform state is retained in the isolated pilot checkout outside
-this template. Preserve it securely before removing the pilot checkout/session;
-losing local state does not delete the Azure resources.
-
-## Product references
-
-- [Deploy with Azure CLI](https://learn.microsoft.com/en-us/web-iq/get-started/deploy-azure-cli)
-- [Portal onboarding](https://learn.microsoft.com/en-us/web-iq/get-started/deploy-azure-portal)
-- [Authentication](https://learn.microsoft.com/en-us/web-iq/get-started/authentication)
-- [Web Search request/response contract](https://learn.microsoft.com/en-us/web-iq/reference/web-search)
-- [Native MCP tools](https://learn.microsoft.com/en-us/web-iq/integrations/mcp)
-- [Eligibility, networking and identity FAQ](https://learn.microsoft.com/en-us/web-iq/resources/faq)
+- [ ] Enable Web IQ for the Azure subscription; request enablement from your Microsoft representative if required.
+- [ ] Accept the [Web IQ terms](https://www.microsoft.com/en-us/webiq/webiq-legal), usage charges, global public endpoint and public-only query policy.
+- [ ] Set `web_iq_terms_accepted = true` in the same ignored tfvars file after accepting the terms.
+- [ ] After provisioning, read `terraform -chdir=infra output web_iq` and sign in to [Web IQ Profile Management](https://webiq.microsoft.ai/profiles).
+- [ ] Select the deployed subscription/resource, finish linking it, and select its resulting **Web IQ AppID**.
+- [ ] Create a Web Search-enabled API key for that AppID and inject it as `WEB_IQ_API_KEY` into the deployment process; keep it out of chat, files, command history and the browser app.
+- [ ] Rerun the runner to verify an authenticated public search.
+- [ ] Before using Web IQ in the agent/app, separately approve and verify its [native Studio integration](docs/runtime-integration.md#web-iq), citations, freshness and conflicting-source handling.
