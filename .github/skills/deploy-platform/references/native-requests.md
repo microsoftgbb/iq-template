@@ -10,6 +10,23 @@ Read this after choosing the derived repository, execution host and delegated us
 - [Resolve and verify target bindings](#resolve-and-verify-target-bindings)
 - [Serverless Search identity](#serverless-search-identity)
 - [Knowledge readiness and retrieval](#knowledge-readiness-and-retrieval)
+- [Teardown](#teardown)
+
+## Teardown
+
+`deploy.py down` uses these supported native operations after explicit approvals:
+
+- [Managed Runtime CLI](https://learn.microsoft.com/en-us/microsoft-365/managed-apps/developer/ms-cli-command-reference#ms-app-delete): `ms app delete --app <recorded-appId> --environment-id <guid> --force --non-interactive`.
+- [PAC](https://learn.microsoft.com/en-us/power-platform/developer/cli/reference/copilot#pac-copilot-delete): `dotnet pac copilot delete --bot <verified-bot-guid> --environment <verified-org-url> --confirm`.
+- Terraform: full saved `plan -destroy`, then `apply <approved-plan>`; no targeting.
+- [Deleted Foundry account](https://learn.microsoft.com/en-us/rest/api/aiservices/accountmanagement/deleted-accounts/get?view=rest-aiservices-accountmanagement-2024-10-01): GET `/subscriptions/{subscription}/providers/Microsoft.CognitiveServices/locations/{location}/resourceGroups/{group}/deletedAccounts/{name}?api-version=2024-10-01`; `az cognitiveservices account purge` uses that same target, then GET must return 404.
+
+The runner preserves only cleanup identifiers from state, not keys or retrieved
+content. App deletion is idempotent; agent deletion and Foundry purge retain
+receipts and require inspection before resubmission. Fabric workspace/data
+retention is [administrator-owned](https://learn.microsoft.com/en-us/fabric/admin/workspace-retention),
+not proof of immediate erasure. Shared user connections and portal credentials
+remain explicit manual cleanup.
 
 ## Authentication and response receipts
 

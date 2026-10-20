@@ -1,6 +1,6 @@
 ---
 name: deploy-platform
-description: Deploy or resume the complete Fabric and Foundry DEV platform from a derived repository. Use for "deploy the platform", "deploy this project", or end-to-end setup through Copilot App or CLI. Run the deterministic deployment runner on the chosen host and relay its gates: plan approvals by hash, administrator consent, sign-ins, connector OAuth and blocked phases, through DEV readiness and the shipped Copilot Studio agent and Managed Runtime app. Never run as a template-maintenance check.
+description: Deploy, resume or explicitly tear down the Fabric and Foundry DEV platform in a derived repository. Use for "deploy the platform", "delete the environment", or end-to-end setup through Copilot App or CLI. Use the deterministic runner and relay its target, approval, sign-in and readiness gates. Never run as a template-maintenance check.
 ---
 
 # Deploy the complete DEV platform, agent and app
@@ -98,3 +98,22 @@ The `agent` and `app` phases follow getting started step 7 on the same host and 
 5. Before playback, each user authorizes their app-facing **Microsoft Copilot Studio** connection in the selected environment's Power Apps **Connections** page (or reuses their matching **Connected** connection). The user then runs `ms app dev`, selects **Check connection**, follows the separate Studio **user-connections** link for their own Fabric IQ/Foundry IQ consent when prompted, checks again for the fresh challenge and asks the seed question. See [runtime integration](../../../docs/runtime-integration.md#local-player-boundary) for the observed loopback OAuth failure; never publish private Codespaces ports to bypass it. Record elapsed times. A 120-second `TimedOut` is a blocker to report, not a reason to add retries, warm-up jobs or a backend.
 
 Review `app/src/config.ts` and `ms.config.json` with the user before committing. Hosted preview, deployment and sharing are separate explicit requests. Report **agent ready** from the runner's `agent` phase and **app verified for one user** from the App Player results. Claim a ready shell only with all evidence in `docs/runtime-integration.md`; list second-user isolation as unverified until it is proven.
+
+## 7. Explicit teardown
+
+Only for a separate user request to delete the environment, use `deploy.py down`
+in the original derived checkout/backend, with its receipts and tfvars. Follow
+[teardown](../../../docs/development.md#delete-the-environment). Never run it
+while maintaining the template.
+
+Start without approvals to obtain the full destroy plan. Explain that both
+workspaces and all their contents will be deleted. Require `--allow-delete`,
+the reviewed `--approve destroy=<hash>`, and separate `runtime-delete` and
+`purge-foundry` approvals. `--yes` does not grant them. The runner deletes the
+native app/agent before Terraform and purges Foundry afterward; it preserves the
+login registration until Fabric teardown finishes.
+
+Relay failures and manual cleanup: retained Fabric workspaces/data, reusable
+Power Apps connections/references, Studio transcripts/solution components and
+Web IQ portal credentials. Do not claim immediate data erasure or delete
+shared resources, state, local configuration or the repository.

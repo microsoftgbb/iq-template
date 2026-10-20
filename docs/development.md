@@ -115,9 +115,47 @@ These choices are explicit flags, never automatic:
 - `--bootstrap-fallback notebooks`: when the tenant rejects attaching a deployment plan to Git sync (`FeatureNotAvailable`), sync the same reviewed commit without it and run `SeedScenario`, then `BindScenario`, as you.
 - `--retry-failed`: after you inspected and fixed a failed or unconfirmed operation, continue from live state; without it the runner never resubmits an accepted request.
 
-The runner refuses the reusable template, a different Git target, conflicts, non-additive incoming changes, any commit other than your pushed `HEAD`, ambient Terraform overrides (`TF_CLI_ARGS*`, `TF_WORKSPACE`, extra `TF_VAR_*`) and a Dataverse URL that belongs to another environment. It never prints or stores tokens. It still needs people for consent, MFA sign-ins, connector OAuth and the App Player check, so it is not unattended CI: the bundled binder and IQ connections need a delegated user. It does not promote, deploy or share the app, or tear anything down.
+The runner refuses the reusable template, a different Git target, conflicts, non-additive incoming changes, any commit other than your pushed `HEAD`, ambient Terraform overrides (`TF_CLI_ARGS*`, `TF_WORKSPACE`, extra `TF_VAR_*`) and a Dataverse URL that belongs to another environment. It never prints or stores tokens. It still needs people for consent, MFA sign-ins, connector OAuth and the App Player check, so it is not unattended CI: the bundled binder and IQ connections need a delegated user. `up` does not promote, host, share or delete resources.
 
 Choose an existing non-Default Power Platform environment with a GUID ID (`dotnet pac env list`) and its matching Org URL. The runner diagnoses Dataverse's `Default-<guid>` environment IDs explicitly rather than treating them as malformed GUIDs. If `ms app init` reports that the Microsoft GitHub App cannot access the bound repository, ask the repository/organization administrator to [install or configure Microsoft Managed Apps](https://github.com/marketplace/microsoft-managed-apps) for that repository. Inspect `ms app list` / `ms app info` before retrying; recover a partial registration instead of registering a duplicate.
+
+## Delete the environment
+
+Use the original checkout, tfvars, backend and `.artifacts/deploy/state.json`.
+Sign in as the original Azure user and select the recorded subscription. Keep
+Fabric consent active until Terraform finishes. App deletion needs its owner;
+agent deletion needs permission in the recorded Power Platform environment.
+
+```sh
+python3 .github/skills/deploy-platform/scripts/deploy.py down --non-interactive
+# Inspect the saved plan path printed above:
+terraform -chdir=infra show "<plan-path>"
+python3 .github/skills/deploy-platform/scripts/deploy.py down --non-interactive \
+  --allow-delete --approve "destroy=<sha256-prefix>" \
+  --approve runtime-delete --approve purge-foundry
+```
+
+| Order | Deletes |
+| --- | --- |
+| 1 | Managed Runtime app, including shares; Copilot Studio agent. |
+| 2 | Full Terraform state: knowledge base/sources, Search ingestion assets, DEV/TEST workspaces and all data, pipeline, connections, capacity, Foundry, Web IQ, role assignments and deployment identity. |
+| 3 | Soft-deleted Foundry account, using its recorded subscription, resource group, name and location. |
+
+`down` checks the repository, caller and targets without deployment quota or
+readiness probes. No targeted destroy, tenant-policy changes or local-file
+deletion. `--yes` cannot approve deletion. `destroy=<hash>`, `runtime-delete` and
+`purge-foundry` are separate approvals. Rerun after sign-in, approval or an
+unfinished operation; use `--retry-failed` only after inspecting an unconfirmed
+agent deletion or purge. A failed Terraform apply requires a fresh plan/hash.
+The runner preserves a nonsecret teardown inventory across partial deletion.
+If the app registration was interrupted, recover `ms.config.json` first.
+
+Manual cleanup:
+
+- Permanently delete the reported DEV/TEST workspace IDs in **OneLake catalog > Govern > Workspaces** as a Fabric tenant admin. [Workspace retention](https://learn.microsoft.com/en-us/fabric/admin/workspace-retention) delays data erasure; [OneLake retains data for seven days after permanent item deletion](https://learn.microsoft.com/en-us/fabric/admin/item-recovery#permanently-delete-a-recoverable-item).
+- Remove project-only Power Apps connections/references and retained agent transcripts/solution components. Connections may be reused by other apps or users, so the runner does not delete them.
+- Revoke Web IQ keys and remove the portal AppID/profile.
+- Retain state and receipts until cleanup is confirmed. GitHub, backend storage, local files, tenant settings, licenses, external sources and service-retained backups/audit records remain.
 
 ## Deploy from one prompt
 

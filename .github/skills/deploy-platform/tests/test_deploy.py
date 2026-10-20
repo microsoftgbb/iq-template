@@ -303,6 +303,262 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(list((ctx.state.directory / "plans").iterdir()), [])
 
 
+class TeardownTests(unittest.TestCase):
+    SUBSCRIPTION = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+    ENVIRONMENT = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+    URL = "https://example.crm.dynamics.com"
+    SCHEMA = "iq_demo_assistant"
+
+    def context(self, **options):
+        ctx = make_context(self, make_root(self), **options)
+        ctx.args.command = "down"
+        ctx.args.allow_delete = options.get("allow_delete", False)
+        ctx.initialized = True
+        ctx.state.section("target").update(subscription_id=self.SUBSCRIPTION, tenant_id=TENANT, user_object_id="user")
+        ctx.state.section("choices").update(local_state=True, environment_id=self.ENVIRONMENT, environment_url=self.URL)
+        ctx.cache["variables"] = {"project_name": "demo", "github_owner": "example", "github_repository_name": "demo-repo"}
+        return ctx
+
+    def snapshot(self, app=None):
+        return {"repository": "example/demo-repo", "project_name": "demo", "resource_ids": {},
+                "environment_id": self.ENVIRONMENT, "environment_url": self.URL,
+                "app_id": app, "agent_schema": self.SCHEMA, "workspaces": {"dev": WORKSPACE},
+                "foundry": {"name": "ai-demo", "resource_group": "rg-demo", "location": "westeurope"}}
+
+    def state_rules(self, state):
+        return [
+            TOKEN_RULE,
+            (command("git", "remote", "get-url"), deploy.Result(0, "https://github.com/example/demo-repo.git\n")),
+            (command("gh", "repo", "view"), deploy.Result(0, json.dumps({
+                "nameWithOwner": "example/demo-repo", "isTemplate": False}))),
+            (command("az", "account", "show"), deploy.Result(0, json.dumps({
+                "id": self.SUBSCRIPTION, "tenantId": TENANT, "user": {"type": "user"}}))),
+            (terraform("show"), deploy.Result(0, json.dumps(state))),
+        ]
+
+    def test_destroy_needs_explicit_deletion_and_exact_plan_approval_even_with_yes(self):
+        ctx = self.context(yes=True)
+        ctx.shell = FakeShell(plan_rules([
+            ("fabric_workspace.dev", ["delete"]),
+            ("module.fabric_user_auth.azuread_application.fabric", ["delete"]),
+        ]))
+        callback = mock.Mock()
+        with self.assertRaisesRegex(deploy.NeedsApproval, "deletes the environment"):
+            deploy.converge(ctx, "destroy", before_apply=callback)
+        ctx.args.allow_delete = True
+        with self.assertRaises(deploy.NeedsApproval) as approval:
+            deploy.converge(ctx, "destroy", before_apply=callback)
+        callback.assert_not_called()
+        self.assertFalse(ctx.shell.matching(terraform("apply")))
+        ctx.args.approve = {"destroy": approval.exception.approval["sha256"][:12]}
+        self.assertEqual(deploy.converge(ctx, "destroy", before_apply=callback), "applied")
+        callback.assert_called_once()
+        plan, = ctx.shell.matching(terraform("plan"))
+        self.assertIn("-destroy", plan)
+        self.assertFalse(any(argument.startswith("-target") for argument in plan))
+
+    def test_destroy_refuses_creations_targets_and_variable_overrides(self):
+        ctx = self.context(yes=True, allow_delete=True)
+        ctx.shell = FakeShell(plan_rules([("fabric_workspace.dev", ["delete", "create"])]))
+        with self.assertRaisesRegex(deploy.Blocked, "non-delete"):
+            deploy.converge(ctx, "destroy")
+        for options in ({"target": deploy.IDENTITY_TARGET}, {"variables": {"search_identity_ready": "false"}}):
+            with self.subTest(options=options), self.assertRaisesRegex(deploy.Blocked, "untargeted"):
+                deploy.converge(ctx, "destroy", **options)
+        self.assertFalse(ctx.shell.matching(terraform("apply")))
+
+    def test_snapshot_preserves_only_cleanup_identifiers_and_survives_partial_destroy(self):
+        ctx = self.context()
+        foundry = f"/subscriptions/{self.SUBSCRIPTION}/resourceGroups/rg-demo/providers/Microsoft.CognitiveServices/accounts/ai-demo"
+        state = {"values": {"root_module": {"resources": [
+            {"address": "azapi_resource.foundry", "mode": "managed",
+             "values": {"id": foundry, "location": "westeurope", "secret": "do-not-persist"}},
+            {"address": "fabric_workspace.dev", "mode": "managed", "values": {"id": WORKSPACE}},
+        ]}, "outputs": {"studio_agent_schema_name": {"value": self.SCHEMA},
+                        "unrelated_secret": {"value": "do-not-persist"}}}}
+        ctx.shell = FakeShell(self.state_rules(state))
+        with mock.patch.object(deploy.runtime, "check_environment"):
+            snapshot = deploy.teardown_snapshot(ctx)
+            ctx.shell = FakeShell(self.state_rules({"values": {}}))
+            self.assertEqual(deploy.teardown_snapshot(ctx), snapshot)
+        self.assertEqual(snapshot["workspaces"], {"dev": WORKSPACE})
+        self.assertEqual(snapshot["foundry"]["name"], "ai-demo")
+        self.assertNotIn("do-not-persist", ctx.state.path.read_text())
+
+    def test_snapshot_refuses_changed_resource_identity_or_foreign_subscription(self):
+        ctx = self.context()
+        ctx.state.section("destroy")["snapshot"] = self.snapshot()
+        for identity in (WORKSPACE, f"/subscriptions/{TENANT}/resourceGroups/other"):
+            state = {"values": {"root_module": {"resources": [
+                {"address": "fabric_workspace.dev", "mode": "managed", "values": {"id": identity}},
+            ]}}}
+            ctx.shell = FakeShell(self.state_rules(state))
+            with self.subTest(identity=identity), mock.patch.object(deploy.runtime, "check_environment"), \
+                    self.assertRaises(deploy.Blocked):
+                deploy.teardown_snapshot(ctx)
+
+    def test_wrong_user_or_app_environment_blocks_before_any_delete(self):
+        ctx = self.context()
+        ctx.state.section("target")["user_object_id"] = "other-user"
+        ctx.shell = FakeShell(self.state_rules({}))
+        with self.assertRaisesRegex(deploy.Blocked, "original Azure user"):
+            deploy.teardown_snapshot(ctx)
+        ctx.state.section("target")["user_object_id"] = "user"
+        (ctx.root / "ms.config.json").write_text(json.dumps({"appId": "my-app", "environmentId": WORKSPACE}))
+        with mock.patch.object(deploy.runtime, "check_environment"), \
+                self.assertRaisesRegex(deploy.Blocked, "registered to environment"):
+            deploy.teardown_snapshot(ctx)
+        self.assertFalse(ctx.shell.matching(command("ms", "app", "delete")))
+
+    def test_missing_receipts_or_partial_app_registration_are_not_silently_skipped(self):
+        ctx = self.context()
+        ctx.state.data["target"] = {}
+        with self.assertRaisesRegex(deploy.Blocked, "original deployment receipts"):
+            deploy.teardown_snapshot(ctx)
+        ctx = self.context()
+        ctx.state.section("app")["init_started_at"] = "earlier"
+        ctx.shell = FakeShell(self.state_rules({}))
+        with mock.patch.object(deploy.runtime, "check_environment"), \
+                self.assertRaisesRegex(deploy.Blocked, "registration may exist"):
+            deploy.teardown_snapshot(ctx)
+
+    def test_changed_app_registration_is_not_deleted(self):
+        ctx = self.context()
+        ctx.state.section("app")["app_id"] = "original-app"
+        (ctx.root / "ms.config.json").write_text(json.dumps({
+            "appId": "other-app", "environmentId": self.ENVIRONMENT,
+        }))
+        ctx.shell = FakeShell(self.state_rules({}))
+        with mock.patch.object(deploy.runtime, "check_environment"), \
+                self.assertRaisesRegex(deploy.Blocked, "different app"):
+            deploy.teardown_snapshot(ctx)
+        self.assertFalse(ctx.shell.matching(command("ms", "app", "delete")))
+
+    def test_runtime_deletes_exact_app_and_agent_only_after_approval(self):
+        ctx = self.context(yes=True, allow_delete=True)
+        snapshot = self.snapshot(app="my-app")
+        found = {"status": "found", "bot_id": ONTOLOGY}
+        with mock.patch.object(deploy, "studio_command", return_value=found), \
+                self.assertRaises(deploy.NeedsApproval):
+            deploy.delete_runtime(ctx, snapshot)
+        self.assertFalse(ctx.shell.calls)
+        ctx.args.approve = {"runtime-delete": True}
+        ctx.shell = FakeShell([
+            (command("ms", "app", "delete"), deploy.Result(0)),
+            (command("dotnet", "pac", "copilot", "delete"), deploy.Result(0)),
+        ])
+        with mock.patch.object(deploy, "studio_command", side_effect=[found, {"status": "missing"}]), \
+                mock.patch.object(deploy, "ms_signed_in", return_value=True):
+            deploy.delete_runtime(ctx, snapshot)
+        self.assertEqual(ctx.shell.calls, [
+            ["ms", "app", "delete", "--app", "my-app", "--environment-id", self.ENVIRONMENT,
+             "--force", "--non-interactive"],
+            ["dotnet", "pac", "copilot", "delete", "--bot", ONTOLOGY, "--environment", self.URL, "--confirm"],
+        ])
+        with mock.patch.object(deploy, "studio_command", return_value={"status": "missing"}):
+            deploy.delete_runtime(ctx, snapshot)
+        self.assertEqual(len(ctx.shell.calls), 2)
+
+    def test_unconfirmed_agent_deletion_is_observed_not_resubmitted(self):
+        ctx = self.context(allow_delete=True, approve={"runtime-delete": True})
+        found = {"status": "found", "bot_id": ONTOLOGY}
+        ctx.shell = FakeShell([(command("dotnet", "pac", "copilot", "delete"), deploy.Result(0))])
+        with mock.patch.object(deploy, "studio_command", return_value=found):
+            with self.assertRaisesRegex(deploy.Waiting, "not confirmed"):
+                deploy.delete_runtime(ctx, self.snapshot())
+            with self.assertRaisesRegex(deploy.Waiting, "not yet confirmed"):
+                deploy.delete_runtime(ctx, self.snapshot())
+        self.assertEqual(len(ctx.shell.calls), 1)
+        with mock.patch.object(deploy, "studio_command", return_value={"status": "missing"}):
+            deploy.delete_runtime(ctx, self.snapshot())
+        self.assertIn("runtime_deleted_at", ctx.state.section("destroy"))
+
+    def test_foundry_purge_requires_separate_approval_and_confirms_absence(self):
+        ctx = self.context(yes=True, allow_delete=True)
+        ctx.shell = FakeShell([TOKEN_RULE, (command("az", "cognitiveservices", "account", "purge"), deploy.Result(0))])
+        path = (f"/subscriptions/{self.SUBSCRIPTION}/providers/Microsoft.CognitiveServices/locations/westeurope"
+                "/resourceGroups/rg-demo/deletedAccounts/ai-demo")
+        ctx.http.add("GET", re.escape(path), reply(body={"id": path}), reply(body={"id": path}), reply(404))
+        with self.assertRaises(deploy.NeedsApproval):
+            deploy.purge_foundry(ctx, self.snapshot())
+        self.assertFalse(ctx.shell.matching(command("az", "cognitiveservices", "account", "purge")))
+        ctx.args.approve = {"purge-foundry": True}
+        deploy.purge_foundry(ctx, self.snapshot())
+        self.assertEqual(len(ctx.shell.matching(command("az", "cognitiveservices", "account", "purge"))), 1)
+        self.assertIn("--subscription", ctx.shell.calls[-1])
+
+    def test_delete_failures_stop_before_terraform_or_completion(self):
+        ctx = self.context(allow_delete=True, approve={"runtime-delete": True})
+        ctx.shell = FakeShell([(command("ms", "app", "delete"), deploy.Result(1, "", "denied"))])
+        with mock.patch.object(deploy, "studio_command", return_value={"status": "missing"}), \
+                mock.patch.object(deploy, "ms_signed_in", return_value=True), \
+                self.assertRaisesRegex(deploy.Blocked, "ms app delete failed"):
+            deploy.delete_runtime(ctx, self.snapshot(app="my-app"))
+        self.assertNotIn("app_deleted_at", ctx.state.section("destroy"))
+        self.assertNotIn("runtime_deleted_at", ctx.state.section("destroy"))
+
+    def test_no_infrastructure_changes_still_cleans_runtime_and_reports_retention(self):
+        ctx = self.context(allow_delete=True)
+        ctx.shell = FakeShell(plan_rules([], plan_code=0))
+        snapshot = self.snapshot()
+        with mock.patch.object(deploy, "teardown_snapshot", return_value=snapshot), \
+                mock.patch.object(deploy, "delete_runtime") as runtime_delete, \
+                mock.patch.object(deploy, "purge_foundry") as purge:
+            self.assertIn("managed resources deleted", deploy.phase_destroy(ctx))
+        runtime_delete.assert_called_once_with(ctx, snapshot)
+        purge.assert_called_once_with(ctx, snapshot)
+        steps = " ".join(deploy.teardown_next(snapshot))
+        self.assertIn(WORKSPACE, steps)
+        self.assertIn("not immediate data erasure", steps)
+        self.assertIn("not deleted automatically", steps)
+        self.assertTrue((ctx.root / "infra" / "terraform.tfvars").exists())
+
+    def test_runtime_deletion_precedes_full_destroy_and_purge_and_failed_apply_keeps_inventory(self):
+        for code in (0, 1):
+            with self.subTest(apply_code=code):
+                ctx = self.context(allow_delete=True)
+                events = []
+                rules = plan_rules([("fabric_workspace.dev", ["delete"])], apply_code=code)
+
+                def apply(args, options):
+                    events.append("terraform")
+                    return deploy.Result(code)
+
+                rules.insert(0, (terraform("apply"), apply))
+                ctx.shell = FakeShell(rules)
+                snapshot = self.snapshot()
+                ctx.state.section("destroy")["snapshot"] = snapshot
+                with mock.patch.object(deploy, "teardown_snapshot", return_value=snapshot), \
+                        mock.patch.object(deploy, "delete_runtime", side_effect=lambda *_: events.append("runtime")), \
+                        mock.patch.object(deploy, "purge_foundry", side_effect=lambda *_: events.append("purge")):
+                    with self.assertRaises(deploy.NeedsApproval) as approval:
+                        deploy.phase_destroy(ctx)
+                    self.assertEqual(events, [])
+                    ctx.args.approve = {"destroy": approval.exception.approval["sha256"][:12]}
+                    if code:
+                        with self.assertRaisesRegex(deploy.Blocked, "state is preserved"):
+                            deploy.phase_destroy(ctx)
+                        self.assertEqual(events, ["runtime", "terraform"])
+                        self.assertNotIn("managed_resources_deleted_at", ctx.state.section("destroy"))
+                    else:
+                        deploy.phase_destroy(ctx)
+                        self.assertEqual(events, ["runtime", "terraform", "purge"])
+                self.assertEqual(ctx.state.section("destroy")["snapshot"], snapshot)
+
+    def test_down_cannot_reenter_deployment_after_teardown_started(self):
+        ctx = self.context()
+        ctx.state.section("destroy")["started_at"] = "earlier"
+        ctx.state.save()
+        ctx.args.command = "up"
+        with self.assertRaisesRegex(deploy.Blocked, "being torn down"):
+            deploy.run_phases(ctx, ("config",))
+        self.assertFalse(ctx.shell.calls)
+        args = deploy.parse_arguments(["down", "--allow-delete", "--approve", "destroy=abcdef012345",
+                                       "--approve", "runtime-delete", "--approve", "purge-foundry"])
+        self.assertTrue(args.allow_delete)
+        self.assertEqual(args.approve["destroy"], "abcdef012345")
+
+
 class BootstrapTests(unittest.TestCase):
     def test_a_fresh_workspace_syncs_the_reviewed_commit_with_the_bootstrap_plan(self):
         root = make_root(self)
@@ -910,7 +1166,8 @@ class AgentAndAppTests(unittest.TestCase):
         root = make_root(self)
         (root / "package-lock.json").write_text("{}", encoding="utf-8")
         (root / "node_modules").mkdir()
-        (root / "ms.config.json").write_text(json.dumps({"environmentId": self.ENVIRONMENT, "connectionReferences": {}}),
+        (root / "ms.config.json").write_text(json.dumps({
+            "appId": "demo-app", "environmentId": self.ENVIRONMENT, "connectionReferences": {}}),
                                              encoding="utf-8")
         status = {"success": True, "signedIn": True, "activeAccount": {"homeAccountId": f"user.{TENANT}"}}
         ctx, shell = self.agent_context(root, [(command("ms", "auth", "status"), deploy.Result(0, json.dumps(status))),
@@ -979,6 +1236,7 @@ class AgentAndAppTests(unittest.TestCase):
         (root / "package-lock.json").write_text("{}", encoding="utf-8")
         (root / "node_modules").mkdir()
         (root / "ms.config.json").write_text(json.dumps({
+            "appId": "demo-app",
             "environmentId": self.ENVIRONMENT,
             "connectionReferences": {"studio": {"id": "/apis/shared_microsoftcopilotstudio"}},
         }), encoding="utf-8")

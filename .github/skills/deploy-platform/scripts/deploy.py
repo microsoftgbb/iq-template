@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
-"""Deterministic runner for the complete DEV deployment, Studio agent and app.
+"""Deterministic deployment and teardown of the DEV platform, agent and app.
 
 `up` runs the documented phases in order with native tools only: Terraform,
 Azure CLI, Fabric/Search/Graph REST, PAC and `ms`. Every phase checks live state
 first and acts only on what is missing, so a rerun resumes instead of
 duplicating work. Plans and creations need approval. Administrator consent,
 sign-ins and connector OAuth stay with people.
+
+`down` deletes the app and agent, applies a reviewed full Terraform destroy
+plan, and purges the deleted Foundry account. Retained Fabric data and shared
+connections are reported for manual cleanup. Local configuration and state stay.
 
 Exit codes: 0 done, 1 usage error, 2 blocked (investigate), 3 waiting for a
 person or a long-running cloud operation, 4 approval required. Tokens stay in
@@ -47,8 +51,10 @@ import studio_agent as studio  # noqa: E402
 PHASES = ("config", "preflight", "identity", "consent", "platform",
           "bootstrap", "knowledge", "verify", "agent", "app")
 OK, USAGE, BLOCKED, WAITING, APPROVAL = 0, 1, 2, 3, 4
-PLAN_PHASES = ("identity", "platform", "knowledge")
-APPROVAL_KEYS = PLAN_PHASES + ("agent-create", "agent-connections", "agent-publish", "app-register")
+PLAN_PHASES = ("identity", "platform", "knowledge", "destroy")
+DESTRUCTIVE_APPROVALS = ("destroy", "runtime-delete", "purge-foundry")
+APPROVAL_KEYS = PLAN_PHASES + ("agent-create", "agent-connections", "agent-publish", "app-register",
+                             "runtime-delete", "purge-foundry")
 
 FABRIC_API = "https://api.fabric.microsoft.com"
 SEARCH_RESOURCE = "https://search.azure.com"
@@ -474,13 +480,13 @@ def sign_in(ctx, command, reason, after=()):
         ctx.tokens.clear()
         return
     raise Waiting(reason, f"Run: {quoted(command)}", *(f"Then: {quoted(follow)}" for follow in after),
-                  "Then rerun deploy.py up.")
+                  f"Then rerun deploy.py {ctx.args.command}.")
 
 
 def approve(ctx, key, description, pending=None):
     """Approve one action or one exact saved plan (by hash) before it changes anything."""
     granted = ctx.args.approve.get(key)
-    if ctx.args.yes:
+    if ctx.args.yes and key not in DESTRUCTIVE_APPROVALS:
         ctx.log(f"Approved by --yes: {description}.")
         return
     if pending is None and granted is True:
@@ -641,8 +647,11 @@ def discard_plan(ctx, phase):
         ctx.state.save()
 
 
-def converge(ctx, phase, target=None, check=None, variables=None):
+def converge(ctx, phase, target=None, check=None, variables=None, before_apply=None):
     """Plan, approve exactly that saved plan, apply it. Returns 'unchanged' or 'applied'."""
+    destroy = phase == "destroy"
+    if destroy and (target or variables):
+        raise Blocked("Teardown requires an untargeted destroy plan without variable overrides.")
     plans = ctx.state.section("pending_plans")
     pending = plans.get(phase)
     current = fingerprint(ctx)
@@ -659,6 +668,8 @@ def converge(ctx, phase, target=None, check=None, variables=None):
         os.chmod(directory, 0o700)
         path = directory / f"{phase}-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}-{uuid4().hex[:8]}.tfplan"
         command = ["plan", "-input=false", "-detailed-exitcode", f"-out={path}"]
+        if destroy:
+            command.append("-destroy")
         if target:
             command.append(f"-target={target}")
         command += [f"-var={name}={value}" for name, value in sorted((variables or {}).items())]
@@ -667,6 +678,8 @@ def converge(ctx, phase, target=None, check=None, variables=None):
         result = terraform(ctx, *command, token=True, stream=True)
         if result.code == 0:
             path.unlink(missing_ok=True)
+            if before_apply:
+                before_apply()
             return "unchanged"
         if result.code != 2:
             path.unlink(missing_ok=True)
@@ -684,6 +697,8 @@ def converge(ctx, phase, target=None, check=None, variables=None):
         plans[phase] = pending
         ctx.state.save()
     summary = pending["summary"]
+    if destroy and any(change["action"] != "delete" for change in summary["changes"]):
+        raise Blocked("The destroy plan contains non-delete changes; nothing was applied.")
     if check:
         check(summary)
     ctx.log(f"Saved plan {Path(pending['path']).name}: {describe(summary)} (sha256 {pending['sha256'][:12]}).")
@@ -692,16 +707,23 @@ def converge(ctx, phase, target=None, check=None, variables=None):
         ctx.log(f"  {change['action']}: {change['address']}")
     identity = [change["address"] for change in summary["changes"]
                 if change["address"].startswith(IDENTITY_TARGET + ".")]
-    if identity and phase != "identity":
+    if identity and phase not in ("identity", "destroy"):
         raise Blocked("This plan changes the Fabric user-auth registration: " + ", ".join(identity),
                       "Only the initial identity bootstrap changes it automatically. Review it with plain Terraform; "
                       "permission changes need administrator re-consent and a fresh sign-in.")
-    if risky and not ctx.args.allow_replace:
+    if destroy and not ctx.args.allow_delete:
+        raise NeedsApproval("Teardown deletes the environment and its data.",
+                            f"Inspect: terraform -chdir=infra show {pending['path']}",
+                            f"Then rerun down with --allow-delete --approve destroy={pending['sha256'][:12]}.",
+                            approval=approval_record(phase, "Delete the environment and its data", pending))
+    if risky and not destroy and not ctx.args.allow_replace:
         raise NeedsApproval(f"The {phase} plan deletes or replaces resources; review it before anything changes.",
                             f"Inspect: terraform -chdir=infra show {pending['path']}",
                             f"To apply exactly this plan, rerun with --allow-replace --approve {phase}={pending['sha256'][:12]}.",
                             approval=approval_record(phase, f"Apply the saved {phase} plan", pending))
     approve(ctx, phase, f"Apply the saved {phase} plan ({describe(summary)})", pending)
+    if before_apply:
+        before_apply()
     result = terraform(ctx, "apply", "-input=false", pending["path"], token=True, stream=True)
     discard_plan(ctx, phase)
     ctx.forget()
@@ -858,6 +880,24 @@ def workspace_items(ctx):
 
 
 def phase_config(ctx):
+    origin, metadata = project_repository(ctx)
+    if not (ctx.infra / "terraform.tfvars").exists():
+        create_configuration(ctx, origin, metadata)
+    extra = sorted(path.name for path in ctx.infra.iterdir() if path.name == "terraform.tfvars.json"
+                   or path.name.endswith((".auto.tfvars", ".auto.tfvars.json")))
+    if extra:
+        raise Blocked(f"Auto-loaded Terraform inputs exist ({', '.join(extra)}); the runner uses only infra/terraform.tfvars.")
+    backend = backend_mode(ctx)
+    values = variables(ctx)
+    configured = f"{values['github_owner']}/{values['github_repository_name']}"
+    if configured.lower() != origin.lower():
+        raise Blocked(f"infra/terraform.tfvars targets {configured}, but this checkout's origin is {origin}.")
+    published_commit(ctx, values["github_branch_name"])
+    return (f"{values['project_name']} in {values['location']} from {configured}@{values['github_branch_name']}"
+            f"{values['github_directory_name']}; {backend}")
+
+
+def project_repository(ctx):
     origin = origin_repository(ctx)
     result = run(ctx, ["gh", "repo", "view", origin, "--json", "nameWithOwner,isTemplate,defaultBranchRef"])
     if result.code:
@@ -873,20 +913,7 @@ def phase_config(ctx):
                       "Create your own repository with Use this template and deploy from it.")
     if ctx.infra.is_symlink():
         raise Blocked("Refusing a symlinked infra directory.")
-    if not (ctx.infra / "terraform.tfvars").exists():
-        create_configuration(ctx, origin, metadata)
-    extra = sorted(path.name for path in ctx.infra.iterdir() if path.name == "terraform.tfvars.json"
-                   or path.name.endswith((".auto.tfvars", ".auto.tfvars.json")))
-    if extra:
-        raise Blocked(f"Auto-loaded Terraform inputs exist ({', '.join(extra)}); the runner uses only infra/terraform.tfvars.")
-    backend = backend_mode(ctx)
-    values = variables(ctx)
-    configured = f"{values['github_owner']}/{values['github_repository_name']}"
-    if configured.lower() != origin.lower():
-        raise Blocked(f"infra/terraform.tfvars targets {configured}, but this checkout's origin is {origin}.")
-    published_commit(ctx, values["github_branch_name"])
-    return (f"{values['project_name']} in {values['location']} from {configured}@{values['github_branch_name']}"
-            f"{values['github_directory_name']}; {backend}")
+    return origin, metadata
 
 
 def create_configuration(ctx, origin, metadata):
@@ -2147,6 +2174,11 @@ def phase_app(ctx):
                 "existing registration; rerun with --retry-failed only after confirming no app was registered.") from None
         if not config.exists():
             raise Blocked("ms app init finished without creating ms.config.json; inspect it with `ms app info`.")
+    app_id = app_registration(config, environment)["appId"]
+    if receipts.get("app_id") not in (None, app_id):
+        raise Blocked("ms.config.json targets a different app than the deployment receipt.")
+    receipts["app_id"] = app_id
+    ctx.state.save()
     if not studio_reference(config, environment):
         if receipts.get("data_source_started_at") and not ctx.args.retry_failed:
             raise Blocked("An earlier `ms app add data-source` did not record the Copilot Studio data source.",
@@ -2166,30 +2198,283 @@ def phase_app(ctx):
             "before playback, then the agent's IQ connections when prompted. Verify it in the App Player (next steps).")
 
 
-def studio_reference(config, environment):
-    """Read ms.config.json: refuse another environment, report whether the Studio data source exists."""
+def app_registration(config, environment):
     try:
         registration = json.loads(config.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         raise Blocked("ms.config.json is not valid JSON; review it.") from None
+    if not isinstance(registration, dict):
+        raise Blocked("ms.config.json must contain an app registration.")
     registered = registration.get("environmentId")
-    if registered and not same_guid(registered, environment):
+    if not same_guid(registered, environment):
         raise Blocked(f"ms.config.json is registered to environment {registered}, not {environment}; review it.")
+    app = registration.get("appId")
+    if not isinstance(app, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", app):
+        raise Blocked("ms.config.json has no usable appId; recover the registration.")
+    return registration
+
+
+def studio_reference(config, environment):
+    """Report whether the registered app has the Studio data source."""
+    registration = app_registration(config, environment)
     references = (registration.get("connectionReferences") or {}).values()
     return any(str((reference or {}).get("id", "")).endswith("/apis/shared_microsoftcopilotstudio")
                for reference in references)
+
+
+def teardown_snapshot(ctx):
+    target = ctx.state.section("target")
+    if not all(target.get(key) for key in ("subscription_id", "tenant_id", "user_object_id")):
+        raise Blocked("Teardown requires the original deployment receipts and Terraform state.")
+    origin, _ = project_repository(ctx)
+    if not (ctx.infra / "terraform.tfvars").is_file():
+        raise Blocked("Restore the original infra/terraform.tfvars before teardown.")
+    extra = [path.name for path in ctx.infra.iterdir() if path.name == "terraform.tfvars.json"
+             or path.name.endswith((".auto.tfvars", ".auto.tfvars.json"))]
+    if extra:
+        raise Blocked("Remove auto-loaded Terraform inputs before teardown: " + ", ".join(sorted(extra)))
+    backend_mode(ctx)
+    account = signed_in_account(ctx)
+    subscription = target["subscription_id"]
+    if ctx.args.subscription:
+        selected = az_json(ctx, ["account", "show", "--subscription", ctx.args.subscription],
+                           "Resolving --subscription", quiet=True)
+        if not same_guid(selected.get("id"), subscription):
+            raise Blocked("--subscription differs from the recorded deployment target.")
+    user = claims(access_token(ctx, resource=ARM_API + "/")).get("oid")
+    if (not same_guid(account.get("id"), subscription)
+            or not same_guid(account.get("tenantId"), target["tenant_id"])
+            or user != target["user_object_id"] or (account.get("user") or {}).get("type") != "user"):
+        raise Blocked("Teardown requires the original Azure user, tenant and active subscription.",
+                      "Sign in as the deploying user and select the recorded subscription.")
+    try:
+        runtime.check_environment(subscription, target["tenant_id"])
+    except runtime.PreflightError as error:
+        raise Blocked(str(error)) from None
+    values = variables(ctx)
+    if f"{values['github_owner']}/{values['github_repository_name']}".lower() != origin.lower():
+        raise Blocked("infra/terraform.tfvars does not match this repository.")
+    shown = terraform(ctx, "show", "-json")
+    if shown.code:
+        raise Blocked("Could not read the deployment's Terraform state.")
+    try:
+        state = json.loads(shown.stdout)
+        state_values = state.get("values") or {}
+        resources = {}
+
+        def collect(module):
+            for resource in module.get("resources") or []:
+                if resource.get("mode") == "managed":
+                    resources[resource["address"]] = resource.get("values") or {}
+            for child in module.get("child_modules") or []:
+                collect(child)
+
+        collect(state_values.get("root_module") or {})
+        recorded_outputs = {name: output.get("value") for name, output in (state_values.get("outputs") or {}).items()}
+    except (ValueError, AttributeError, KeyError, TypeError):
+        raise Blocked("Terraform returned an invalid state document.") from None
+    resource_ids = {address: item["id"] for address, item in resources.items() if isinstance(item.get("id"), str)}
+    for resource_id in resource_ids.values():
+        match = re.match(r"/subscriptions/([^/]+)/", resource_id, re.I)
+        if match and not same_guid(match[1], subscription):
+            raise Blocked("Terraform state contains resources from another subscription.")
+    environment = choose(ctx, "environment_id", guid(ctx.args.environment_id, "--environment-id")
+                         if ctx.args.environment_id else None)
+    url = choose(ctx, "environment_url", https_origin(ctx.args.environment_url, "--environment-url")
+                 if ctx.args.environment_url else None)
+    app = None
+    config = ctx.root / "ms.config.json"
+    if config.exists():
+        registration = app_registration(config, environment)
+        app = registration["appId"]
+        if ctx.state.section("app").get("app_id") not in (None, app):
+            raise Blocked("ms.config.json targets a different app than the deployment receipt.")
+        if registration.get("externalRepoUrl"):
+            try:
+                repository = runtime.remote_repository(registration["externalRepoUrl"])
+            except runtime.PreflightError as error:
+                raise Blocked(str(error)) from None
+            if repository.lower() != origin.lower():
+                raise Blocked("ms.config.json is bound to another repository.")
+    elif ctx.state.section("app").get("init_started_at") and not ctx.state.section("destroy").get("snapshot"):
+        raise Blocked("App registration may exist but ms.config.json is missing.",
+                      "Recover it with ms app list / ms app info before teardown.")
+    native = app or ctx.state.section("agent") or ctx.state.section("app") or environment or url
+    if native and not (environment and url):
+        raise Waiting("Teardown needs the agent/app environment ID and Dataverse URL.",
+                      "Pass --environment-id <guid> --environment-url https://<org>.crm.dynamics.com.")
+    receipt = ctx.state.section("destroy")
+    snapshot = receipt.get("snapshot")
+    if snapshot:
+        if snapshot["repository"].lower() != origin.lower() or snapshot["project_name"] != values["project_name"]:
+            raise Blocked("The project differs from the saved teardown inventory.")
+        if snapshot.get("environment_id") != environment or snapshot.get("environment_url") != url:
+            raise Blocked("The Power Platform target differs from the saved teardown inventory.")
+        if app and app != snapshot.get("app_id"):
+            raise Blocked("ms.config.json now targets a different app than the teardown inventory.")
+        if any(snapshot["resource_ids"].get(address) != identity for address, identity in resource_ids.items()):
+            raise Blocked("Terraform resource identities changed since teardown was prepared; review the inventory.")
+        return snapshot
+    foundry = resources.get("azapi_resource.foundry") or {}
+    foundry_id = foundry.get("id")
+    purge = None
+    if foundry_id:
+        match = re.fullmatch(r"/subscriptions/([^/]+)/resourceGroups/([^/]+)/providers/"
+                             r"Microsoft.CognitiveServices/accounts/([^/]+)", foundry_id, re.I)
+        if not match or not isinstance(foundry.get("location"), str) or not foundry["location"]:
+            raise Blocked("The Foundry account has no valid purge target in Terraform state.")
+        purge = {"name": match[3], "resource_group": match[2], "location": foundry["location"]}
+    schema = recorded_outputs.get("studio_agent_schema_name")
+    if native and not schema:
+        raise Blocked("The agent schema is missing from Terraform outputs; restore its state before teardown.")
+    snapshot = {
+        "repository": origin, "project_name": values["project_name"], "resource_ids": resource_ids,
+        "environment_id": environment, "environment_url": url, "app_id": app,
+        "agent_schema": schema if environment and url else None,
+        "workspaces": {stage: resources[f"fabric_workspace.{stage}"]["id"] for stage in ("dev", "test")
+                       if f"fabric_workspace.{stage}" in resources},
+        "foundry": purge,
+    }
+    receipt["snapshot"] = snapshot
+    ctx.state.save()
+    return snapshot
+
+
+def delete_runtime(ctx, snapshot):
+    receipt = ctx.state.section("destroy")
+    schema, app = snapshot.get("agent_schema"), snapshot.get("app_id")
+    environment, url = snapshot.get("environment_id"), snapshot.get("environment_url")
+    bot = None
+    if schema:
+        bot = studio_command(ctx, "find", "--tenant-id", ctx.target("tenant_id"), "--dataverse-url", url,
+                             "--agent-schema", schema, "--environment-id", environment)
+        if bot.get("status") not in ("found", "missing"):
+            raise Blocked("Could not determine whether the Studio agent still exists.")
+        if bot["status"] == "found":
+            bot_id = guid(bot.get("bot_id"), "Studio agent ID")
+            expected = receipt.get("bot_id") or ctx.state.section("agent").get("bot_id")
+            if expected and not same_guid(expected, bot_id):
+                raise Blocked("The Studio agent ID differs from the deployment receipt.")
+            receipt["bot_id"] = bot_id
+            ctx.state.save()
+    pending_app = app and receipt.get("app_deleted_at") is None
+    pending_bot = bot and bot["status"] == "found"
+    if not ctx.args.allow_delete:
+        raise NeedsApproval("Pass --allow-delete to delete the environment and its data.")
+    if pending_app or pending_bot:
+        approve(ctx, "runtime-delete",
+                f"Delete Managed Runtime app {app or '(none)'} and Studio agent {schema or '(none)'} "
+                f"in environment {environment}, including app shares")
+    receipt.setdefault("started_at", utc_now())
+    ctx.state.save()
+    if pending_app:
+        if not ms_signed_in(ctx, ctx.target("tenant_id")):
+            raise Waiting("Sign in to ms in the deployment tenant before deleting the app.",
+                          "Run: ms auth login --device-code", "Then rerun deploy.py down.")
+        receipt["app_delete_started_at"] = utc_now()
+        ctx.state.save()
+        checked(ctx, ["ms", "app", "delete", "--app", app, "--environment-id", environment,
+                      "--force", "--non-interactive"], "ms app delete", quiet=True)
+        receipt["app_deleted_at"] = utc_now()
+        ctx.state.save()
+    if pending_bot:
+        if receipt.get("agent_delete_started_at") and not ctx.args.retry_failed:
+            raise Waiting("The agent deletion is not yet confirmed.",
+                          "Inspect the agent; use --retry-failed only if the delete must be resubmitted.")
+        receipt["agent_delete_started_at"] = utc_now()
+        ctx.state.save()
+        checked(ctx, ["dotnet", "pac", "copilot", "delete", "--bot", receipt["bot_id"],
+                      "--environment", url, "--confirm"], "pac copilot delete", quiet=True)
+        after = studio_command(ctx, "find", "--tenant-id", ctx.target("tenant_id"), "--dataverse-url", url,
+                               "--agent-schema", schema, "--environment-id", environment)
+        if after.get("status") != "missing":
+            raise Waiting("Studio has not confirmed the agent deletion; rerun deploy.py down to check it.")
+    receipt["runtime_deleted_at"] = utc_now()
+    ctx.state.save()
+
+
+def purge_foundry(ctx, snapshot):
+    account = snapshot.get("foundry")
+    if not account:
+        return
+    subscription = ctx.target("subscription_id")
+    path = (f"/subscriptions/{subscription}/providers/Microsoft.CognitiveServices/locations/{account['location']}"
+            f"/resourceGroups/{account['resource_group']}/deletedAccounts/{account['name']}")
+    url = f"{ARM_API}{path}?api-version=2024-10-01"
+    response = arm(ctx, "GET", url)
+    if response.status == 404:
+        return
+    if response.status != 200:
+        raise ServiceError("Reading the deleted Foundry account", response)
+    if str((response.json(default={}) or {}).get("id", "")).lower() != path.lower():
+        raise Blocked("The deleted Foundry account does not match the recorded purge target.")
+    approve(ctx, "purge-foundry", f"Permanently purge Foundry account {account['name']} in {subscription}")
+    receipt = ctx.state.section("destroy")
+    if receipt.get("purge_started_at") and not ctx.args.retry_failed:
+        raise Waiting("The Foundry purge is not yet confirmed.",
+                      "Inspect the deleted account; use --retry-failed only if the purge must be resubmitted.")
+    receipt["purge_started_at"] = utc_now()
+    ctx.state.save()
+    checked(ctx, ["az", "cognitiveservices", "account", "purge", "--subscription", subscription,
+                  "--resource-group", account["resource_group"], "--location", account["location"],
+                  "--name", account["name"], "--only-show-errors"], "Purging the Foundry account", quiet=True)
+    while True:
+        response = arm(ctx, "GET", url)
+        if response.status == 404:
+            return
+        if response.status != 200:
+            raise ServiceError("Confirming the Foundry purge", response)
+        if ctx.remaining() < 10:
+            raise Waiting("The Foundry account is still being purged; rerun deploy.py down to check it.")
+        ctx.sleep(10)
+
+
+def teardown_next(snapshot):
+    steps = []
+    if snapshot["workspaces"]:
+        workspaces = ", ".join(f"{stage}: {identity}" for stage, identity in snapshot["workspaces"].items())
+        steps.append(f"Fabric tenant admin: permanently delete retained workspaces in OneLake catalog > Govern > "
+                     f"Workspaces ({workspaces}). Retention is not immediate data erasure.")
+    if snapshot.get("environment_id"):
+        steps.append(f"Review project-only IQ and Copilot Studio connections and connection references in "
+                     f"https://make.powerapps.com/environments/{snapshot['environment_id']}; reused/user connections "
+                     "are not deleted automatically. Review retained Studio transcripts and solution components.")
+    else:
+        steps.append("Remove any manually created Studio agent/app registrations; no Power Platform target was recorded.")
+    steps += [
+        "Revoke the Web IQ AppID's keys and remove its portal profile at https://webiq.microsoft.ai/profiles.",
+        "Keep Terraform state, tfvars and receipts until cleanup is confirmed. GitHub, backend storage, tenant settings, "
+        "licenses, external source data and service-retained backups/audit records are not deleted.",
+    ]
+    return steps
+
+
+def phase_destroy(ctx):
+    snapshot = teardown_snapshot(ctx)
+    result = converge(ctx, "destroy", before_apply=lambda: delete_runtime(ctx, snapshot))
+    remaining = {address for address in state_addresses(ctx) if not re.search(r"(^|\.)data\.", address)}
+    if remaining:
+        raise Blocked("Terraform still tracks resources after teardown: " + ", ".join(sorted(remaining)))
+    purge_foundry(ctx, snapshot)
+    receipt = ctx.state.section("destroy")
+    receipt["managed_resources_deleted_at"] = utc_now()
+    ctx.state.save()
+    return f"{result}; managed resources deleted; retained data and shared connections need manual cleanup"
 
 
 PHASE_FUNCTIONS = {
     "config": phase_config, "preflight": phase_preflight, "identity": phase_identity,
     "consent": phase_consent, "platform": phase_platform, "bootstrap": phase_bootstrap,
     "knowledge": phase_knowledge, "verify": phase_verify, "agent": phase_agent, "app": phase_app,
+    "destroy": phase_destroy,
 }
 
 
 def run_phases(ctx, phases):
     ctx.state.lock()
     ctx.state.load()
+    if ctx.args.command == "up" and ctx.state.section("destroy").get("started_at"):
+        raise Blocked("This deployment is being torn down; do not resume up with its old receipts.")
     report = {"result": "done", "phases": {}}
     began_run = ctx.clock()
     for phase in phases:
@@ -2218,6 +2503,8 @@ def run_phases(ctx, phases):
     report["seconds"] = round(ctx.clock() - began_run)
     if phases[-1] == "app":
         report["next"] = list(APP_NEXT)
+    elif phases[-1] == "destroy":
+        report["next"] = teardown_next(ctx.state.section("destroy")["snapshot"])
     return OK, report
 
 
@@ -2230,7 +2517,7 @@ def status_report(ctx):
     ctx.state.load()
     recorded = ctx.state.section("phases")
     report = {"result": "status", "phases": {}, "choices": ctx.state.section("choices")}
-    for phase in PHASES:
+    for phase in PHASES + (("destroy",) if "destroy" in recorded else ()):
         entry = recorded.get(phase)
         report["phases"][phase] = ({"status": entry["status"], "detail": entry["detail"], "at": entry["at"],
                                     "seconds": entry.get("seconds")}
@@ -2239,7 +2526,7 @@ def status_report(ctx):
     if pending:
         report["pending_plans"] = {phase: {"sha256": plan["sha256"], "summary": describe(plan["summary"]),
                                            "plan": plan["path"]} for phase, plan in pending.items()}
-    report["next"] = ["Receipts only; `up` re-verifies live state before acting."]
+    report["next"] = ["Receipts only; up/down rechecks live state before acting."]
     return OK, report
 
 
@@ -2289,10 +2576,9 @@ def parse_arguments(argv):
     group.add_argument("--yes", action="store_true",
                        help="approve plans and creations in this run (never deletions or replacements)")
     group.add_argument("--approve", action="append", default=[], metavar="KEY[=SHA]",
-                       help="approve one saved plan by hash (identity|platform|knowledge=SHA) or one action "
-                            "(agent-create, agent-connections, agent-publish, app-register)")
-    group.add_argument("--allow-replace", action="store_true", help="permit an approved plan that deletes or replaces")
-    group.add_argument("--retry-failed", action="store_true", help="resubmit after a reviewed failed sync or notebook run")
+                       help="approve a saved plan by hash (identity|platform|knowledge|destroy=SHA) or an action "
+                            "(agent-create, agent-connections, agent-publish, app-register, runtime-delete, purge-foundry)")
+    group.add_argument("--retry-failed", action="store_true", help="resubmit a reviewed failed or unconfirmed operation")
     group.add_argument("--non-interactive", action="store_true", help="never prompt; stop with exit 3 or 4 instead")
     group.add_argument("--timeout-minutes", type=int, default=30, help="observation window per phase (default 30)")
     group = options.add_argument_group("target (remembered in .artifacts/deploy/state.json)")
@@ -2302,12 +2588,15 @@ def parse_arguments(argv):
     group.add_argument("--backend-config", help="backend config file, relative to the repository root")
     group.add_argument("--environment-id", help="Power Platform environment ID for the agent and app")
     group.add_argument("--environment-url", help="that environment's Dataverse URL, https://<org>.crm.dynamics.com")
-    group = options.add_argument_group("first-use configuration (when infra/terraform.tfvars is missing)")
+    deployment = argparse.ArgumentParser(add_help=False)
+    deployment.add_argument("--allow-replace", action="store_true",
+                            help="permit an approved up plan that deletes or replaces")
+    group = deployment.add_argument_group("first-use configuration (when infra/terraform.tfvars is missing)")
     group.add_argument("--project-name")
     group.add_argument("--location")
     group.add_argument("--capacity-admin", action="append")
     group.add_argument("--github-branch")
-    group = options.add_argument_group("explicit gate choices")
+    group = deployment.add_argument_group("explicit gate choices")
     group.add_argument("--grant-admin-consent", action="store_true",
                        help="you are a tenant administrator: grant consent for exactly the declared delegated scopes")
     group.add_argument("--consent-confirmed", action="store_true",
@@ -2317,16 +2606,19 @@ def parse_arguments(argv):
                             "that the default serverless Search tier needs")
     group.add_argument("--bootstrap-fallback", choices=("notebooks",),
                        help="if plan-attached Git sync is FeatureNotAvailable, sync without it and run Seed then Bind")
-    group = options.add_argument_group("readiness evidence")
+    group = deployment.add_argument_group("readiness evidence")
     group.add_argument("--ontology-question", default=ONTOLOGY_QUESTION)
     group.add_argument("--document-question", default=DOCUMENT_QUESTION)
     group.add_argument("--expect", action="append", help="fact required in live ontology source data (repeatable)")
     parser = Parser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="command", required=True, parser_class=Parser)
     commands.add_parser("status", parents=[common], help="summarize receipts without cloud calls")
-    up = commands.add_parser("up", parents=[common, options],
+    up = commands.add_parser("up", parents=[common, options, deployment],
                              help="run every phase in order, re-verifying earlier ones, until done or a gate")
     up.add_argument("--through", choices=PHASES, default=PHASES[-1], help="stop after this phase")
+    down = commands.add_parser("down", parents=[common, options],
+                               help="delete this deployment, its app/agent and ingested data")
+    down.add_argument("--allow-delete", action="store_true", help="permit approved environment and data deletion")
     args = parser.parse_args(argv)
     if args.command == "status":
         args.non_interactive, args.timeout_minutes, args.approve = True, 30, []
@@ -2343,7 +2635,8 @@ def main(argv=None, **context):
         if args.command == "status":
             code, report = status_report(ctx)
         else:
-            code, report = run_phases(ctx, PHASES[:PHASES.index(args.through) + 1])
+            phases = ("destroy",) if args.command == "down" else PHASES[:PHASES.index(args.through) + 1]
+            code, report = run_phases(ctx, phases)
     except Stop as stop:
         code, report = stop.code, {"result": stop.result, "phases": {}, "message": stop.message, "next": stop.next_steps}
     print_report(report, args.json)

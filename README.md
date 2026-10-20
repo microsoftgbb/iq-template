@@ -2,6 +2,19 @@
 
 A starter for independent **Fabric + Foundry IQ** projects: Terraform infrastructure, Git-versioned Fabric items, a Copilot Studio agent with native IQ tools, a Copilot Managed Runtime app that calls it, and guided Copilot deployment. Derived projects add their scenario workflow; they do not redesign this shell.
 
+## What gets created
+
+- **Azure:** resource group and Fabric capacity.
+- **Identity/access:** Entra deployment app/service principal, delegated scopes, authorized clients, managed identities and role assignments.
+- **Fabric:** DEV/TEST workspaces, GitHub credentials connection and DEV-to-TEST deployment pipeline.
+- **DEV items:** `Scenario` lakehouse, `ScenarioOntology`, `SeedScenario`, `BindScenario` and `Bootstrap` deployment plan.
+- **Seed data:** `dbo.demo_sites` (2 rows), `dbo.demo_assets` (3 rows) and `Files/starter.txt`.
+- **Foundry:** account, project, chat/embedding deployments and Search/knowledge/Fabric IQ connections.
+- **Search:** service, indexed OneLake source, generated ingestion assets, live ontology source and knowledge base.
+- **Web IQ:** global G3 account; portal AppID/key setup is manual.
+- **Copilot Studio:** published agent, Fabric IQ/Foundry IQ tools and user connections.
+- **Managed Runtime:** app registration and Copilot Studio data source; hosting and sharing are separate.
+
 ## What is where
 
 | Path | Contains |
@@ -62,6 +75,35 @@ is unavailable in that region.
 [![Ten deployment stages, read left to right in each row: configure, prepare Entra identity, consent and sign in, provision the platform, bootstrap DEV, verify bindings, wire knowledge, prove both retrieval paths, report DEV ready, then create the Studio agent and Managed Runtime app. Plan and user approvals remain explicit.](docs/diagrams/deployment-flow.svg)](docs/diagrams/deployment-flow.svg)
 
 [Deployment stages and approval gates](docs/deployment-flow.md) | [Single-prompt setup](docs/development.md#deploy-from-one-prompt)
+
+## Delete the environment
+
+From the original derived checkout, with its tfvars, backend and deployment receipts:
+
+```sh
+python3 .github/skills/deploy-platform/scripts/deploy.py down --non-interactive
+```
+
+Review the saved destroy plan, then approve the reported hash and native deletions:
+
+```sh
+python3 .github/skills/deploy-platform/scripts/deploy.py down --non-interactive \
+  --allow-delete --approve "destroy=<sha256-prefix>" \
+  --approve runtime-delete --approve purge-foundry
+```
+
+Deletes the app, agent, Terraform resources and Search ingestion assets; purges the
+Foundry account. **Both Fabric workspaces and all their contents are deleted.**
+`--yes` cannot approve teardown. Rerun `down` to resume.
+
+Remaining cleanup:
+
+- **Fabric tenant admin:** permanently delete the retained DEV/TEST workspaces; [retention still applies](https://learn.microsoft.com/en-us/fabric/admin/workspace-retention).
+- **Power Apps:** remove project-only connections, connection references and retained agent transcripts/solution components; keep reused connections.
+- **Web IQ portal:** revoke keys and remove the AppID/profile.
+- **Preserved:** GitHub repository, local files/state, backend storage, tenant settings, licenses and external source data.
+
+[Teardown details](docs/development.md#delete-the-environment)
 
 ## Scope and boundaries
 

@@ -65,7 +65,9 @@ They use mocked native commands and HTTP. They cover saved-plan approval by hash
 identity-target and destructive-change guards, Git sync refusals, the explicit
 plan-attachment fallback, notebook resume without duplicates, binding and
 retrieval evidence, consent and the agent/app gates, and render the shipped agent
-into a temporary workspace. Do not run the runner's `up` command or the helper's
+into a temporary workspace. Teardown tests must cover exact destroy-plan
+approval, native deletion ordering, target isolation, partial failure/resume and
+retention reporting without cloud calls. Do not run the runner's `up` or `down` command or the helper's
 `connections`, `configure`, `check` or `find` subcommands as a template check;
 the runner refuses the template anyway. When changing a phase, keep it
 check-then-act, resumable and gated: persist a receipt before polling any
