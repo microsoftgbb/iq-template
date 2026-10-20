@@ -74,12 +74,12 @@ IDENTITY_ADDRESSES = frozenset({
 })
 PLATFORM_ADDRESSES = frozenset({
     "azurerm_resource_group.main", "azurerm_fabric_capacity.main", "fabric_workspace.dev",
-    "fabric_workspace.test", "fabric_connection.github", "fabric_deployment_pipeline.main",
+    "fabric_workspace.test", "fabric_connection.github[0]", "fabric_deployment_pipeline.main",
     "azapi_resource.foundry", "azapi_resource.chat_model", "azapi_resource.embedding_model",
     "azapi_resource.search", "azapi_resource.web_iq",
 })
 VARIABLES = ("project_name", "location", "fabric_location", "search_location", "search_sku", "fabric_capacity_sku",
-             "github_owner", "github_repository_name", "github_branch_name", "github_directory_name",
+             "fabric_git_enabled", "github_owner", "github_repository_name", "github_branch_name", "github_directory_name",
              "knowledge_lakehouse_id", "knowledge_ontologies", "chat_model", "embedding_model",
              "web_iq_terms_accepted")
 WEB_IQ_API_VERSION = "2026-06-01-preview"
@@ -116,8 +116,8 @@ APP_NEXT = (
     "your own Fabric IQ and Foundry IQ connections when prompted, then check again for the fresh challenge. "
     "Each user must authorize their own connections; registration is not app readiness.",
     'Ask "Which assets are in Maintenance and at which site?" and expect Pump B at North Works.',
-    "Review and commit app/src/config.ts and ms.config.json, and review/commit the generated DEV "
-    "ontology binding through Fabric source control before any promotion.",
+    "Review and commit app/src/config.ts and ms.config.json. Review the generated DEV ontology binding "
+    "before promotion; commit it through Fabric source control when Git synchronization is enabled.",
 )
 
 
@@ -535,14 +535,15 @@ def terraform_env(ctx, token_required):
         env["TF_VAR_github_token"] = token
     elif token_required:
         raise Waiting("The Fabric GitHub PAT is not available on this host.", *PAT_STEPS)
-    else:
-        # Variable evaluation only; plan and apply always receive the real ephemeral PAT.
-        env["TF_VAR_github_token"] = "evaluation-only"
     return env
 
 
 def terraform(ctx, *arguments, token=False, stream=False, input_text=None):
-    return run(ctx, ["terraform", f"-chdir={ctx.infra}", *arguments], env=terraform_env(ctx, token),
+    env = terraform_env(ctx, token)
+    if arguments[0] == "console" and not env.get("TF_VAR_github_token"):
+        # Evaluate the Git opt-in before requiring its ephemeral credential, never for plan/apply.
+        env["TF_VAR_github_token"] = "evaluation-only"
+    return run(ctx, ["terraform", f"-chdir={ctx.infra}", *arguments], env=env,
                stream=stream, input_text=input_text)
 
 
@@ -675,7 +676,7 @@ def converge(ctx, phase, target=None, check=None, variables=None, before_apply=N
         command += [f"-var={name}={value}" for name, value in sorted((variables or {}).items())]
         ctx.log("Creating a saved plan" + (f" targeted at {target} (expected only here)" if target else "")
                 + "".join(f" with {name}={value}" for name, value in sorted((variables or {}).items())) + ".")
-        result = terraform(ctx, *command, token=True, stream=True)
+        result = terraform(ctx, *command, token=git_token_required(ctx), stream=True)
         if result.code == 0:
             path.unlink(missing_ok=True)
             if before_apply:
@@ -724,7 +725,7 @@ def converge(ctx, phase, target=None, check=None, variables=None, before_apply=N
     approve(ctx, phase, f"Apply the saved {phase} plan ({describe(summary)})", pending)
     if before_apply:
         before_apply()
-    result = terraform(ctx, "apply", "-input=false", pending["path"], token=True, stream=True)
+    result = terraform(ctx, "apply", "-input=false", pending["path"], token=git_token_required(ctx), stream=True)
     discard_plan(ctx, phase)
     ctx.forget()
     if result.code:
@@ -853,11 +854,11 @@ def published_commit(ctx, branch):
 
 
 def reviewed_commit(ctx, branch):
-    """The checkout you reviewed must be exactly what Fabric will synchronize."""
+    """Bootstrap only the clean checkout of the reviewed, published revision."""
     remote = published_commit(ctx, branch)
     head = git(ctx, "rev-parse", "HEAD")
     if head != remote:
-        raise Blocked(f"Fabric syncs origin/{branch} at {remote[:12]}, but this checkout is at {head[:12]}.",
+        raise Blocked(f"Published origin/{branch} is at {remote[:12]}, but this checkout is at {head[:12]}.",
                       f"Check out and pull {branch} so the deployed commit is the one you reviewed.")
     if git(ctx, "status", "--porcelain", "--", "workspace"):
         raise Blocked("workspace/ has uncommitted changes; commit and push them before syncing Fabric.")
@@ -866,17 +867,51 @@ def reviewed_commit(ctx, branch):
 
 def workspace_items(ctx):
     items = {}
+    logical_ids = set()
     for path in sorted((ctx.root / "workspace").glob("*/.platform")):
+        if path.is_symlink() or path.parent.is_symlink() or path.parent.parent.is_symlink():
+            raise Blocked("Workspace definitions cannot be symlinks.")
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
             name, kind, logical = data["metadata"]["displayName"], data["metadata"]["type"], data["config"]["logicalId"]
         except (OSError, ValueError, KeyError, TypeError):
             raise Blocked(f"{path.relative_to(ctx.root)} is not a valid Fabric .platform file.") from None
-        items[name] = {"type": kind, "logical_id": guid(logical, f"{path.parent.name} logicalId")}
+        logical = guid(logical, f"{path.parent.name} logicalId")
+        if name in items or logical in logical_ids:
+            raise Blocked(f"Duplicate workspace display name or logical ID in {path.parent.name}.")
+        logical_ids.add(logical)
+        items[name] = {"type": kind, "logical_id": logical, "directory": path.parent.name}
     for _, kind, name in SAMPLE_ITEMS + (("plan", "DeploymentPlan", SAMPLE_PLAN),):
         if (items.get(name) or {}).get("type") != kind:
             raise Blocked(f"workspace/ must define the sample {kind} {name}; the runner deploys the template shell.")
     return items
+
+
+def workspace_definition_parts(ctx, expected):
+    """Import only tracked definition files from the reviewed workspace, never local artifacts."""
+    folders = {item["directory"]: name for name, item in expected.items()}
+    parts = {name: [] for name in expected}
+    workspace = (ctx.root / "workspace").resolve()
+    for filename in sorted(filter(None, git(ctx, "ls-files", "-z", "--", "workspace").split("\0"))):
+        relative = Path(filename).relative_to("workspace")
+        if len(relative.parts) < 2 or relative.parts[0] not in folders:
+            continue
+        path = ctx.root / filename
+        if path.is_symlink() or not path.is_file() or not path.resolve().is_relative_to(workspace):
+            raise Blocked(f"Not a regular workspace definition file: {filename}.")
+        parts[folders[relative.parts[0]]].append({
+            "path": "/" + relative.as_posix(), "payloadType": "InlineBase64",
+            "payload": base64.b64encode(path.read_bytes()).decode("ascii"),
+        })
+    for name, item in expected.items():
+        platform = f"/{item['directory']}/.platform"
+        if len(parts[name]) < 2 or platform not in {part["path"] for part in parts[name]}:
+            raise Blocked(f"{name} needs tracked .platform and definition files.")
+    return parts
+
+
+def git_token_required(ctx):
+    return variables(ctx)["fabric_git_enabled"]
 
 
 def phase_config(ctx):
@@ -993,7 +1028,8 @@ def phase_preflight(ctx):
     notes = [f"user {user} in tenant {tenant}, subscription {subscription}"]
     values = variables(ctx)
     notes.append(check_web_iq(ctx, subscription, values))
-    check_pat(ctx, values)
+    if values["fabric_git_enabled"]:
+        check_pat(ctx, values)
     az_json(ctx, ["ad", "sp", "show", "--id", POWER_BI_APP_ID, "--query", "{id:id}"],
             "Reading the tenant's Microsoft Power BI Service principal", quiet=True)
     addresses = state_addresses(ctx)
@@ -1003,7 +1039,8 @@ def phase_preflight(ctx):
         notes.append(check_model_quota(ctx, values))
     # Checked on every run: a changed tier or region replaces Search, which state cannot reveal here.
     notes.append(check_search_tier(ctx, subscription, values))
-    ctx.log("Not verified here: administrator-owned Fabric tenant settings (Git/GitHub sync, ontology and "
+    ctx.log("Not verified here: administrator-owned Fabric tenant settings ("
+            + ("Git/GitHub sync, " if values["fabric_git_enabled"] else "") + "ontology and "
             "deployment-plan previews, OneLake external access)"
             + ("." if values["search_sku"] == "serverless" else " and dedicated Search new-service capacity."))
     return "; ".join(notes)
@@ -1234,7 +1271,10 @@ def phase_consent(ctx):
     reselect = ["az", "account", "set", "--subscription", subscription]
     if not access_token(ctx, scope=auth["login_scope"], tenant=tenant):
         sign_in(ctx, login, "Sign in with the generated deployment scope (device code; your MFA).", after=(reselect,))
-    for path in ("/v1/workspaces", "/v1/capacities", "/v1/connections"):
+    paths = ["/v1/workspaces", "/v1/capacities"]
+    if git_token_required(ctx):
+        paths.append("/v1/connections")
+    for path in paths:
         response = fabric(ctx, "GET", path)
         if response.status in (401, 403):
             raise Waiting(f"Fabric refused {path} for the signed-in user (HTTP {response.status}).",
@@ -1249,13 +1289,14 @@ def phase_platform(ctx):
     if variables(ctx)["knowledge_lakehouse_id"] is not None:
         return "covered by the knowledge phase's full plan"
     result = converge(ctx, "platform")
-    workspace, name, *_ = required_outputs(ctx, "dev_workspace_id", "dev_workspace_name",
-                                           "github_connect_request", "web_iq")
+    workspace, name, *_ = required_outputs(ctx, "dev_workspace_id", "dev_workspace_name", "web_iq")
+    if git_token_required(ctx):
+        required_outputs(ctx, "github_connect_request")
     principal = ensure_search_identity(ctx, required=True)
     ctx.log(f"Web IQ account provisioned; connect its resource_id output at {WEB_IQ_PORTAL}. "
             "AppID onboarding, authenticated search and agent/app integration are not yet verified; see preparation.md.")
     return (f"{result}; DEV workspace {name} ({workspace}); Search identity {principal}; "
-            "Git and knowledge setup pending")
+            "workspace bootstrap and knowledge setup pending")
 
 
 def arm(ctx, method, url, body=None):
@@ -1533,21 +1574,32 @@ def synchronize(ctx, workspace, status, incoming, expected, receipts, branch):
     accepted(ctx, receipts, "update", "Update From Git", response, result=False, commit=commit, with_plan=with_plan)
 
 
-def resolve_items(ctx, workspace):
-    found = collections.defaultdict(list)
+def list_workspace_items(ctx, workspace):
+    items = []
     seen = set()
     continuation = None
     while True:
         query = f"?continuationToken={urllib.parse.quote(continuation, safe='')}" if continuation else ""
         page = fabric_json(ctx, "GET", f"/v1/workspaces/{workspace}/items{query}", label="Listing DEV items")
-        for item in page.get("value") or []:
-            found[(item.get("type"), item.get("displayName"))].append(item)
+        if not isinstance(page.get("value"), list):
+            raise Blocked("Fabric did not return an item list; refusing to assume DEV is empty.")
+        for item in page["value"]:
+            if not isinstance(item, dict) or not same_guid(item.get("workspaceId"), workspace):
+                raise Blocked("Fabric returned an item outside the DEV workspace.")
+            items.append(item)
         continuation = page.get("continuationToken")
         if not continuation:
             break
         if continuation in seen:
             raise Blocked("Fabric repeated an item-list continuation token.")
         seen.add(continuation)
+    return items
+
+
+def resolve_items(ctx, workspace):
+    found = collections.defaultdict(list)
+    for item in list_workspace_items(ctx, workspace):
+        found[(item.get("type"), item.get("displayName"))].append(item)
     ids = {}
     for key, kind, name in SAMPLE_ITEMS:
         matches = found.get((kind, name), [])
@@ -1557,6 +1609,118 @@ def resolve_items(ctx, workspace):
             raise Blocked(f"Fabric returned {name} outside the DEV workspace.")
         ids[key] = guid(matches[0].get("id"), f"{name} id")
     return ids
+
+
+def native_item_ids(ctx, workspace, expected):
+    items = list_workspace_items(ctx, workspace)
+    ids = {}
+    for name, definition in expected.items():
+        matches = [item for item in items if same_guid(item.get("logicalId"), definition["logical_id"])
+                   or (item.get("type"), item.get("displayName")) == (definition["type"], name)]
+        if len(matches) > 1:
+            raise Blocked(f"DEV has conflicting items for {name}; nothing will be overwritten.")
+        if not matches:
+            continue
+        item = matches[0]
+        if (not same_guid(item.get("logicalId"), definition["logical_id"])
+                or (item.get("type"), item.get("displayName")) != (definition["type"], name)):
+            raise Blocked(f"DEV {name} does not match the reviewed type, name and logical ID.")
+        ids[name] = guid(item.get("id"), f"{name} id")
+    return ids
+
+
+def validate_import(ctx, native, expected):
+    record = native["import"]
+    if record.get("validated"):
+        return
+    try:
+        details = (record.get("result") or {}).get("importItemDefinitionsDetails")
+        if not isinstance(details, list):
+            raise Blocked("Bulk Import did not return per-item results.")
+        ids = {}
+        for detail in details:
+            if not isinstance(detail, dict):
+                raise Blocked("Bulk Import returned an invalid per-item result.")
+            name = detail.get("itemDisplayName")
+            definition = expected.get(name)
+            if (name not in record["items"] or name in ids or not definition
+                    or detail.get("itemType") != definition["type"]
+                    or not same_guid(detail.get("itemLogicalId"), definition["logical_id"])):
+                raise Blocked("Bulk Import returned an unexpected or duplicate item identity.")
+            if detail.get("operationStatus") != "Succeeded":
+                raise Blocked(f"Bulk Import {name}: {detail.get('operationStatus')!r}; inspect its deployment result.")
+            if detail.get("operationType") != "Create":
+                raise Blocked(f"Bulk Import unexpectedly updated {name}; inspect concurrent workspace changes.")
+            ids[name] = guid(detail.get("itemId"), f"{name} imported id")
+        if set(ids) != set(record["items"]):
+            raise Blocked("Bulk Import omitted results for requested items.")
+    except Blocked:
+        record["status"] = "Failed"
+        ctx.state.save()
+        raise
+    native.setdefault("item_ids", {}).update(ids)
+    record["validated"] = True
+    ctx.state.save()
+
+
+def bootstrap_native(ctx, workspace, expected, receipts):
+    commit = reviewed_commit(ctx, variables(ctx)["github_branch_name"])
+    parts = workspace_definition_parts(ctx, expected)
+    digests = {name: hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
+               for name, value in parts.items()}
+    native = receipts.setdefault("native", {})
+    if native.get("workspace_id", workspace) != workspace:
+        raise Blocked("Native bootstrap receipts belong to a different DEV workspace.")
+    previous(ctx, native, "import", "Bulk Import", result=True)
+    if (native.get("import") or {}).get("status") == "Succeeded":
+        validate_import(ctx, native, expected)
+    ids = native_item_ids(ctx, workspace, expected)
+    for name, item in native.get("item_ids", {}).items():
+        if ids.get(name) != item:
+            raise Blocked(f"Previously imported {name} is missing or changed identity; inspect DEV before retrying.")
+    recorded = native.setdefault("definitions", {})
+    for name in ids:
+        if recorded.get(name) != digests[name]:
+            raise Blocked(f"{name} already exists with changed or unrecorded definitions.",
+                          "Native bootstrap imports additions only; review existing items without overwriting their data or bindings.")
+    missing = sorted(set(expected) - set(ids))
+    if not missing:
+        return
+    body = {"definitionParts": [part for name in missing for part in parts[name]],
+            "options": {"allowPairingByName": False, "deploymentPlan": {
+                "logicalId": expected[SAMPLE_PLAN]["logical_id"], "referenceType": "ByLogicalId"}}}
+    native["workspace_id"] = workspace
+    recorded.update({name: digests[name] for name in missing})
+    # A lost response must not cause a duplicate import on the next run.
+    native["import"] = {"status": "Unknown", "commit": commit, "items": missing, "submitted_at": utc_now()}
+    ctx.state.save()
+    ctx.log(f"Importing {len(missing)} reviewed item(s) at {commit[:12]} through Fabric APIs (no Git PAT).")
+    path = f"/v1/workspaces/{workspace}/items/bulkImportDefinitions"
+    response = fabric(ctx, "POST", path + "?beta=true", body)
+    with_plan = True
+    if response.status not in (200, 202):
+        error = ServiceError("Bulk Import with the Bootstrap plan", response)
+        if error.error_code != "FeatureNotAvailable":
+            native["import"]["status"] = "Failed"
+            ctx.state.save()
+            raise error
+        if ctx.args.bootstrap_fallback != "notebooks":
+            native.pop("import")
+            ctx.state.save()
+            raise Blocked(error.message, "This tenant rejects attaching a deployment plan to native import.",
+                          "Rerun with --bootstrap-fallback notebooks to import the same definitions without the plan, "
+                          "then run SeedScenario and BindScenario as you.")
+        ctx.log("Plan attachment is unavailable; importing without it (--bootstrap-fallback notebooks).")
+        body["options"].pop("deploymentPlan")
+        response = fabric(ctx, "POST", path, body)
+        with_plan = False
+    accepted(ctx, native, "import", "Bulk Import", response, result=True,
+             commit=commit, items=missing, with_plan=with_plan)
+    validate_import(ctx, native, expected)
+    ids = native_item_ids(ctx, workspace, expected)
+    if any(ids.get(name) != item for name, item in native["item_ids"].items()):
+        raise Waiting("Bulk Import succeeded, but the imported item identities are not visible in DEV yet.",
+                      "Inspect DEV and rerun; the accepted import will not be resubmitted.")
 
 
 ANNOTATION = re.compile(r"(?m)^[ \t]*annotation[ \t]+(ONT_[A-Za-z]+)[ \t]*=[ \t]*(.*?)[ \t]*\r?$")
@@ -1664,11 +1828,8 @@ def run_notebook(ctx, workspace, item, name, receipts, *, skip_completed):
                       "Inspect the run in Fabric; after fixing the cause, rerun with --retry-failed.")
 
 
-def phase_bootstrap(ctx):
-    workspace, request = required_outputs(ctx, "dev_workspace_id", "github_connect_request")
-    workspace = guid(workspace, "dev_workspace_id")
-    expected = workspace_items(ctx)
-    receipts = ctx.state.section("bootstrap")
+def bootstrap_git(ctx, workspace, expected, receipts):
+    request = required_outputs(ctx, "github_connect_request")[0]
     branch = request["gitProviderDetails"]["branchName"]
     git_path = f"/v1/workspaces/{workspace}/git"
     connection = fabric_json(ctx, "GET", f"{git_path}/connection", label="Reading the DEV Git connection")
@@ -1689,6 +1850,17 @@ def phase_bootstrap(ctx):
     incoming = [change for change in status.get("changes") or [] if change.get("remoteChange") not in (None, "None")]
     if incoming:
         synchronize(ctx, workspace, status, incoming, expected, receipts, branch)
+
+
+def phase_bootstrap(ctx):
+    workspace = guid(required_outputs(ctx, "dev_workspace_id")[0], "dev_workspace_id")
+    expected = workspace_items(ctx)
+    receipts = ctx.state.section("bootstrap")
+    git_enabled = variables(ctx)["fabric_git_enabled"]
+    if git_enabled:
+        bootstrap_git(ctx, workspace, expected, receipts)
+    else:
+        bootstrap_native(ctx, workspace, expected, receipts)
     ids = resolve_items(ctx, workspace)
     problems = live_binding(ctx, workspace, ids, expected)
     if problems:
@@ -1700,7 +1872,8 @@ def phase_bootstrap(ctx):
             raise Blocked("BindScenario completed, but the binding is not verified: " + "; ".join(problems))
     receipts.update(lakehouse_id=ids["lakehouse"], ontology_id=ids["ontology"], verified_at=utc_now())
     ctx.state.save()
-    ctx.log("Review and commit the generated DEV binding through Fabric source control before any promotion.")
+    ctx.log("Review the generated DEV binding before promotion."
+            + (" Commit it through Fabric source control." if git_enabled else ""))
     return f"seeded and bound in DEV: lakehouse {ids['lakehouse']}, ontology {ids['ontology']}"
 
 
@@ -2605,7 +2778,7 @@ def parse_arguments(argv):
                        help="register the subscription's auto-approved Microsoft.Search/Serverless preview feature "
                             "that the default serverless Search tier needs")
     group.add_argument("--bootstrap-fallback", choices=("notebooks",),
-                       help="if plan-attached Git sync is FeatureNotAvailable, sync without it and run Seed then Bind")
+                       help="if plan attachment is FeatureNotAvailable, import/sync without it and run Seed then Bind")
     group = deployment.add_argument_group("readiness evidence")
     group.add_argument("--ontology-question", default=ONTOLOGY_QUESTION)
     group.add_argument("--document-question", default=DOCUMENT_QUESTION)

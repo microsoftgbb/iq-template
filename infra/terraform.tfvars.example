@@ -5,6 +5,9 @@ github_owner           = "<github-organization-or-user>"
 github_repository_name = "<new-repository-name>"
 github_branch_name     = "<published-bootstrap-branch>"
 
+# Opt-in Fabric GitHub synchronization requires a PAT. Native import does not.
+fabric_git_enabled = false
+
 knowledge_lakehouse_id = null
 knowledge_ontologies   = {}
 
@@ -20,7 +23,7 @@ web_iq_terms_accepted = false
 # project_name: 3-16 lowercase letters/digits/single hyphens; start with a letter.
 # Capacity admins: user UPNs or service-principal object IDs.
 # Select the new repository's published default branch, not a local agent worktree branch.
-# Defaults: F2 capacity, serverless (preview) Search; Git bootstrap uses /workspace.
+# Defaults: F2 capacity, serverless (preview) Search; native bootstrap imports workspace/.
 # Serverless needs a region that offers it and the subscription's auto-approved
 # Microsoft.Search/Serverless feature. For an SLA-backed dedicated tier, set:
 # search_sku = "basic"
@@ -32,8 +35,8 @@ web_iq_terms_accepted = false
 # These default to location. Never change a deployed region as an automatic retry.
 # Use one state: first target module.fabric_user_auth to prepare the Entra application.
 # An administrator grants consent; sign in with the generated scope before a full plan.
-# The first full apply creates the platform, not the Git connection or workspace items.
-# After Git sync with Bootstrap and successful seed/binding runs, replace null with the
+# The first full apply creates the platform, not the workspace items.
+# After Bootstrap and successful seed/binding runs, replace null with the
 # DEV Scenario lakehouse's physical GUID (not its .platform logicalId) and apply again.
 # Register the bound ontology in that same knowledge apply:
 # knowledge_ontologies = {
@@ -46,5 +49,5 @@ web_iq_terms_accepted = false
 # Registered ontologies also receive native Foundry Fabric IQ UserEntraToken connections.
 # fabric_iq_connections outputs their IDs/endpoints; this does not create a consuming
 # agent/app or prove its OBO flow. Search fabricOntology calls still need the user header.
-# Guided Codespaces deployment reads the FABRIC_GITHUB_TOKEN Codespaces secret.
-# Set TF_VAR_github_token in your shell; never add a PAT to this file.
+# Only with fabric_git_enabled = true: supply FABRIC_GITHUB_TOKEN as a Codespaces
+# secret or TF_VAR_github_token in your shell. Never add a PAT to this file.

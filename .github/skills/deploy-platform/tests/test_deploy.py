@@ -148,6 +148,7 @@ def make_context(test, root, shell=None, http=None, **overrides):
                          clock=clock, interactive=False, environ={"FABRIC_GITHUB_TOKEN": "pat-value"})
     ctx.messages = []
     ctx.log = ctx.messages.append
+    ctx.cache["variables"] = {"fabric_git_enabled": False}
     ctx.start("test")
     return ctx
 
@@ -215,6 +216,7 @@ def bootstrap_http(root, connection_states=("ConnectedAndInitialized",), status=
 def bootstrap_context(test, root, http, **overrides):
     ctx = make_context(test, root, FakeShell([TOKEN_RULE, *GIT_RULES]), http, **overrides)
     ctx.cache["outputs"] = {"dev_workspace_id": WORKSPACE, "github_connect_request": REQUEST}
+    ctx.cache["variables"].update(fabric_git_enabled=True, github_branch_name="main")
     return ctx
 
 
@@ -284,6 +286,27 @@ class PlanTests(unittest.TestCase):
             with self.assertRaisesRegex(deploy.Blocked, key):
                 deploy.terraform_env(ctx, True)
 
+    def test_native_deployment_plans_and_applies_without_a_pat_or_placeholder(self):
+        root = make_root(self)
+        shell = FakeShell(plan_rules([("azurerm_resource_group.main", ["create"])]))
+        ctx = make_context(self, root, shell, yes=True)
+        ctx.environ = {}
+        with mock.patch.object(shell, "run", wraps=shell.run) as native:
+            self.assertEqual(deploy.converge(ctx, "platform"), "applied")
+        for call in native.call_args_list:
+            self.assertNotIn("TF_VAR_github_token", call.kwargs["env"])
+
+    def test_opted_in_git_requires_a_pat_before_planning(self):
+        root = make_root(self)
+        ctx = make_context(self, root)
+        ctx.environ = {}
+        ctx.cache["variables"]["fabric_git_enabled"] = True
+        with self.assertRaisesRegex(deploy.Waiting, "PAT is not available"):
+            deploy.converge(ctx, "platform")
+        self.assertFalse(ctx.shell.calls)
+        ctx.environ["FABRIC_GITHUB_TOKEN"] = "repository-pat"
+        self.assertEqual(deploy.terraform_env(ctx, True)["TF_VAR_github_token"], "repository-pat")
+
     def test_the_identity_bootstrap_plan_must_stay_inside_its_module(self):
         root = make_root(self)
         changes = [("module.fabric_user_auth.azuread_application.fabric", ["create"]),
@@ -316,7 +339,7 @@ class TeardownTests(unittest.TestCase):
         ctx.initialized = True
         ctx.state.section("target").update(subscription_id=self.SUBSCRIPTION, tenant_id=TENANT, user_object_id="user")
         ctx.state.section("choices").update(local_state=True, environment_id=self.ENVIRONMENT, environment_url=self.URL)
-        ctx.cache["variables"] = {"project_name": "demo", "github_owner": "example", "github_repository_name": "demo-repo"}
+        ctx.cache["variables"].update(project_name="demo", github_owner="example", github_repository_name="demo-repo")
         return ctx
 
     def snapshot(self, app=None):
@@ -721,6 +744,142 @@ class BootstrapTests(unittest.TestCase):
         self.assertIn("demo_assets is not pinned to the DEV workspace", placeholder)
 
 
+class NativeBootstrapTests(unittest.TestCase):
+    def context(self, *, definitions=(True,), **options):
+        root = make_root(self)
+        expected = deploy.workspace_items(make_context(self, root))
+        ids = {item["displayName"]: item["id"] for item in ITEMS["value"]}
+        ids["Bootstrap"] = CONNECTION
+        self.items = [{"id": ids[name], "workspaceId": WORKSPACE, "displayName": name,
+                       "type": item["type"], "logicalId": item["logical_id"]}
+                      for name, item in expected.items()]
+        self.result = {"importItemDefinitionsDetails": [
+            {"itemId": item["id"], "itemDisplayName": item["displayName"], "itemType": item["type"],
+             "itemLogicalId": item["logicalId"], "operationType": "Create", "operationStatus": "Succeeded"}
+            for item in self.items]}
+        http = bootstrap_http(root, definitions=definitions)
+        http.routes.insert(0, ("GET", re.compile(rf"/workspaces/{WORKSPACE}/items$"),
+                                [reply(body={"value": []}), reply(body={"value": self.items})]))
+        http.add("POST", r"/items/bulkImportDefinitions\?beta=true$",
+                 reply(202, headers={"x-ms-operation-id": OPERATION, "Retry-After": "1"}))
+        http.add("GET", rf"/operations/{OPERATION}/result$", reply(body=self.result))
+        files = "\0".join(path.relative_to(root).as_posix() for path in sorted((root / "workspace").rglob("*"))
+                         if path.is_file()) + "\0"
+        shell = FakeShell([TOKEN_RULE, *GIT_RULES, (command("git", "ls-files"), deploy.Result(0, files))])
+        ctx = make_context(self, root, shell, http, **options)
+        ctx.environ = {}
+        ctx.cache["variables"]["github_branch_name"] = "main"
+        ctx.cache["outputs"] = {"dev_workspace_id": WORKSPACE}
+        return ctx
+
+    def test_default_import_uses_the_plan_and_preserves_all_definition_bytes_without_git(self):
+        ctx = self.context()
+        self.assertIn(LAKEHOUSE, deploy.phase_bootstrap(ctx))
+        (_, body), = ctx.http.posts(r"/items/bulkImportDefinitions\?beta=true$")
+        self.assertEqual(body["options"], {"allowPairingByName": False, "deploymentPlan": {
+            "logicalId": PLAN_LOGICAL_ID, "referenceType": "ByLogicalId"}})
+        for part in body["definitionParts"]:
+            self.assertEqual(part["payloadType"], "InlineBase64")
+            source = ctx.root / "workspace" / part["path"].lstrip("/")
+            self.assertEqual(base64.b64decode(part["payload"]), source.read_bytes())
+        self.assertEqual(sum(part["path"].endswith("/.platform") for part in body["definitionParts"]), 5)
+        self.assertFalse(any("/git/" in url or "api.github.com" in url for _, url, *_ in ctx.http.calls))
+        self.assertFalse(ctx.http.posts(r"/jobs/execute/instances"))
+        self.assertTrue(ctx.state.section("bootstrap")["native"]["import"]["validated"])
+        before = len(ctx.http.posts(r"/bulkImportDefinitions"))
+        deploy.phase_bootstrap(ctx)
+        self.assertEqual(len(ctx.http.posts(r"/bulkImportDefinitions")), before, "reruns must preserve live definitions")
+
+    def test_an_accepted_import_resumes_without_resubmitting(self):
+        ctx = self.context(timeout_minutes=1)
+        ctx.http.routes.insert(0, ("GET", re.compile(rf"/operations/{OPERATION}$"),
+                                  [reply(body={"status": "Running"})]))
+        with self.assertRaises(deploy.Waiting):
+            deploy.phase_bootstrap(ctx)
+        self.assertEqual(ctx.state.section("bootstrap")["native"]["import"]["status"], "Running")
+        ctx.http.routes.pop(0)
+        ctx.start("bootstrap")
+        deploy.phase_bootstrap(ctx)
+        self.assertEqual(len(ctx.http.posts(r"/bulkImportDefinitions")), 1)
+
+    def test_missing_receipts_and_partial_success_stop_instead_of_claiming_readiness(self):
+        for response in (reply(202), reply(body={})):
+            with self.subTest(status=response.status, body=response.json()):
+                ctx = self.context()
+                ctx.http.routes.insert(0, ("POST", re.compile(r"/items/bulkImportDefinitions\?beta=true$"), [response]))
+                with self.assertRaises(deploy.Blocked):
+                    deploy.phase_bootstrap(ctx)
+                with self.assertRaises(deploy.Blocked):
+                    deploy.phase_bootstrap(ctx)
+                self.assertEqual(len(ctx.http.posts(r"/bulkImportDefinitions")), 1)
+                self.assertFalse(ctx.http.posts(r"/jobs/execute/instances"))
+        ctx = self.context()
+        result = {"importItemDefinitionsDetails": [
+            {**detail, "operationStatus": "SucceededDespiteFailures"} for detail in self.result["importItemDefinitionsDetails"]]}
+        ctx.http.routes.insert(0, ("POST", re.compile(r"/items/bulkImportDefinitions\?beta=true$"), [reply(body=result)]))
+        with self.assertRaisesRegex(deploy.Blocked, "SucceededDespiteFailures"):
+            deploy.phase_bootstrap(ctx)
+        self.assertEqual(ctx.state.section("bootstrap")["native"]["import"]["status"], "Failed")
+
+    def test_conflicting_names_or_renamed_logical_ids_are_not_overwritten(self):
+        for changes in ({"logicalId": TENANT}, {"displayName": "RenamedScenario"}, {"workspaceId": TENANT}):
+            with self.subTest(changes=changes):
+                ctx = self.context()
+                item = next(item for item in self.items if item["displayName"] == "Scenario")
+                ctx.http.routes.insert(0, ("GET", re.compile(rf"/workspaces/{WORKSPACE}/items$"),
+                                          [reply(body={"value": [{**item, **changes}]})]))
+                with self.assertRaises(deploy.Blocked):
+                    deploy.phase_bootstrap(ctx)
+                self.assertFalse(ctx.http.posts(r"/bulkImportDefinitions"))
+
+    def test_imported_definitions_are_not_replaced_after_source_changes(self):
+        ctx = self.context()
+        deploy.phase_bootstrap(ctx)
+        notebook = ctx.root / "workspace" / "SeedScenario.Notebook" / "notebook-content.py"
+        notebook.write_text(notebook.read_text(encoding="utf-8") + "\n# changed source\n", encoding="utf-8")
+        with self.assertRaisesRegex(deploy.Blocked, "changed or unrecorded definitions"):
+            deploy.phase_bootstrap(ctx)
+        self.assertEqual(len(ctx.http.posts(r"/bulkImportDefinitions")), 1)
+
+    def test_import_reads_only_tracked_parts_and_rejects_symlinks(self):
+        ctx = self.context()
+        extra = ctx.root / "workspace" / "Scenario.Lakehouse" / ".env"
+        extra.write_text("not a definition", encoding="utf-8")
+        parts = deploy.workspace_definition_parts(ctx, deploy.workspace_items(ctx))
+        self.assertFalse(any(part["path"].endswith(".env") for group in parts.values() for part in group))
+        notebook = ctx.root / "workspace" / "SeedScenario.Notebook" / "notebook-content.py"
+        notebook.unlink()
+        notebook.symlink_to(extra)
+        with self.assertRaisesRegex(deploy.Blocked, "Not a regular workspace definition"):
+            deploy.phase_bootstrap(ctx)
+        self.assertFalse(ctx.http.posts(r"/bulkImportDefinitions"))
+
+    def test_plan_attachment_failure_requires_an_explicit_notebook_fallback(self):
+        ctx = self.context(definitions=(False, True))
+        ctx.http.routes.insert(0, ("POST", re.compile(r"/items/bulkImportDefinitions\?beta=true$"),
+                                  [reply(403, {"errorCode": "FeatureNotAvailable"})]))
+        with self.assertRaises(deploy.Blocked) as stop:
+            deploy.phase_bootstrap(ctx)
+        self.assertIn("--bootstrap-fallback notebooks", " ".join(stop.exception.next_steps))
+        self.assertFalse(ctx.http.posts(r"/items/bulkImportDefinitions$"))
+        # The refused request did not create items.
+        ctx.http.routes.insert(0, ("GET", re.compile(rf"/workspaces/{WORKSPACE}/items$"),
+                                  [reply(body={"value": []}), reply(body={"value": self.items})]))
+        ctx.args.bootstrap_fallback = "notebooks"
+        ctx.http.add("POST", r"/items/bulkImportDefinitions$", reply(body=self.result))
+        for item, job in ((SEED, SEED_JOB), (BIND, BIND_JOB)):
+            ctx.http.add("GET", rf"/items/{item}/jobs/instances$", reply(body={"value": []}))
+            ctx.http.add("POST", rf"/notebooks/{item}/jobs/execute/instances\?jobType=RunNotebook$",
+                         reply(202, headers={"Location":
+                             f"https://api.fabric.microsoft.com/v1/workspaces/{WORKSPACE}/items/{item}/jobs/instances/{job}"}))
+            ctx.http.add("GET", rf"/items/{item}/jobs/instances/{job}$", reply(body={"status": "Completed"}))
+        deploy.phase_bootstrap(ctx)
+        (_, body), = ctx.http.posts(r"/items/bulkImportDefinitions$")
+        self.assertNotIn("deploymentPlan", body["options"])
+        runs = [url for url, _ in ctx.http.posts(r"/jobs/execute/instances")]
+        self.assertEqual([SEED in runs[0], BIND in runs[1]], [True, True])
+
+
 class ReadinessTests(unittest.TestCase):
     def test_ingestion_is_ready_after_a_clean_sync_even_when_later_syncs_index_nothing(self):
         observed = {"lastSynchronizationState": {"errors": [], "itemsSkipped": 0, "itemsUpdatesFailed": 0,
@@ -877,9 +1036,9 @@ class SearchTests(unittest.TestCase):
         http = FakeHttp()
         http.add("GET", r"/searchServices/srch-demo\?", search_service("p" * 8))
         ctx = self.search_context(http, plan_rules([], plan_code=0))
-        ctx.cache["variables"] = {"knowledge_lakehouse_id": None}
+        ctx.cache["variables"].update(knowledge_lakehouse_id=None)
         ctx.cache["outputs"].update(dev_workspace_id=WORKSPACE, dev_workspace_name="demo-dev",
-                                    github_connect_request=REQUEST, web_iq={"resource_id": "web-iq-account"})
+                                    web_iq={"resource_id": "web-iq-account"})
         self.assertIn("Search identity " + "p" * 8, deploy.phase_platform(ctx))
         del ctx.cache["outputs"]["web_iq"]
         with self.assertRaisesRegex(deploy.Blocked, "Terraform outputs are missing: web_iq"):
@@ -902,13 +1061,14 @@ class SearchTests(unittest.TestCase):
 
         outputs = deploy.Result(0, json.dumps({"search_management_url": {"value": SEARCH_URL}}))
         rules = [(terraform("plan"), plan), (terraform("show"), show), (terraform("apply"), deploy.Result(0)),
+                 (terraform("console"), deploy.Result(0, json.dumps(json.dumps({"fabric_git_enabled": False})))),
                  (terraform("output"), outputs)]
         http = FakeHttp()
         http.add("GET", r"/searchServices/srch-demo\?", search_service("o" * 8), search_service(), search_service("n" * 8))
         http.add("PATCH", r"/searchServices/srch-demo\?", reply(500))
         ctx = self.search_context(http, rules, yes=True, allow_replace=True)
         ctx.initialized = True
-        ctx.cache["variables"] = {"search_sku": "serverless"}
+        ctx.cache["variables"].update(search_sku="serverless")
         self.assertEqual(deploy.converge_knowledge(ctx), "applied")
         plans = ctx.shell.matching(terraform("plan"))
         self.assertEqual(["-var=search_identity_ready=false" in plan for plan in plans], [False, True, False])
@@ -918,7 +1078,7 @@ class SearchTests(unittest.TestCase):
         self.assertEqual(ctx.state.section("pending_plans"), {})
         ctx = self.search_context(FakeHttp(), plan_rules([replaced, grant]), yes=True, allow_replace=True)
         ctx.cache["outputs"] = {}
-        ctx.cache["variables"] = {"search_sku": "basic"}
+        ctx.cache["variables"].update(search_sku="basic")
         self.assertEqual(deploy.converge_knowledge(ctx), "applied")
         self.assertEqual(len(ctx.shell.matching(terraform("plan"))), 1, "dedicated tiers get their identity at creation")
 

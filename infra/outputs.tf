@@ -38,7 +38,7 @@ output "fabric_capacity_resource_id" {
 }
 
 output "dev_workspace_id" {
-  description = "DEV workspace GUID; connect and sync Git with the Bootstrap deployment plan after platform setup."
+  description = "DEV workspace GUID; import definitions with the Bootstrap deployment plan after platform setup."
   value       = fabric_workspace.dev.id
 }
 
@@ -58,18 +58,18 @@ output "test_workspace_name" {
 }
 
 output "github_repository_url" {
-  description = "Repository to connect to the DEV workspace."
+  description = "Repository containing the reviewed Fabric definitions, agent and app."
   value       = local.github_repository_url
 }
 
 output "github_connection_id" {
-  description = "GitHub credentials connection for plan-driven DEV Git bootstrap; not a PAT."
-  value       = fabric_connection.github.id
+  description = "Opt-in GitHub credentials connection; null when Fabric Git synchronization is disabled."
+  value       = var.fabric_git_enabled ? fabric_connection.github[0].id : null
 }
 
 output "github_connect_request" {
-  description = "Fabric Git Connect API request body. Terraform does not connect, initialize or synchronize Git."
-  value = {
+  description = "Opt-in Fabric Git Connect request; null when disabled. Terraform does not connect or synchronize Git."
+  value = var.fabric_git_enabled ? {
     gitProviderDetails = {
       gitProviderType = "GitHub"
       ownerName       = lower(var.github_owner)
@@ -79,9 +79,9 @@ output "github_connect_request" {
     }
     myGitCredentials = {
       source       = "ConfiguredConnection"
-      connectionId = fabric_connection.github.id
+      connectionId = fabric_connection.github[0].id
     }
-  }
+  } : null
 }
 
 output "deployment_pipeline_id" {
