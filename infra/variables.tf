@@ -180,6 +180,20 @@ variable "knowledge_ontologies" {
   }
 }
 
+variable "web_iq_enabled" {
+  description = "Opt in to a billable global Microsoft Web IQ account (G3, preview). Requires a paid, Web IQ-enabled subscription; portal AppID linking and runtime integration remain separate."
+  type        = bool
+  default     = false
+  nullable    = false
+}
+
+variable "web_iq_terms_accepted" {
+  description = "Set true only after explicitly accepting https://www.microsoft.com/en-us/webiq/webiq-legal and paid public-endpoint usage. Does not grant service eligibility or perform portal onboarding."
+  type        = bool
+  default     = false
+  nullable    = false
+}
+
 variable "search_sku" {
   description = "AI Search tier. serverless (preview, default) is ready in seconds but needs the subscription's Microsoft.Search/Serverless feature and a region that offers it; it has no SLA, no tier migration, and while its preview defect lasts any Search setting or tag change replaces the service. basic or standard tiers take about 20 minutes to provision."
   type        = string

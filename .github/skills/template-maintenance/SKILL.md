@@ -15,6 +15,7 @@ Read `AGENTS.md` and inspect the current diff before editing. Preserve unrelated
 | Capacity, Git credentials or deployment pipeline | `infra/fabric.tf`, `infra/providers.tf`, `cicd/README.md` |
 | Delegated deployment identity or consent handoff | `infra/identity.tf`, `infra/modules/fabric-user-auth/`, `infra/fabric.tf`, `docs/getting-started.md` and the `deploy-platform` skill |
 | Foundry or knowledge retrieval | `infra/foundry.tf`, `infra/knowledge.tf`, `infra/outputs.tf`, `docs/ontology-knowledge.md` |
+| Optional Web IQ | `infra/web_iq.tf`, `preparation.md`, and the existing deployment runner/probe tests |
 | Workspace definitions or notebooks | The `fabric-workspace` skill and its linked guides |
 | Developer tools or initialization | `.devcontainer/`, the `initialize-project` skill and `docs/development.md` |
 | Guided deployment | The `deploy-platform` skill, its runner (`scripts/deploy.py`), its native-request reference and `cicd/README.md` |
@@ -27,6 +28,7 @@ Preserve the non-obvious infrastructure constraints:
 - Create capacity before looking up its Fabric GUID; workspaces cannot use its Azure resource ID.
 - Keep the user-auth module in the platform's state. Its one-time targeted bootstrap is the only targeting exception; never run it during maintenance. Keep delegated scopes and pre-authorized clients separate from administrator-owned consent, and retain Fabric's dependency on the registration for safe teardown. Read shared Microsoft service principals rather than managing their lifecycle.
 - Keep Git connection/initialization/sync outside Terraform: the pinned provider cannot attach a deployment plan. Keep GitHub integration, empty TEST, and administrator-owned tenant settings.
+- Keep Web IQ disabled by default, with explicit paid-usage/terms acceptance. The pinned AzAPI provider lacks its embedded schema; retain the resource-scoped validation exception, not a provider-wide bypass. Portal AppID linking and a public-only API probe do not prove native Studio/app integration; use `preparation.md` for the manual gates.
 - Use `Microsoft.CognitiveServices/accounts` projects, not ML hubs. Keep model versions/SKUs/quota configurable.
 - Manage Search sources/bases through data-plane `restful_resource`, not unsupported ARM types. Retain CRUD and drift detection, source rebuild triggers, and knowledge-base-before-source deletion ordering. The OneLake source owns its generated search assets.
 - Create a serverless Search service without a managed identity: its preview ends in `Failed` when one is requested and answers HTTP 500 to identity writes and to any change once an identity exists. Keep the runner's verified identity step, `ignore_changes = [identity]`, the identity grants gated until it exists (including `search_identity_ready` for the staged replacement plan), and replacement rather than update for serverless setting or tag changes. Read the admin key through the ephemeral action, never into state.

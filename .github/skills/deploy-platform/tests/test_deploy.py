@@ -1158,5 +1158,116 @@ class AgentAndAppTests(unittest.TestCase):
         self.assertIn("registered_at", ctx.state.section("app"))
 
 
+class WebIqTests(unittest.TestCase):
+    RESOURCE_ID = "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.WebIQ/accounts/demo"
+
+    def web_context(self, *, key=None, state="Succeeded", search=None):
+        http = FakeHttp()
+        http.add("GET", r"/providers/Microsoft\.WebIQ/accounts/demo\?api-version=2026-06-01-preview$",
+                 reply(body={"id": self.RESOURCE_ID, "properties": {"provisioningState": state}}))
+        if search:
+            http.add("POST", r"^https://api\.microsoft\.ai/v3/search/web$", search)
+        ctx = make_context(self, make_root(self), FakeShell([TOKEN_RULE]), http)
+        ctx.cache["outputs"] = {"web_iq": {"resource_id": self.RESOURCE_ID}}
+        ctx.state.section("target")["subscription_id"] = "sub"
+        if key:
+            ctx.environ["WEB_IQ_API_KEY"] = key
+        return ctx
+
+    def test_disabled_web_iq_has_no_cloud_or_credential_dependency(self):
+        ctx = make_context(self, make_root(self))
+        ctx.cache["outputs"] = {}
+        self.assertEqual(deploy.check_web_iq(ctx, "sub", {"web_iq_enabled": False}), "Web IQ disabled")
+        self.assertIsNone(deploy.verify_web_iq(ctx))
+        self.assertFalse(ctx.http.calls)
+        self.assertFalse(ctx.shell.calls)
+
+    def test_opt_in_requires_terms_and_the_pinned_subscription_api(self):
+        ctx = make_context(self, make_root(self))
+        with self.assertRaisesRegex(deploy.Waiting, "terms and paid usage"):
+            deploy.check_web_iq(ctx, "sub", {"web_iq_enabled": True, "web_iq_terms_accepted": False})
+        self.assertFalse(ctx.shell.calls)
+        for versions, succeeds in (([], False), ([deploy.WEB_IQ_API_VERSION], True)):
+            provider = {"registrationState": "NotRegistered",
+                        "resourceTypes": [{"resourceType": "accounts", "apiVersions": versions}]}
+            ctx.shell = FakeShell([(command("az", "provider", "show"), deploy.Result(0, json.dumps(provider)))])
+            values = {"web_iq_enabled": True, "web_iq_terms_accepted": True}
+            if succeeds:
+                self.assertIn("portal AppID linking remains manual", deploy.check_web_iq(ctx, "sub", values))
+            else:
+                with self.assertRaisesRegex(deploy.Blocked, "pinned Web IQ accounts API"):
+                    deploy.check_web_iq(ctx, "sub", values)
+            self.assertIn("sub", ctx.shell.calls[0])
+            self.assertFalse(ctx.shell.matching(command("az", "provider", "register")))
+
+    def test_a_provisioned_account_waits_for_portal_onboarding_not_automatic_keys(self):
+        ctx = self.web_context()
+        with self.assertRaisesRegex(deploy.Waiting, "authenticated search is unverified") as stop:
+            deploy.verify_web_iq(ctx)
+        self.assertIn(deploy.WEB_IQ_PORTAL, " ".join(stop.exception.next_steps))
+        self.assertEqual(ctx.state.section("web_iq")["status"], "onboarding_pending")
+        self.assertFalse(ctx.http.posts("search/web"))
+
+    def test_provisioning_and_target_failures_never_send_the_key(self):
+        for state, error in (("Creating", deploy.Waiting), ("Failed", deploy.Blocked), ("Canceled", deploy.Blocked)):
+            ctx = self.web_context(key="private-key", state=state)
+            with self.assertRaises(error):
+                deploy.verify_web_iq(ctx)
+            self.assertFalse(ctx.http.posts("search/web"))
+            self.assertNotIn("private-key", json.dumps(ctx.http.calls))
+        ctx = self.web_context(key="private-key")
+        ctx.cache["outputs"]["web_iq"]["resource_id"] = self.RESOURCE_ID.replace("/sub/", "/another/")
+        with self.assertRaisesRegex(deploy.Blocked, "selected subscription"):
+            deploy.verify_web_iq(ctx)
+        self.assertFalse(ctx.http.calls)
+
+    def test_invalid_header_characters_never_reach_http_or_error_output(self):
+        for key in ("private\nkey", "private key", "private\u0100key"):
+            ctx = self.web_context(key=key)
+            with self.assertRaisesRegex(deploy.Blocked, "invalid HTTP header characters") as stop:
+                deploy.verify_web_iq(ctx)
+            self.assertNotIn(key, str(stop.exception))
+            self.assertFalse(ctx.http.posts("search/web"))
+
+    def test_a_cited_live_probe_keeps_secrets_and_retrieved_content_out_of_receipts(self):
+        result = {"title": "Microsoft Web IQ", "url": "https://learn.microsoft.com/en-us/web-iq/",
+                  "content": "Grounding passage", "crawledAt": "2026-10-19T00:00:00Z"}
+        for dated in (True, False):
+            with self.subTest(dated=dated):
+                item = result if dated else {key: value for key, value in result.items() if key != "crawledAt"}
+                ctx = self.web_context(key="private-key", search=reply(body={"webResults": [item]}))
+                message = deploy.verify_web_iq(ctx)
+                self.assertIn("agent/app integration remain unverified", message)
+                receipt = ctx.state.section("web_iq")
+                self.assertEqual(receipt["status"], "search_verified")
+                self.assertEqual(receipt["dated_result_count"], int(dated))
+                post = [call for call in ctx.http.calls if call[0] == "POST"]
+                self.assertEqual(len(post), 1)
+                _, url, body, headers = post[0]
+                self.assertEqual(url, deploy.WEB_IQ_SEARCH)
+                self.assertEqual(headers, {"x-apikey": "private-key"})
+                self.assertEqual(body["query"], deploy.WEB_IQ_QUESTION)
+                self.assertEqual(body["contentFormat"], "passage")
+                self.assertEqual(body["safeSearch"], "strict")
+                for private in ("private-key", "Grounding passage"):
+                    self.assertNotIn(private, ctx.state.path.read_text(encoding="utf-8"))
+                    self.assertNotIn(private, " ".join(ctx.messages))
+
+    def test_errors_empty_results_and_missing_citations_are_not_search_success(self):
+        bad_results = ({}, {"webResults": []}, {"webResults": "bad"}, {"webResults": [None]},
+                       {"webResults": [{"title": "Title", "content": "Text", "url": "javascript:alert(1)"}]},
+                       {"webResults": [{"title": "Title", "url": "https://example.com"}]})
+        for response in (reply(401, {"message": "private-key"}), reply(403), reply(429), reply(500),
+                         *(reply(body=body) for body in bad_results)):
+            ctx = self.web_context(key="private-key", search=response)
+            ctx.state.section("web_iq").update(status="search_verified", verified_at="stale")
+            with self.assertRaises(deploy.Blocked) as stop:
+                deploy.verify_web_iq(ctx)
+            self.assertNotIn("private-key", str(stop.exception))
+            self.assertEqual(ctx.state.section("web_iq")["status"], "search_unverified")
+            self.assertNotIn("verified_at", ctx.state.section("web_iq"))
+            self.assertEqual(len(ctx.http.posts("search/web")), 1, "billable searches must not be retried")
+
+
 if __name__ == "__main__":
     unittest.main()
