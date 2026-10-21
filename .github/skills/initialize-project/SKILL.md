@@ -32,7 +32,7 @@ python3 .github/skills/initialize-project/scripts/initialize_project.py \
 
 Repeat `--capacity-admin` for additional admins. Use `--dry-run` to validate without writing. The Python standard-library helper validates syntax, fills the sanitized example, and creates only `infra/terraform.tfvars`, with owner-only permissions. It refuses existing local tfvars/state and never overwrites a file. It does not verify cloud access, region availability or quota.
 
-Confirm the generated file is ignored with `git check-ignore infra/terraform.tfvars`; do not print its contents. Leave `knowledge_lakehouse_id = null` and `knowledge_ontologies = {}`. Do not initialize a backend, run a plan/apply, connect Fabric Git, commit or push as a side effect of configuration.
+Confirm the generated file is ignored with `git check-ignore infra/terraform.tfvars`; do not print its contents. Leave `fabric_git_enabled = false`, `knowledge_lakehouse_id = null` and `knowledge_ontologies = {}`. Native bootstrap needs no PAT; enable Fabric Git synchronization and request its PAT only after an explicit opt-in. Do not initialize a backend, run a plan/apply, connect Fabric Git, commit or push as a side effect of configuration.
 
 ## Preserve portable workspace identities
 

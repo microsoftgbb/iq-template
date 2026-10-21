@@ -21,7 +21,7 @@ Select the image for the full-size SVG. The [deployment flow](deployment-flow.md
 | GitHub repository | Infrastructure configuration, five portable Fabric item definitions, the agent definition, the app and native release guidance. | [`infra/`](../infra/), [`workspace/`](../workspace/), [`agents/`](../agents/scenario-assistant/README.md), [`app/`](../app/), [`cicd/`](../cicd/README.md) |
 | GitHub Copilot App / CLI | Guided configuration and deployment through repository skills, with a Codespaces/devcontainer toolchain that includes the Power Platform and Managed Runtime CLIs. | [Developer setup](development.md) |
 | Microsoft Entra | Deployment-user app registration, delegated scopes and authorized clients. An administrator grants consent; the user signs in separately. | [`infra/identity.tf`](../infra/identity.tf), [identity bootstrap](getting-started.md#3-bootstrap-the-fabric-user-auth-application) |
-| Microsoft Fabric | One capacity shared by DEV and TEST; workspace roles, GitHub credentials connection and native deployment pipeline. Git sync is a separate native operation. | [`infra/fabric.tf`](../infra/fabric.tf) |
+| Microsoft Fabric | One capacity shared by DEV and TEST, workspace roles and native deployment pipeline. Native bootstrap needs no PAT; Git sync and its credentials connection are opt-in. | [`infra/fabric.tf`](../infra/fabric.tf) |
 | Fabric DEV items | `Scenario` lakehouse, `SeedScenario`, `ScenarioOntology`, `BindScenario` and the `Bootstrap` deployment plan. Notebooks insert missing demo content and bind to the current workspace. | [`workspace/`](../workspace/), [bootstrap and promotion](../cicd/README.md) |
 | Azure AI Search / Foundry IQ | Search service (serverless preview by default), indexed OneLake file source, optional live ontology sources and the knowledge base. Sources and knowledge base use Search data-plane resources. | [`infra/knowledge.tf`](../infra/knowledge.tf) |
 | Microsoft Foundry | Account, project, chat and embedding deployments, Search AAD connection, and knowledge-base MCP connection using the project managed identity. | [`infra/foundry.tf`](../infra/foundry.tf) |
@@ -60,7 +60,7 @@ In this overview, arrows point toward the consuming component: Files feed Search
 
 The Studio agent and app are created after DEV readiness, outside Terraform, and reach the knowledge base and ontology with each user's credentials. The diagram's Fabric group is a service boundary, not an Azure resource group: the capacity is an Azure resource, while Fabric workspaces and items live in Fabric.
 
-TEST is provisioned but stays empty until a reviewed native promotion. Git and deployment pipelines carry definitions, not OneLake data; every promoted target needs its own binding. PROD, production ingestion, the scenario workflow, hosted app deployment and production hardening belong to the derived project. The baseline is billable, uses authenticated public endpoints and includes preview features; see [getting started](getting-started.md#keep-in-mind).
+TEST is provisioned but stays empty until a reviewed native promotion. Imports, Git sync and deployment pipelines carry definitions, not OneLake data; every promoted target needs its own binding. PROD, production ingestion, the scenario workflow, hosted app deployment and production hardening belong to the derived project. The baseline is billable, uses authenticated public endpoints and includes preview features; see [getting started](getting-started.md#keep-in-mind).
 
 ## Reference architectures
 

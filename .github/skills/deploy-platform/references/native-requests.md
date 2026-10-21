@@ -1,10 +1,11 @@
 # Native requests for guided DEV deployment
 
-Read this after choosing the derived repository, execution host and delegated user. It is the request contract that the [deterministic runner](../scripts/deploy.py) implements: use it to review the runner's behavior and to diagnose a blocked run. Do not hand-submit mutating requests that a resumable run owns. Keep Terraform as the infrastructure owner and use Fabric's native Git and notebook APIs.
+Read this after choosing the derived repository, execution host and delegated user. It is the request contract that the [deterministic runner](../scripts/deploy.py) implements: use it to review the runner's behavior and diagnose a blocked run. Do not hand-submit mutating requests that a resumable run owns. Terraform owns infrastructure; Fabric APIs own bootstrap and notebook execution.
 
 ## Contents
 
 - [Authentication and response receipts](#authentication-and-response-receipts)
+- [Native item import (default)](#native-item-import-default)
 - [Git connection and synchronization](#git-connection-and-synchronization)
 - [Operation and notebook completion](#operation-and-notebook-completion)
 - [Resolve and verify target bindings](#resolve-and-verify-target-bindings)
@@ -69,7 +70,58 @@ Use a separate, private scratch directory per request. Read only the needed resu
 
 Do not blindly retry POSTs after network timeouts: the server may already have accepted the operation. Inspect its receipt/current status first. For `429`, honor `Retry-After`; retry read-only polling transient failures within the phase deadline. Treat unexpected status/error codes as failures, not empty successful responses.
 
+## Native item import (default)
+
+With `fabric_git_enabled = false`, no PAT or Fabric Git connection is needed.
+The runner sends the reviewed, tracked files beneath each `workspace/` item
+folder to:
+
+```http
+POST https://api.fabric.microsoft.com/v1/workspaces/{devWorkspaceId}/items/bulkImportDefinitions?beta=true
+```
+
+```json
+{
+  "definitionParts": [
+    {
+      "path": "/Scenario.Lakehouse/.platform",
+      "payload": "<base64-file-content>",
+      "payloadType": "InlineBase64"
+    }
+  ],
+  "options": {
+    "allowPairingByName": false,
+    "deploymentPlan": {
+      "logicalId": "<Bootstrap-logical-id>",
+      "referenceType": "ByLogicalId"
+    }
+  }
+}
+```
+
+The example shows one part; include every definition part of each missing item,
+including `.platform`, notebook source, lakehouse metadata, TMDL and `plan.yml`.
+Preserve bytes and logical IDs. The delegated user needs `Item.ReadWrite.All`
+and `Item.Execute.All`; do not substitute a service principal for notebook execution.
+
+List current items first and match logical ID, type, name and workspace.
+Refuse collisions, changed recorded definitions and unrecorded existing items.
+Import additions only. Record the operation before polling and validate every
+`importItemDefinitionsDetails` entry: expected identity, `operationType: Create`
+and `operationStatus: Succeeded`. Missing results, `Failed` and
+`SucceededDespiteFailures` block readiness.
+
+Only an explicit `--bootstrap-fallback notebooks` permits retrying a
+`FeatureNotAvailable` plan rejection without the plan. The runner then runs the
+existing seed/bind checks. A timeout or missing receipt is not permission to
+resubmit an import.
+
+References: [Bulk Import](https://learn.microsoft.com/rest/api/fabric/core/items/bulk-import-item-definitions),
+[plan attachment](https://learn.microsoft.com/fabric/cicd/deployment-plan/deployment-plan-automation#import-item-definitions).
+
 ## Git connection and synchronization
+
+This path runs only with `fabric_git_enabled = true` and a repository-scoped PAT.
 
 Use `dev_workspace_id` and `github_connect_request` from Terraform output, not a display-name guess. Resolve the plan logical ID from the **reviewed** `workspace/Bootstrap.DeploymentPlan/.platform`.
 

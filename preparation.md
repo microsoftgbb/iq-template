@@ -18,8 +18,6 @@
 
 - [ ] Select the Azure subscription and Entra tenant; use that tenant for Fabric, Search and Power Platform.
 - [ ] Have a tenant administrator confirm that the **Microsoft Power BI Service** enterprise application exists.
-- [ ] Have a Fabric administrator enable Git integration and GitHub synchronization for the deployment user.
-- [ ] Have a Fabric administrator enable applicable cross-geography Git export, if required.
 - [ ] Have a Fabric administrator enable **Users can create ontology (preview) items**.
 - [ ] Have a Fabric administrator enable **Users can create deployment plan (preview) items**.
 - [ ] Have a Fabric administrator enable external-app OneLake access and service-principal Fabric APIs.
@@ -35,12 +33,17 @@
 - [ ] Open its Codespace/devcontainer, or install the [documented local tools](docs/development.md); keep one deployment checkout and execution host.
 - [ ] Authenticate GitHub CLI with `gh auth login` if needed.
 - [ ] If using Copilot, sign in through its own login flow.
-- [ ] Create a fine-grained GitHub PAT for the derived repository with **Contents: Read and write**; obtain organization approval/SSO authorization where required.
-- [ ] Store the PAT as a repository-scoped Codespaces secret named `FABRIC_GITHUB_TOKEN`, or supply `TF_VAR_github_token` securely in the deployment shell; restart an existing Codespace after adding its secret.
 - [ ] Configure an encrypted, access-controlled Terraform backend and project-specific state key; grant the deployment identity backend read/write/locking access. For a single-user local-state demo, explicitly accept local state and arrange secure backup.
 - [ ] Configure the six placeholders in the ignored `infra/terraform.tfvars`: `project_name`, `location`, `fabric_capacity_admins`, `github_owner`, `github_repository_name` and `github_branch_name`.
 - [ ] Keep `knowledge_lakehouse_id = null` and `knowledge_ontologies = {}` until DEV bootstrap and binding succeed.
 - [ ] Sign in as the deployment user with `az login --use-device-code --tenant "<tenant-id>"`, complete MFA, and select the subscription with `az account set --subscription "<subscription-id>"`.
+
+## Optional Fabric GitHub synchronization
+
+- [ ] Set `fabric_git_enabled = true` only if Git synchronization is wanted; it defaults to `false`.
+- [ ] Have a Fabric administrator enable Git/GitHub synchronization and applicable cross-geography Git export.
+- [ ] Create a fine-grained PAT for the derived repository with **Contents: Read and write**; obtain organization approval/SSO authorization where required.
+- [ ] Store it as the repository's Codespaces secret `FABRIC_GITHUB_TOKEN`, or supply `TF_VAR_github_token` securely in the deployment shell; restart an existing Codespace after adding its secret.
 
 ## During deployment and first run
 
@@ -49,10 +52,10 @@
 - [ ] Have the Entra administrator open the generated `api_permissions_url`, review the declared scopes and select **Grant admin consent**.
 - [ ] Sign in again using the generated `fabric_user_auth_tenant_id` and `fabric_user_auth_scope`; reselect the subscription and retain the same deployment user.
 - [ ] Review and approve the untargeted platform Terraform plan.
-- [ ] Confirm the deployment user has **Admin** on DEV for Git bootstrap and item/notebook execution permissions, including `Item.ReadWrite.All` and `Item.Execute.All`.
+- [ ] Confirm DEV item/notebook permissions, including `Item.ReadWrite.All` and `Item.Execute.All`; Git synchronization also requires workspace **Admin**.
 - [ ] If Fabric service-principal access is restricted to security groups, have the administrator include the provisioned Search identity in an allowed group.
-- [ ] If plan-attached Git sync is unavailable, explicitly approve the runner's `--bootstrap-fallback notebooks` path.
-- [ ] Review the generated DEV ontology bindings; commit them through Fabric source control before promotion.
+- [ ] If plan attachment is unavailable, explicitly approve the runner's `--bootstrap-fallback notebooks` path.
+- [ ] Review the generated DEV ontology bindings before promotion; commit through Fabric source control when Git synchronization is enabled.
 - [ ] Review and approve the untargeted knowledge Terraform plan.
 - [ ] Sign in to PAC for the selected environment with `dotnet pac auth create --environment "<environment-id>" --deviceCode`.
 - [ ] Sign in to Managed Runtime with `ms auth login --device-code`.

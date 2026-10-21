@@ -1,16 +1,18 @@
 # Native Fabric bootstrap and promotion
 
-Use [Git integration](https://learn.microsoft.com/fabric/cicd/git-integration/intro-to-git-integration) for DEV and [native deployment pipelines](https://learn.microsoft.com/fabric/cicd/deployment-pipelines/intro-to-deployment-pipelines) for promotion. Attach a [deployment plan (preview)](https://learn.microsoft.com/fabric/cicd/deployment-plan/deployment-plan-overview) when item deployment must run seed notebooks or follow an explicit order.
+Bootstrap DEV through [Bulk Import Item Definitions](https://learn.microsoft.com/rest/api/fabric/core/items/bulk-import-item-definitions), using the Azure user's Fabric token. **No PAT is required.** [Git integration](https://learn.microsoft.com/fabric/cicd/git-integration/intro-to-git-integration) is opt-in with `fabric_git_enabled = true`. Both paths attach the [Bootstrap deployment plan](https://learn.microsoft.com/fabric/cicd/deployment-plan/deployment-plan-overview); promotion uses [native deployment pipelines](https://learn.microsoft.com/fabric/cicd/deployment-pipelines/intro-to-deployment-pipelines).
 
 [![Fabric lifecycle: explicitly attach Bootstrap to native Git sync into DEV, review and commit the target binding, then promote reviewed live definitions to TEST. PROD is separately provisioned and approved. Within DEV/TEST, Bootstrap orders lakehouse, seed, ontology and bind; definitions travel, but OneLake data does not.](../docs/diagrams/fabric-lifecycle.svg)](../docs/diagrams/fabric-lifecycle.svg)
 
 [Editable Excalidraw source](../docs/diagrams/fabric-lifecycle.excalidraw) | [Complete DEV deployment flow](../docs/deployment-flow.md) | [Icon sources](../docs/diagram-authoring.md#official-icon-sources)
 
+The diagram shows the opt-in Git path; native import uses the same items and plan.
+
 There is no fabric-cicd dependency or `fab deploy` configuration. The [deterministic runner](../docs/development.md#deploy-deterministically) performs the initial DEV bootstrap below with exactly these native APIs. Start with [getting started](../docs/getting-started.md); infrastructure and the project-specific user-auth registration use plain Terraform, one state and one local tfvars file. The registration prepares delegated Git/item/pipeline scopes, not tenant consent or a runtime user token. Derived repositories own promotion automation, unattended CI, tests and approval gates.
 
 ## Ownership and included items
 
-Terraform owns the project-specific user-auth registration, capacity, workspaces, permissions, the GitHub credentials connection, the DEV/TEST deployment pipeline, Foundry, Search and Web IQ. An administrator owns consent; shared Microsoft enterprise applications are read-only lookups, not Terraform-owned assets. Git owns workspace item definitions. The seeder owns only the insertion of missing demo keys and initial starter content. Do not manage the same lakehouse or notebook with both Terraform and Git.
+Terraform owns the project-specific user-auth registration, capacity, workspaces, permissions, the optional GitHub credentials connection, the DEV/TEST deployment pipeline, Foundry, Search and Web IQ. An administrator owns consent; shared Microsoft enterprise applications are read-only lookups, not Terraform-owned assets. The repository owns workspace item definitions, deployed by native import or opt-in Git sync. The seeder inserts only missing demo keys and initial starter content. Do not also manage these item definitions with Terraform.
 
 | Git item | Purpose |
 | --- | --- |
@@ -26,7 +28,24 @@ Keep notebook defaults in executable `# PARAMETERS CELL` sections. This delimite
 
 The seeder uses the current runtime workspace, never a saved DEV workspace ID or default lakehouse attachment. It writes `Tables/dbo/demo_sites`, `Tables/dbo/demo_assets` and `Files/starter.txt`. Existing rows (including edited demo rows) and the existing file are retained. Incompatible table schemas/non-Delta paths and write failures stop the run; no data is silently replaced. Serialize seed runs per workspace.
 
-## Initial Git synchronization
+## Initial native bootstrap
+
+Leave `fabric_git_enabled = false`. The runner's `bootstrap` phase imports only
+tracked item files from the reviewed, published `workspace/` revision with
+`allowPairingByName: false` and the incoming `Bootstrap` plan's logical ID.
+It checks item identities, records operation receipts, verifies every per-item
+result and imports only missing items on a reviewed retry. Existing data,
+definitions and generated bindings are not overwritten.
+
+Review the live DEV binding before promotion. If committing a binding export,
+use the native Get Definition API and review the resulting parts in the derived
+repository; Git synchronization is not required. Freeze DEV during promotion
+and rebind every target. See [native requests](../.github/skills/deploy-platform/references/native-requests.md#native-item-import-default).
+
+## Initial Git synchronization (opt-in)
+
+Set `fabric_git_enabled = true` and complete the optional Git section in
+[preparation](../preparation.md#optional-fabric-github-synchronization).
 
 After the first Terraform apply, use **Connect and sync with deployment plan** in DEV and select the incoming `Bootstrap` plan. Connect to the configured GitHub branch and `/workspace` directory. Include all five starter items. Each notebook is itself a deployment group, so it exists before its post-action runs even in an empty workspace.
 
@@ -99,7 +118,7 @@ The indexed Foundry IQ source remains scoped to the selected DEV lakehouse's **F
 
 Terraform creates a native deployment pipeline with DEV and TEST assigned. Find it using `deployment_pipeline_id` and `deployment_pipeline_stage_ids`. It doesn't deploy items.
 
-1. Synchronize and bind DEV, review/commit any generated binding and normalization changes, and confirm no uncommitted workspace changes remain. Record the reviewed commit and freeze source edits during promotion. Native pipelines copy live definitions, not a Git checkout.
+1. Bootstrap and bind DEV, review generated bindings and record the reviewed source revision. With Git enabled, commit binding/normalization changes and confirm source control is clean. Freeze DEV during promotion: native pipelines copy live definitions, not a Git checkout.
 2. In the deployment pipeline, select the starter items and any added consumers. For the first TEST deployment, choose the **incoming source `Bootstrap` plan** and include it in the selection; TEST doesn't yet contain a plan. Configure required target connections/settings before actions depend on them.
 3. Deploy to TEST, wait for the plan/actions, then verify data, bindings and consumer readiness. TEST gets its own data and SQL endpoint binding, not DEV's contents. Target-binding differences are expected; other business-definition changes require review. Subsequent deployments may default to the target plan: explicitly choose the reviewed version.
 4. After approval, promote the same reviewed business definitions from TEST to your separately provisioned PROD, rebinding to PROD's sources. Freeze TEST after validation and don't promote later edits accidentally. Provision/assign PROD and define its reviewed release plan and approval policy in the derived project first.

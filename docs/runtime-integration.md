@@ -364,9 +364,9 @@ and actual service capacity are separate from that quota. A partial provisioning
 failure can leave working resources behind; retain the same state and obtain a
 fresh plan approval before changing regions or replacing anything.
 
-Infrastructure creation and native Git/bootstrap still follow [getting
+Infrastructure creation and native bootstrap still follow [getting
 started](getting-started.md), with one state, reviewed plans, administrator
-consent and an ephemeral repository-scoped Fabric Git PAT. Runtime sign-in is a
+consent and user sign-in. A PAT is needed only for opt-in Fabric Git synchronization. Runtime sign-in is a
 different flow; do not expand the deployment registration into a credential
 broker.
 

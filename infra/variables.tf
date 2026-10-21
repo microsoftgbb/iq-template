@@ -183,7 +183,7 @@ variable "knowledge_ontologies" {
 
   validation {
     condition     = length(var.knowledge_ontologies) == 0 || var.knowledge_lakehouse_id != null
-    error_message = "Register ontologies during knowledge setup, after setting knowledge_lakehouse_id to the Git-created DEV lakehouse GUID."
+    error_message = "Register ontologies during knowledge setup, after setting knowledge_lakehouse_id to the bootstrapped DEV lakehouse GUID."
   }
 }
 

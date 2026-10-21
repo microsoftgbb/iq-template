@@ -128,7 +128,7 @@ output "knowledge_base_name" {
 }
 
 output "knowledge_setup_pending" {
-  description = "True until the Git-created DEV lakehouse GUID is supplied. False does not imply asynchronous ingestion has finished."
+  description = "True until the bootstrapped DEV lakehouse GUID is supplied. False does not imply asynchronous ingestion has finished."
   value       = var.knowledge_lakehouse_id == null
 }
 

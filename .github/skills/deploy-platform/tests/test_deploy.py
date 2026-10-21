@@ -307,6 +307,29 @@ class PlanTests(unittest.TestCase):
         ctx.environ["FABRIC_GITHUB_TOKEN"] = "repository-pat"
         self.assertEqual(deploy.terraform_env(ctx, True)["TF_VAR_github_token"], "repository-pat")
 
+    def test_preflight_checks_the_pat_only_for_opted_in_git(self):
+        subscription = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+        account = {"id": subscription, "tenantId": TENANT, "user": {"type": "user"}}
+        shell = FakeShell([
+            TOKEN_RULE,
+            (command("terraform", "version"), deploy.Result(0, json.dumps({"terraform_version": "1.16.5"}))),
+            (command("az", "account", "show"), deploy.Result(0, json.dumps(account))),
+            (command("az", "ad", "sp", "show"), deploy.Result(0, '{"id": "shared-service"}')),
+        ])
+        ctx = make_context(self, make_root(self), shell, subscription=subscription)
+        ctx.environ = {}
+        ctx.cache["variables"]["search_sku"] = "serverless"
+        with mock.patch.object(deploy, "check_web_iq", return_value="Web IQ ready"), \
+                mock.patch.object(deploy, "state_addresses", return_value=deploy.PLATFORM_ADDRESSES), \
+                mock.patch.object(deploy, "check_search_tier", return_value="Search offered"), \
+                mock.patch.object(deploy.runtime, "check_environment"), \
+                mock.patch.object(deploy, "check_pat") as check_pat:
+            deploy.phase_preflight(ctx)
+            check_pat.assert_not_called()
+            ctx.cache["variables"]["fabric_git_enabled"] = True
+            deploy.phase_preflight(ctx)
+            check_pat.assert_called_once_with(ctx, ctx.cache["variables"])
+
     def test_the_identity_bootstrap_plan_must_stay_inside_its_module(self):
         root = make_root(self)
         changes = [("module.fabric_user_auth.azuread_application.fabric", ["create"]),
@@ -801,6 +824,27 @@ class NativeBootstrapTests(unittest.TestCase):
         ctx.start("bootstrap")
         deploy.phase_bootstrap(ctx)
         self.assertEqual(len(ctx.http.posts(r"/bulkImportDefinitions")), 1)
+
+    def test_a_reviewed_retry_imports_only_missing_items_after_partial_failure(self):
+        ctx = self.context()
+        ctx.http.routes.insert(0, ("GET", re.compile(rf"/operations/{OPERATION}$"),
+                                  [reply(body={"status": "Failed", "error": {"message": "Notebook failed"}})]))
+        with self.assertRaisesRegex(deploy.Blocked, "Notebook failed"):
+            deploy.phase_bootstrap(ctx)
+        missing = {"ScenarioOntology", "BindScenario"}
+        existing = [item for item in self.items if item["displayName"] not in missing]
+        ctx.http.routes.insert(0, ("GET", re.compile(rf"/workspaces/{WORKSPACE}/items$"),
+                                  [reply(body={"value": existing}), reply(body={"value": self.items})]))
+        result = {"importItemDefinitionsDetails": [item for item in self.result["importItemDefinitionsDetails"]
+                                                   if item["itemDisplayName"] in missing]}
+        ctx.http.routes.insert(0, ("POST", re.compile(r"/items/bulkImportDefinitions\?beta=true$"), [reply(body=result)]))
+        ctx.args.retry_failed = True
+        deploy.phase_bootstrap(ctx)
+        _, body = ctx.http.posts(r"/bulkImportDefinitions")[-1]
+        platforms = [json.loads(base64.b64decode(part["payload"]))["metadata"]["displayName"]
+                     for part in body["definitionParts"] if part["path"].endswith("/.platform")]
+        self.assertEqual(set(platforms), missing)
+        self.assertFalse(any(part["path"].startswith("/Scenario.Lakehouse/") for part in body["definitionParts"]))
 
     def test_missing_receipts_and_partial_success_stop_instead_of_claiming_readiness(self):
         for response in (reply(202), reply(body={})):

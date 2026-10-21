@@ -26,7 +26,7 @@ Preserve the non-obvious infrastructure constraints:
 
 - Create capacity before looking up its Fabric GUID; workspaces cannot use its Azure resource ID.
 - Keep the user-auth module in the platform's state. Its one-time targeted bootstrap is the only targeting exception; never run it during maintenance. Keep delegated scopes and pre-authorized clients separate from administrator-owned consent, and retain Fabric's dependency on the registration for safe teardown. Read shared Microsoft service principals rather than managing their lifecycle.
-- Keep Git connection/initialization/sync outside Terraform: the pinned provider cannot attach a deployment plan. Keep GitHub integration, empty TEST, and administrator-owned tenant settings.
+- Default to native Fabric item import without a PAT; keep GitHub synchronization opt-in with `fabric_git_enabled`. Both paths attach the reviewed plan outside Terraform. Preserve logical IDs, per-item result checks, resumable receipts, empty TEST and administrator-owned tenant settings.
 - Require Web IQ terms acceptance and public-search verification. Do not add an enable/disable switch or skip missing account evidence. The pinned AzAPI provider lacks its embedded schema; retain the resource-scoped validation exception, not a provider-wide bypass. Portal AppID linking and a public-only API probe do not prove native Studio/app integration; use `preparation.md` for the manual gates.
 - Use `Microsoft.CognitiveServices/accounts` projects, not ML hubs. Keep model versions/SKUs/quota configurable.
 - Manage Search sources/bases through data-plane `restful_resource`, not unsupported ARM types. Retain CRUD and drift detection, source rebuild triggers, and knowledge-base-before-source deletion ordering. The OneLake source owns its generated search assets.
@@ -62,7 +62,8 @@ derived checkout and explicit permission.
 For the deployment runner and Studio agent helper, run their standard-library tests:
 `python3 -B -m unittest discover -s .github/skills/deploy-platform/tests`.
 They use mocked native commands and HTTP. They cover saved-plan approval by hash,
-identity-target and destructive-change guards, Git sync refusals, the explicit
+identity-target and destructive-change guards, PAT-free native import and its
+identity/partial-result/resume guards, opt-in Git sync refusals, the explicit
 plan-attachment fallback, notebook resume without duplicates, binding and
 retrieval evidence, consent and the agent/app gates, and render the shipped agent
 into a temporary workspace. Teardown tests must cover exact destroy-plan
