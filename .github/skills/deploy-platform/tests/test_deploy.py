@@ -1383,6 +1383,68 @@ class AgentAndAppTests(unittest.TestCase):
         self.assertEqual(len(shell.matching(command("ms", "app", "add", "data-source"))), 1)
         self.assertNotIn("registered_at", ctx.state.section("app"))
 
+    APP_MANIFEST = {"name": "app-root", "private": True, "dependencies": {"react": "19.0.0"}}
+    CLI_PIN = {"@microsoft/managed-apps-cli": "0.28.0"}
+
+    def lockfile_sync(self, root):
+        def lock_only(args, options):
+            current = json.loads((root / "package.json").read_text(encoding="utf-8"))
+            (root / "package-lock.json").write_text(json.dumps({"packages": {"": current}}), encoding="utf-8")
+            return deploy.Result(0)
+        return command("npm", "install"), lock_only
+
+    def test_the_cli_pin_ms_app_init_adds_is_synced_into_the_lockfile(self):
+        root = make_root(self)
+        (root / "package.json").write_text(json.dumps(self.APP_MANIFEST), encoding="utf-8")
+        (root / "package-lock.json").write_text(json.dumps({"packages": {"": self.APP_MANIFEST}}), encoding="utf-8")
+        (root / "node_modules").mkdir()
+
+        def init(args, options):
+            pinned = dict(self.APP_MANIFEST, devDependencies=self.CLI_PIN)
+            (root / "package.json").write_text(json.dumps(pinned), encoding="utf-8")
+            (root / "ms.config.json").write_text(json.dumps({
+                "appId": "demo-app", "environmentId": self.ENVIRONMENT,
+                "connectionReferences": {"studio": {"id": "/apis/shared_microsoftcopilotstudio"}}}), encoding="utf-8")
+            return deploy.Result(0)
+
+        status = {"success": True, "signedIn": True, "activeAccount": {"homeAccountId": f"user.{TENANT}"}}
+        ctx, shell = self.agent_context(root, [(command("ms", "auth", "status"), deploy.Result(0, json.dumps(status))),
+                                               (command("ms", "app", "init"), init), self.lockfile_sync(root)])
+        ctx.args.approve = {"app-register": True}
+        ctx.state.section("app").update(installed=deploy.sha256_file(root / "package-lock.json"))
+        deploy.phase_app(ctx)
+        sync, = shell.matching(command("npm", "install"))
+        self.assertIn("--package-lock-only", sync)
+        self.assertIn("--ignore-scripts", sync)
+        self.assertLess(shell.calls.index(shell.matching(command("ms", "app", "init"))[0]), shell.calls.index(sync))
+        self.assertFalse(deploy.lockfile_out_of_sync(root))
+        self.assertIn("package-lock.json", " ".join(deploy.APP_NEXT))
+
+    def test_a_clone_with_the_cli_pin_syncs_the_lockfile_before_npm_ci(self):
+        root = make_root(self)
+        (root / "package.json").write_text(json.dumps(dict(self.APP_MANIFEST, devDependencies=self.CLI_PIN)),
+                                          encoding="utf-8")
+        (root / "package-lock.json").write_text(json.dumps({"packages": {"": self.APP_MANIFEST}}), encoding="utf-8")
+        (root / "ms.config.json").write_text(json.dumps({
+            "appId": "demo-app", "environmentId": self.ENVIRONMENT,
+            "connectionReferences": {"studio": {"id": "/apis/shared_microsoftcopilotstudio"}}}), encoding="utf-8")
+        status = {"success": True, "signedIn": True, "activeAccount": {"homeAccountId": f"user.{TENANT}"}}
+        ctx, shell = self.agent_context(root, [(command("ms", "auth", "status"), deploy.Result(0, json.dumps(status))),
+                                               self.lockfile_sync(root), (command("npm", "ci"), deploy.Result(0))])
+        deploy.phase_app(ctx)
+        sync, = shell.matching(command("npm", "install"))
+        self.assertLess(shell.calls.index(sync), shell.calls.index(shell.matching(command("npm", "ci"))[0]))
+        self.assertFalse(deploy.lockfile_out_of_sync(root))
+
+    def test_an_in_sync_or_unreadable_lockfile_is_left_alone(self):
+        root = make_root(self)
+        self.assertFalse(deploy.lockfile_out_of_sync(root), "no package.json")
+        (root / "package.json").write_text(json.dumps(self.APP_MANIFEST), encoding="utf-8")
+        (root / "package-lock.json").write_text(json.dumps({"packages": {"": self.APP_MANIFEST}}), encoding="utf-8")
+        self.assertFalse(deploy.lockfile_out_of_sync(root))
+        (root / "package-lock.json").write_text("not json", encoding="utf-8")
+        self.assertFalse(deploy.lockfile_out_of_sync(root))
+
     def test_the_app_targets_exactly_one_agent_schema(self):
         root = make_root(self)
         config = root / "app" / "src" / "config.ts"

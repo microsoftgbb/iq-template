@@ -308,7 +308,7 @@ ms app dev
 
 Before playback, each app user opens `https://make.powerapps.com/environments/<environment-id>/connections`, selects **New connection** -> **Microsoft Copilot Studio**, and signs in (or reuses their matching **Connected** connection). This avoids the App Player's observed loopback OAuth creation failure; see [runtime integration](runtime-integration.md#local-player-boundary). Open the App Player URL that `ms app dev` prints and select **Check connection**. Separately, on each user's first conversation, Studio asks for IQ connection consent in a card the connector cannot show, so the app links to Studio's connection manager instead. Connect both sources and check again until the agent returns the fresh challenge. Then ask "Which assets are in Maintenance and at which site?": expect Pump B at North Works. Live answers can take a minute, and the connector stops waiting at 120 seconds.
 
-Commit `app/src/config.ts` and the generated `ms.config.json`. Hosted preview, deployment and sharing are separate, explicit steps; share both the agent and the app with each additional user, who then consents to their own connections. Second-user isolation is not yet verified.
+Commit `app/src/config.ts`, the generated `ms.config.json`, and `package.json` with `package-lock.json`: `ms app init` pins its CLI version as a development dependency, and the runner syncs the lockfile so `npm ci` and the app's build keep working. Hosted preview, deployment and sharing are separate, explicit steps; share both the agent and the app with each additional user, who then consents to their own connections. Second-user isolation is not yet verified.
 
 ## Keep in mind
 

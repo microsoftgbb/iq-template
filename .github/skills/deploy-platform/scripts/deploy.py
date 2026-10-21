@@ -116,8 +116,9 @@ APP_NEXT = (
     "your own Fabric IQ and Foundry IQ connections when prompted, then check again for the fresh challenge. "
     "Each user must authorize their own connections; registration is not app readiness.",
     'Ask "Which assets are in Maintenance and at which site?" and expect Pump B at North Works.',
-    "Review and commit app/src/config.ts and ms.config.json. Review the generated DEV ontology binding "
-    "before promotion; commit it through Fabric source control when Git synchronization is enabled.",
+    "Review and commit app/src/config.ts, ms.config.json, and package.json with package-lock.json (ms app "
+    "init pins its CLI there). Review the generated DEV ontology binding before promotion; commit it "
+    "through Fabric source control when Git synchronization is enabled.",
 )
 
 
@@ -2300,12 +2301,36 @@ def ms_signed_in(ctx, tenant):
         return False
 
 
+def lockfile_out_of_sync(root):
+    """True when package.json declares dependencies the lockfile's root package does not, such as ms app init's pin."""
+    try:
+        manifest = json.loads((root / "package.json").read_text(encoding="utf-8"))
+        lock = json.loads((root / "package-lock.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    locked = (lock.get("packages") or {}).get("") or {}
+    return any((manifest.get(field) or {}) != (locked.get(field) or {}) for field in ("dependencies", "devDependencies"))
+
+
+def sync_lockfile(ctx):
+    """ms app init pins its own CLI as a devDependency without updating the lockfile, which breaks `npm ci`
+    (also the app's hosted build command). Update the lockfile only: nothing is installed and no script runs."""
+    if not lockfile_out_of_sync(ctx.root):
+        return
+    checked(ctx, ["npm", "install", "--package-lock-only", "--ignore-scripts", "--no-audit", "--no-fund"],
+            "Syncing package-lock.json with package.json", stream=True)
+    if lockfile_out_of_sync(ctx.root):
+        raise Blocked("package-lock.json still differs from package.json after syncing it; review both.")
+    ctx.log("Synced package-lock.json with package.json (ms app init pins its CLI there); review and commit both.")
+
+
 def phase_app(ctx):
     environment, _ = power_platform(ctx)
     schema, name = required_outputs(ctx, "studio_agent_schema_name", "studio_agent_display_name")
     receipts = ctx.state.section("app")
     if set_agent_schema(ctx.root / "app" / "src" / "config.ts", schema):
         ctx.log(f"Set STUDIO_AGENT_SCHEMA to {schema} in app/src/config.ts.")
+    sync_lockfile(ctx)
     lock = sha256_file(ctx.root / "package-lock.json")
     if receipts.get("installed") != lock or not (ctx.root / "node_modules").is_dir():
         checked(ctx, ["npm", "ci"], "npm ci", stream=True)
@@ -2347,6 +2372,7 @@ def phase_app(ctx):
                 "existing registration; rerun with --retry-failed only after confirming no app was registered.") from None
         if not config.exists():
             raise Blocked("ms app init finished without creating ms.config.json; inspect it with `ms app info`.")
+        sync_lockfile(ctx)
     app_id = app_registration(config, environment)["appId"]
     if receipts.get("app_id") not in (None, app_id):
         raise Blocked("ms.config.json targets a different app than the deployment receipt.")

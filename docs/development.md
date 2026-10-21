@@ -92,7 +92,7 @@ Without `infra/terraform.tfvars`, also pass `--project-name`, `--location` and `
 | `knowledge` | Writes the discovered physical GUIDs with the knowledge helper; saved plan, then apply. A plan that creates or replaces serverless Search is applied as two plans: grants deferred, then granted after the identity exists | Plan approval |
 | `verify` | Waits for ingestion; proves live ontology and document retrieval with your own token and an authenticated public Web IQ search | Running ingestion; portal onboarding, credentials or missing evidence |
 | `agent` | Creates or clones, renders, pushes, connects, configures, publishes and checks the Studio agent | Creation, connection and publish approvals; your **Fix connection** |
-| `app` | Sets the agent schema, runs `npm ci`, `ms app init` and adds the Studio data source | Registration approval; `ms` sign-in |
+| `app` | Sets the agent schema, runs `npm ci`, `ms app init` and adds the Studio data source; syncs `package-lock.json` (lockfile only) with the CLI pin that `ms app init` adds to `package.json` | Registration approval; `ms` sign-in |
 
 Every deployment includes Web IQ. `preflight` requires explicit Web IQ terms
 acceptance and the pinned accounts API in the selected subscription. The normal
