@@ -2,7 +2,8 @@
 
 Derived projects change the domain and workflow, not the platform architecture.
 Use one **Fabric -> knowledge -> agent -> Managed Runtime app** core.
-Work IQ, Web IQ, graphs, semantic models and other channels are explicit opt-ins.
+The Web IQ account and public-search probe are standard platform components.
+Work IQ, graphs, semantic models and other runtime integrations are explicit opt-ins.
 
 The template ships this core end to end: the Fabric/knowledge baseline, the
 [scenario assistant](../agents/scenario-assistant/README.md) Copilot Studio agent
@@ -163,12 +164,12 @@ timeout and source errors are explicit blocked/incomplete states. Do not return
 synthetic success or indexed snapshot facts as live data. Hosted builds,
 deployment and sharing are separate approval gates.
 
-## Opt-in capabilities
+## Additional runtime integrations
 
 | Capability | Required addition and exit evidence |
 | --- | --- |
 | Work IQ | A native approved user-delegated connection/tool, scoped read-only first, tenant consent/licensing and cited accessible work context. No mailbox clone or fixture masquerading as real work data. |
-| Web IQ | Opt-in Terraform account and runner probe: [preparation](../preparation.md). Portal AppID linking and an approved native Studio tool are separate gates; require public-only query fields, citations and scenario freshness/conflict checks. Replay and live modes are explicitly different. |
+| Web IQ | Required Terraform account and runner probe: [preparation](../preparation.md#web-iq). Portal AppID linking and an approved native Studio tool are separate gates; require public-only query fields, citations and scenario freshness/conflict checks. Replay and live modes are explicitly different. |
 | Fabric graph | An approved native ontology projection/model, target-local bindings, materialization/refresh and bounded path-result checks. No second hand-authored relationship vocabulary. |
 | Semantic model | Native `.platform`, `definition.pbism` and exported TMDL definition parts, explicit binding/refresh action and exact governed calculation checks. |
 | Fabric data agent | Native definition/published endpoint, allowed sources, reader authorization and actual query receipts. Not a replacement for deterministic scenario rules. |

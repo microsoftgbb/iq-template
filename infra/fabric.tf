@@ -25,7 +25,7 @@ data "fabric_capacity" "capacity" {
 
 resource "fabric_workspace" "dev" {
   display_name = "${var.project_name}-dev"
-  description  = "Development workspace; bootstrap from Git with a Fabric deployment plan."
+  description  = "Development workspace; bootstrap repository definitions with a Fabric deployment plan."
   capacity_id  = data.fabric_capacity.capacity.id
 
   # Preserve the login registration until Fabric teardown has finished.
@@ -41,6 +41,8 @@ resource "fabric_workspace" "test" {
 }
 
 resource "fabric_connection" "github" {
+  count = var.fabric_git_enabled ? 1 : 0
+
   display_name      = "${var.project_name}-github-conn"
   connectivity_type = "ShareableCloud"
   privacy_level     = "Organizational"
@@ -70,7 +72,7 @@ resource "fabric_deployment_pipeline" "main" {
   stages = [
     {
       display_name = "DEV"
-      description  = "Git-connected development stage."
+      description  = "Development stage."
       is_public    = false
       workspace_id = fabric_workspace.dev.id
     },

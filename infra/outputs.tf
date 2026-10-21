@@ -38,7 +38,7 @@ output "fabric_capacity_resource_id" {
 }
 
 output "dev_workspace_id" {
-  description = "DEV workspace GUID; connect and sync Git with the Bootstrap deployment plan after platform setup."
+  description = "DEV workspace GUID; import definitions with the Bootstrap deployment plan after platform setup."
   value       = fabric_workspace.dev.id
 }
 
@@ -58,18 +58,18 @@ output "test_workspace_name" {
 }
 
 output "github_repository_url" {
-  description = "Repository to connect to the DEV workspace."
+  description = "Repository containing the reviewed Fabric definitions, agent and app."
   value       = local.github_repository_url
 }
 
 output "github_connection_id" {
-  description = "GitHub credentials connection for plan-driven DEV Git bootstrap; not a PAT."
-  value       = fabric_connection.github.id
+  description = "Opt-in GitHub credentials connection; null when Fabric Git synchronization is disabled."
+  value       = var.fabric_git_enabled ? fabric_connection.github[0].id : null
 }
 
 output "github_connect_request" {
-  description = "Fabric Git Connect API request body. Terraform does not connect, initialize or synchronize Git."
-  value = {
+  description = "Opt-in Fabric Git Connect request; null when disabled. Terraform does not connect or synchronize Git."
+  value = var.fabric_git_enabled ? {
     gitProviderDetails = {
       gitProviderType = "GitHub"
       ownerName       = lower(var.github_owner)
@@ -79,9 +79,9 @@ output "github_connect_request" {
     }
     myGitCredentials = {
       source       = "ConfiguredConnection"
-      connectionId = fabric_connection.github.id
+      connectionId = fabric_connection.github[0].id
     }
-  }
+  } : null
 }
 
 output "deployment_pipeline_id" {
@@ -128,7 +128,7 @@ output "knowledge_base_name" {
 }
 
 output "knowledge_setup_pending" {
-  description = "True until the Git-created DEV lakehouse GUID is supplied. False does not imply asynchronous ingestion has finished."
+  description = "True until the bootstrapped DEV lakehouse GUID is supplied. False does not imply asynchronous ingestion has finished."
   value       = var.knowledge_lakehouse_id == null
 }
 
@@ -195,14 +195,14 @@ output "fabric_iq_connections" {
 }
 
 output "web_iq" {
-  description = "Optional Web IQ account and public service endpoints. Provisioning is not AppID onboarding, authenticated retrieval or agent/app integration; see preparation.md."
-  value = var.web_iq_enabled ? {
-    resource_id     = azapi_resource.web_iq[0].id
-    management_url  = "https://management.azure.com${azapi_resource.web_iq[0].id}?api-version=2026-06-01-preview"
+  description = "Web IQ account and public service endpoints."
+  value = {
+    resource_id     = azapi_resource.web_iq.id
+    management_url  = "https://management.azure.com${azapi_resource.web_iq.id}?api-version=2026-06-01-preview"
     portal_url      = "https://webiq.microsoft.ai/profiles"
     search_endpoint = "https://api.microsoft.ai/v3/search/web"
     mcp_endpoint    = "https://api.microsoft.ai/v3/mcp"
-  } : null
+  }
 }
 
 output "studio_agent_schema_name" {

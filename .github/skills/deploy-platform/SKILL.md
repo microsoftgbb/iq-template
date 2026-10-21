@@ -1,6 +1,6 @@
 ---
 name: deploy-platform
-description: Deploy or resume the complete Fabric and Foundry DEV platform from a derived repository. Use for "deploy the platform", "deploy this project", or end-to-end setup through Copilot App or CLI. Run the deterministic deployment runner on the chosen host and relay its gates: plan approvals by hash, administrator consent, sign-ins, connector OAuth and blocked phases, through DEV readiness and the shipped Copilot Studio agent and Managed Runtime app. Never run as a template-maintenance check.
+description: Deploy, resume or explicitly tear down the Fabric and Foundry DEV platform in a derived repository. Use for "deploy the platform", "delete the environment", or end-to-end setup through Copilot App or CLI. Use the deterministic runner and relay its target, approval, sign-in and readiness gates. Never run as a template-maintenance check.
 ---
 
 # Deploy the complete DEV platform, agent and app
@@ -37,7 +37,7 @@ Use one deployment session at a time. On resume, locate the original tfvars/back
 
 ## 2. Run the deterministic runner
 
-Run every covered step through [`scripts/deploy.py`](scripts/deploy.py). Do not hand-drive the Terraform plans, Fabric Git sync, notebook runs, knowledge wiring, retrieval checks, PAC or `ms` steps it owns. Each phase checks live state first and only acts on what is missing, so rerunning it resumes. Read [the runner's section in developer setup](../../../docs/development.md#deploy-deterministically) for its phases, gates and flags.
+Run every covered step through [`scripts/deploy.py`](scripts/deploy.py). Do not hand-drive the Terraform plans, native item import, opt-in Git sync, notebook runs, knowledge wiring, retrieval checks, PAC or `ms` steps it owns. Each phase checks live state first and only acts on what is missing, so rerunning it resumes. Read [the runner's section in developer setup](../../../docs/development.md#deploy-deterministically) for its phases, gates and flags.
 
 On the chosen execution host, with shell tracing off:
 
@@ -51,7 +51,13 @@ python3 .github/skills/deploy-platform/scripts/deploy.py up --json --non-interac
 
 Pass `--local-state` only if the user accepted local state in step 1; otherwise use the declared remote backend with `--backend-config <file>`. On first use without `infra/terraform.tfvars`, add `--project-name`, `--location` and `--capacity-admin`, confirmed under the `initialize-project` rules; never infer a region, project name or administrator. The runner remembers subscription, tenant, caller, backend and environment choices, and refuses a different one; never edit its receipts to bypass that. Omit the environment flags until the user has confirmed the Power Platform environment and Org URL; the runner then waits at the `agent` phase without creating anything there.
 
-Require a fine-grained GitHub PAT for this derived repository with Contents read/write. Prefer a Codespaces secret named `FABRIC_GITHUB_TOKEN`, scoped only to that repository, or an already supplied `TF_VAR_github_token`; a newly added Codespaces secret requires a Codespace restart and reconnection. The runner reads it only from the execution host's environment, maps it into each plan and apply, and never writes it anywhere. Never ask for it in chat, and do not reuse `GITHUB_TOKEN`, `GH_TOKEN` or Copilot's login token. For App-driven remote work, run the runner inside the same `gh codespace ssh` heredoc shown in step 1.
+Default to `fabric_git_enabled = false`: native Fabric import needs no PAT.
+Only if the user opts into Git synchronization, require a fine-grained PAT
+with Contents read/write for this repository. Supply it through a repository-scoped
+`FABRIC_GITHUB_TOKEN` Codespaces secret or `TF_VAR_github_token`; restart an existing
+Codespace after adding its secret. Never ask for the PAT in chat or reuse
+`GITHUB_TOKEN`, `GH_TOKEN` or Copilot's login token. Keep remote execution inside
+the same `gh codespace ssh` session routing shown in step 1.
 
 Run the runner asynchronously with its stderr in a private log, and check that log every few seconds rather than waiting for the process to exit. Native CLIs such as `ms app init` can print a GitHub or Microsoft device-code prompt that expires in about 15 minutes. When one appears, ask the user to read the code from that log themselves and complete the sign-in; never relay the code. Reports redact one-time codes.
 
@@ -70,17 +76,17 @@ The `--json` report gives `result`, `phase`, `message`, `next` and, for approval
 - `--grant-admin-consent` grants tenant-wide consent for exactly the declared delegated scopes. Use it only when the user states that they are a tenant administrator and want to grant it. Otherwise hand the administrator the printed link and wait.
 - `--consent-confirmed` proceeds when the user's sign-in cannot read consent grants. Use it only after the administrator has confirmed the grant.
 - `--register-search-serverless` registers the subscription's auto-approved `Microsoft.Search/Serverless` preview feature and re-registers `Microsoft.Search`. Use it only when the user accepts the serverless Search preview and that subscription change; otherwise relay the printed commands or let them choose `search_sku = "basic"`.
-- `--bootstrap-fallback notebooks` syncs without the plan and runs `SeedScenario` then `BindScenario` as the user. Use it only after surfacing the exact `FeatureNotAvailable` error and the user chooses that path. Never change a tenant setting instead.
+- `--bootstrap-fallback notebooks` imports or Git-syncs without the plan and runs `SeedScenario` then `BindScenario` as the user. Use it only after surfacing the exact `FeatureNotAvailable` error and the user chooses that path. Never change a tenant setting instead.
 - `--retry-failed` continues after a failed or receipt-less Git operation, notebook run, publish or app registration. Use it only after that operation has been inspected and its cause fixed; the runner never resubmits an accepted request otherwise.
 
 ## 4. Keep what the runner cannot verify
 
-- **Prerequisites:** the runner checks tools, the delegated Azure user, provider overrides, PAT read access, the shared Power BI Service principal, Fabric CU quota, model quota, whether the Search region offers the chosen tier and, for serverless, its subscription feature. It does not verify administrator-owned Fabric tenant settings, dedicated Search new-service capacity or Entra directory permissions; surface them from getting started. If directory permissions or the Microsoft service principal are missing, stop for administrator assistance. Do not self-grant directory privileges, create a replacement Microsoft application or change tenant settings. A service-principal login is not a substitute for the delegated user.
-- **Optional Web IQ:** enable only with `web_iq_enabled` and explicit `web_iq_terms_accepted` in the same tfvars/state. Terraform conditionally registers `Microsoft.WebIQ` and creates its global G3 account. Follow [preparation.md](../../../../preparation.md): the user links the resource/AppID in the portal and supplies its key only via `WEB_IQ_API_KEY`. `verify` requires one cited, fixed public-only search; `--yes` cannot complete portal onboarding. Do not call account creation or a successful search native Studio/app integration. The default core has no Web IQ dependency.
+- **Prerequisites:** the runner checks tools, the delegated Azure user, provider overrides, PAT read access only for opt-in Git, the shared Power BI Service principal, Fabric CU quota, model quota, whether the Search region offers the chosen tier and, for serverless, its subscription feature. It does not verify administrator-owned Fabric tenant settings, dedicated Search new-service capacity or Entra directory permissions; surface them from getting started. If directory permissions or the Microsoft service principal are missing, stop for administrator assistance. Do not self-grant directory privileges, create a replacement Microsoft application or change tenant settings. A service-principal login is not a substitute for the delegated user.
+- **Web IQ:** deploy its global G3 account in the same state. Require explicit `web_iq_terms_accepted` before Terraform registers `Microsoft.WebIQ` and creates the account; do not add an opt-out. Follow [preparation.md](../../../../preparation.md#web-iq): the user links the resource/AppID in the portal and supplies its key only via `WEB_IQ_API_KEY`. `verify` requires the account and one cited, fixed public-only search; missing evidence blocks readiness and `--yes` cannot complete portal onboarding. Do not call account creation or a successful search native Studio/app integration.
 - **Serverless Search:** Terraform creates it without a managed identity because the preview fails otherwise; the runner enables the system identity and verifies it, since the preview answers that update with HTTP 500. Its grants arrive with the knowledge plan. Changing serverless settings, tags, tier or region replaces it; after knowledge setup the runner applies that as two reviewed plans, first with the identity grants deferred (`search_identity_ready=false`, which also needs `--allow-replace`), then the grants. Review both like any other plan.
 - **Regions and quota:** never automatically relocate resources, raise quota, switch subscription or SKU, or retry after a partial apply. Ask before setting `fabric_location` or `search_location`, review cross-region data handling, latency and cost, and approve a fresh full plan.
 - **Identity:** the targeted identity plan is the only targeting exception; the runner refuses one that touches anything else, and blocks later plans that change the registration. The registration, `required_resource_access`, pre-authorized clients and outputs are not a consent receipt. Permission changes need administrator re-consent and a fresh sign-in. Keep the same Terraform caller.
-- **Bootstrap:** the runner syncs only additions of items defined in `workspace/`, from the pushed `HEAD` of the configured branch, and refuses other Git targets, conflicts and `CommitToGit`. The binder legitimately changes DEV definitions: review its generated changes with the user and commit them through Fabric source control before any promotion. Do not commit, push or overwrite them automatically.
+- **Bootstrap:** by default, import tracked `workspace/` definitions through Bulk Import with the `Bootstrap` plan and no name-based pairing. Require matching logical/physical identities, complete per-item success and recorded operation receipts; never overwrite existing definitions. Opt-in Git sync still refuses other targets, conflicts and `CommitToGit`. Both paths require the reviewed, published `HEAD`. Review generated DEV bindings before promotion; commit through Fabric source control only when Git is enabled. Do not commit, push or overwrite them automatically.
 - **Readiness:** the `verify` phase waits for ingestion and requires `fabricOntology` activity and references matching the DEV workspace and ontology, with live source data, plus a separate `indexedOneLake` reference. It uses the user's own Search token, never a managed identity, and never accepts a document-only answer as live ontology evidence. Use `--ontology-question` and `--expect` when the user intentionally changed the seed data.
 
 ## 5. Report honestly
@@ -98,3 +104,22 @@ The `agent` and `app` phases follow getting started step 7 on the same host and 
 5. Before playback, each user authorizes their app-facing **Microsoft Copilot Studio** connection in the selected environment's Power Apps **Connections** page (or reuses their matching **Connected** connection). The user then runs `ms app dev`, selects **Check connection**, follows the separate Studio **user-connections** link for their own Fabric IQ/Foundry IQ consent when prompted, checks again for the fresh challenge and asks the seed question. See [runtime integration](../../../docs/runtime-integration.md#local-player-boundary) for the observed loopback OAuth failure; never publish private Codespaces ports to bypass it. Record elapsed times. A 120-second `TimedOut` is a blocker to report, not a reason to add retries, warm-up jobs or a backend.
 
 Review `app/src/config.ts`, `ms.config.json`, and `package.json` with `package-lock.json` (the CLI pin `ms app init` adds, which the runner syncs into the lockfile) with the user before committing. Hosted preview, deployment and sharing are separate explicit requests. Report **agent ready** from the runner's `agent` phase and **app verified for one user** from the App Player results. Claim a ready shell only with all evidence in `docs/runtime-integration.md`; list second-user isolation as unverified until it is proven.
+
+## 7. Explicit teardown
+
+Only for a separate user request to delete the environment, use `deploy.py down`
+in the original derived checkout/backend, with its receipts and tfvars. Follow
+[teardown](../../../docs/development.md#delete-the-environment). Never run it
+while maintaining the template.
+
+Start without approvals to obtain the full destroy plan. Explain that both
+workspaces and all their contents will be deleted. Require `--allow-delete`,
+the reviewed `--approve destroy=<hash>`, and separate `runtime-delete` and
+`purge-foundry` approvals. `--yes` does not grant them. The runner deletes the
+native app/agent before Terraform and purges Foundry afterward; it preserves the
+login registration until Fabric teardown finishes.
+
+Relay failures and manual cleanup: retained Fabric workspaces/data, reusable
+Power Apps connections/references, Studio transcripts/solution components and
+Web IQ portal credentials. Do not claim immediate data erasure or delete
+shared resources, state, local configuration or the repository.

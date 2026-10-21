@@ -1,6 +1,4 @@
 resource "azapi_resource" "web_iq" {
-  count = var.web_iq_enabled ? 1 : 0
-
   type      = "Microsoft.WebIQ/accounts@2026-06-01-preview"
   name      = local.resource_prefix
   parent_id = azurerm_resource_group.main.id

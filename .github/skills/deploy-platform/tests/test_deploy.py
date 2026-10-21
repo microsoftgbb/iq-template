@@ -10,6 +10,7 @@ import stat
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
@@ -147,6 +148,7 @@ def make_context(test, root, shell=None, http=None, **overrides):
                          clock=clock, interactive=False, environ={"FABRIC_GITHUB_TOKEN": "pat-value"})
     ctx.messages = []
     ctx.log = ctx.messages.append
+    ctx.cache["variables"] = {"fabric_git_enabled": False}
     ctx.start("test")
     return ctx
 
@@ -214,6 +216,7 @@ def bootstrap_http(root, connection_states=("ConnectedAndInitialized",), status=
 def bootstrap_context(test, root, http, **overrides):
     ctx = make_context(test, root, FakeShell([TOKEN_RULE, *GIT_RULES]), http, **overrides)
     ctx.cache["outputs"] = {"dev_workspace_id": WORKSPACE, "github_connect_request": REQUEST}
+    ctx.cache["variables"].update(fabric_git_enabled=True, github_branch_name="main")
     return ctx
 
 
@@ -283,6 +286,50 @@ class PlanTests(unittest.TestCase):
             with self.assertRaisesRegex(deploy.Blocked, key):
                 deploy.terraform_env(ctx, True)
 
+    def test_native_deployment_plans_and_applies_without_a_pat_or_placeholder(self):
+        root = make_root(self)
+        shell = FakeShell(plan_rules([("azurerm_resource_group.main", ["create"])]))
+        ctx = make_context(self, root, shell, yes=True)
+        ctx.environ = {}
+        with mock.patch.object(shell, "run", wraps=shell.run) as native:
+            self.assertEqual(deploy.converge(ctx, "platform"), "applied")
+        for call in native.call_args_list:
+            self.assertNotIn("TF_VAR_github_token", call.kwargs["env"])
+
+    def test_opted_in_git_requires_a_pat_before_planning(self):
+        root = make_root(self)
+        ctx = make_context(self, root)
+        ctx.environ = {}
+        ctx.cache["variables"]["fabric_git_enabled"] = True
+        with self.assertRaisesRegex(deploy.Waiting, "PAT is not available"):
+            deploy.converge(ctx, "platform")
+        self.assertFalse(ctx.shell.calls)
+        ctx.environ["FABRIC_GITHUB_TOKEN"] = "repository-pat"
+        self.assertEqual(deploy.terraform_env(ctx, True)["TF_VAR_github_token"], "repository-pat")
+
+    def test_preflight_checks_the_pat_only_for_opted_in_git(self):
+        subscription = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+        account = {"id": subscription, "tenantId": TENANT, "user": {"type": "user"}}
+        shell = FakeShell([
+            TOKEN_RULE,
+            (command("terraform", "version"), deploy.Result(0, json.dumps({"terraform_version": "1.16.5"}))),
+            (command("az", "account", "show"), deploy.Result(0, json.dumps(account))),
+            (command("az", "ad", "sp", "show"), deploy.Result(0, '{"id": "shared-service"}')),
+        ])
+        ctx = make_context(self, make_root(self), shell, subscription=subscription)
+        ctx.environ = {}
+        ctx.cache["variables"]["search_sku"] = "serverless"
+        with mock.patch.object(deploy, "check_web_iq", return_value="Web IQ ready"), \
+                mock.patch.object(deploy, "state_addresses", return_value=deploy.PLATFORM_ADDRESSES), \
+                mock.patch.object(deploy, "check_search_tier", return_value="Search offered"), \
+                mock.patch.object(deploy.runtime, "check_environment"), \
+                mock.patch.object(deploy, "check_pat") as check_pat:
+            deploy.phase_preflight(ctx)
+            check_pat.assert_not_called()
+            ctx.cache["variables"]["fabric_git_enabled"] = True
+            deploy.phase_preflight(ctx)
+            check_pat.assert_called_once_with(ctx, ctx.cache["variables"])
+
     def test_the_identity_bootstrap_plan_must_stay_inside_its_module(self):
         root = make_root(self)
         changes = [("module.fabric_user_auth.azuread_application.fabric", ["create"]),
@@ -300,6 +347,262 @@ class PlanTests(unittest.TestCase):
         ctx = make_context(self, root, FakeShell(plan_rules([], plan_code=0)))
         self.assertEqual(deploy.converge(ctx, "platform"), "unchanged")
         self.assertEqual(list((ctx.state.directory / "plans").iterdir()), [])
+
+
+class TeardownTests(unittest.TestCase):
+    SUBSCRIPTION = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+    ENVIRONMENT = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+    URL = "https://example.crm.dynamics.com"
+    SCHEMA = "iq_demo_assistant"
+
+    def context(self, **options):
+        ctx = make_context(self, make_root(self), **options)
+        ctx.args.command = "down"
+        ctx.args.allow_delete = options.get("allow_delete", False)
+        ctx.initialized = True
+        ctx.state.section("target").update(subscription_id=self.SUBSCRIPTION, tenant_id=TENANT, user_object_id="user")
+        ctx.state.section("choices").update(local_state=True, environment_id=self.ENVIRONMENT, environment_url=self.URL)
+        ctx.cache["variables"].update(project_name="demo", github_owner="example", github_repository_name="demo-repo")
+        return ctx
+
+    def snapshot(self, app=None):
+        return {"repository": "example/demo-repo", "project_name": "demo", "resource_ids": {},
+                "environment_id": self.ENVIRONMENT, "environment_url": self.URL,
+                "app_id": app, "agent_schema": self.SCHEMA, "workspaces": {"dev": WORKSPACE},
+                "foundry": {"name": "ai-demo", "resource_group": "rg-demo", "location": "westeurope"}}
+
+    def state_rules(self, state):
+        return [
+            TOKEN_RULE,
+            (command("git", "remote", "get-url"), deploy.Result(0, "https://github.com/example/demo-repo.git\n")),
+            (command("gh", "repo", "view"), deploy.Result(0, json.dumps({
+                "nameWithOwner": "example/demo-repo", "isTemplate": False}))),
+            (command("az", "account", "show"), deploy.Result(0, json.dumps({
+                "id": self.SUBSCRIPTION, "tenantId": TENANT, "user": {"type": "user"}}))),
+            (terraform("show"), deploy.Result(0, json.dumps(state))),
+        ]
+
+    def test_destroy_needs_explicit_deletion_and_exact_plan_approval_even_with_yes(self):
+        ctx = self.context(yes=True)
+        ctx.shell = FakeShell(plan_rules([
+            ("fabric_workspace.dev", ["delete"]),
+            ("module.fabric_user_auth.azuread_application.fabric", ["delete"]),
+        ]))
+        callback = mock.Mock()
+        with self.assertRaisesRegex(deploy.NeedsApproval, "deletes the environment"):
+            deploy.converge(ctx, "destroy", before_apply=callback)
+        ctx.args.allow_delete = True
+        with self.assertRaises(deploy.NeedsApproval) as approval:
+            deploy.converge(ctx, "destroy", before_apply=callback)
+        callback.assert_not_called()
+        self.assertFalse(ctx.shell.matching(terraform("apply")))
+        ctx.args.approve = {"destroy": approval.exception.approval["sha256"][:12]}
+        self.assertEqual(deploy.converge(ctx, "destroy", before_apply=callback), "applied")
+        callback.assert_called_once()
+        plan, = ctx.shell.matching(terraform("plan"))
+        self.assertIn("-destroy", plan)
+        self.assertFalse(any(argument.startswith("-target") for argument in plan))
+
+    def test_destroy_refuses_creations_targets_and_variable_overrides(self):
+        ctx = self.context(yes=True, allow_delete=True)
+        ctx.shell = FakeShell(plan_rules([("fabric_workspace.dev", ["delete", "create"])]))
+        with self.assertRaisesRegex(deploy.Blocked, "non-delete"):
+            deploy.converge(ctx, "destroy")
+        for options in ({"target": deploy.IDENTITY_TARGET}, {"variables": {"search_identity_ready": "false"}}):
+            with self.subTest(options=options), self.assertRaisesRegex(deploy.Blocked, "untargeted"):
+                deploy.converge(ctx, "destroy", **options)
+        self.assertFalse(ctx.shell.matching(terraform("apply")))
+
+    def test_snapshot_preserves_only_cleanup_identifiers_and_survives_partial_destroy(self):
+        ctx = self.context()
+        foundry = f"/subscriptions/{self.SUBSCRIPTION}/resourceGroups/rg-demo/providers/Microsoft.CognitiveServices/accounts/ai-demo"
+        state = {"values": {"root_module": {"resources": [
+            {"address": "azapi_resource.foundry", "mode": "managed",
+             "values": {"id": foundry, "location": "westeurope", "secret": "do-not-persist"}},
+            {"address": "fabric_workspace.dev", "mode": "managed", "values": {"id": WORKSPACE}},
+        ]}, "outputs": {"studio_agent_schema_name": {"value": self.SCHEMA},
+                        "unrelated_secret": {"value": "do-not-persist"}}}}
+        ctx.shell = FakeShell(self.state_rules(state))
+        with mock.patch.object(deploy.runtime, "check_environment"):
+            snapshot = deploy.teardown_snapshot(ctx)
+            ctx.shell = FakeShell(self.state_rules({"values": {}}))
+            self.assertEqual(deploy.teardown_snapshot(ctx), snapshot)
+        self.assertEqual(snapshot["workspaces"], {"dev": WORKSPACE})
+        self.assertEqual(snapshot["foundry"]["name"], "ai-demo")
+        self.assertNotIn("do-not-persist", ctx.state.path.read_text())
+
+    def test_snapshot_refuses_changed_resource_identity_or_foreign_subscription(self):
+        ctx = self.context()
+        ctx.state.section("destroy")["snapshot"] = self.snapshot()
+        for identity in (WORKSPACE, f"/subscriptions/{TENANT}/resourceGroups/other"):
+            state = {"values": {"root_module": {"resources": [
+                {"address": "fabric_workspace.dev", "mode": "managed", "values": {"id": identity}},
+            ]}}}
+            ctx.shell = FakeShell(self.state_rules(state))
+            with self.subTest(identity=identity), mock.patch.object(deploy.runtime, "check_environment"), \
+                    self.assertRaises(deploy.Blocked):
+                deploy.teardown_snapshot(ctx)
+
+    def test_wrong_user_or_app_environment_blocks_before_any_delete(self):
+        ctx = self.context()
+        ctx.state.section("target")["user_object_id"] = "other-user"
+        ctx.shell = FakeShell(self.state_rules({}))
+        with self.assertRaisesRegex(deploy.Blocked, "original Azure user"):
+            deploy.teardown_snapshot(ctx)
+        ctx.state.section("target")["user_object_id"] = "user"
+        (ctx.root / "ms.config.json").write_text(json.dumps({"appId": "my-app", "environmentId": WORKSPACE}))
+        with mock.patch.object(deploy.runtime, "check_environment"), \
+                self.assertRaisesRegex(deploy.Blocked, "registered to environment"):
+            deploy.teardown_snapshot(ctx)
+        self.assertFalse(ctx.shell.matching(command("ms", "app", "delete")))
+
+    def test_missing_receipts_or_partial_app_registration_are_not_silently_skipped(self):
+        ctx = self.context()
+        ctx.state.data["target"] = {}
+        with self.assertRaisesRegex(deploy.Blocked, "original deployment receipts"):
+            deploy.teardown_snapshot(ctx)
+        ctx = self.context()
+        ctx.state.section("app")["init_started_at"] = "earlier"
+        ctx.shell = FakeShell(self.state_rules({}))
+        with mock.patch.object(deploy.runtime, "check_environment"), \
+                self.assertRaisesRegex(deploy.Blocked, "registration may exist"):
+            deploy.teardown_snapshot(ctx)
+
+    def test_changed_app_registration_is_not_deleted(self):
+        ctx = self.context()
+        ctx.state.section("app")["app_id"] = "original-app"
+        (ctx.root / "ms.config.json").write_text(json.dumps({
+            "appId": "other-app", "environmentId": self.ENVIRONMENT,
+        }))
+        ctx.shell = FakeShell(self.state_rules({}))
+        with mock.patch.object(deploy.runtime, "check_environment"), \
+                self.assertRaisesRegex(deploy.Blocked, "different app"):
+            deploy.teardown_snapshot(ctx)
+        self.assertFalse(ctx.shell.matching(command("ms", "app", "delete")))
+
+    def test_runtime_deletes_exact_app_and_agent_only_after_approval(self):
+        ctx = self.context(yes=True, allow_delete=True)
+        snapshot = self.snapshot(app="my-app")
+        found = {"status": "found", "bot_id": ONTOLOGY}
+        with mock.patch.object(deploy, "studio_command", return_value=found), \
+                self.assertRaises(deploy.NeedsApproval):
+            deploy.delete_runtime(ctx, snapshot)
+        self.assertFalse(ctx.shell.calls)
+        ctx.args.approve = {"runtime-delete": True}
+        ctx.shell = FakeShell([
+            (command("ms", "app", "delete"), deploy.Result(0)),
+            (command("dotnet", "pac", "copilot", "delete"), deploy.Result(0)),
+        ])
+        with mock.patch.object(deploy, "studio_command", side_effect=[found, {"status": "missing"}]), \
+                mock.patch.object(deploy, "ms_signed_in", return_value=True):
+            deploy.delete_runtime(ctx, snapshot)
+        self.assertEqual(ctx.shell.calls, [
+            ["ms", "app", "delete", "--app", "my-app", "--environment-id", self.ENVIRONMENT,
+             "--force", "--non-interactive"],
+            ["dotnet", "pac", "copilot", "delete", "--bot", ONTOLOGY, "--environment", self.URL, "--confirm"],
+        ])
+        with mock.patch.object(deploy, "studio_command", return_value={"status": "missing"}):
+            deploy.delete_runtime(ctx, snapshot)
+        self.assertEqual(len(ctx.shell.calls), 2)
+
+    def test_unconfirmed_agent_deletion_is_observed_not_resubmitted(self):
+        ctx = self.context(allow_delete=True, approve={"runtime-delete": True})
+        found = {"status": "found", "bot_id": ONTOLOGY}
+        ctx.shell = FakeShell([(command("dotnet", "pac", "copilot", "delete"), deploy.Result(0))])
+        with mock.patch.object(deploy, "studio_command", return_value=found):
+            with self.assertRaisesRegex(deploy.Waiting, "not confirmed"):
+                deploy.delete_runtime(ctx, self.snapshot())
+            with self.assertRaisesRegex(deploy.Waiting, "not yet confirmed"):
+                deploy.delete_runtime(ctx, self.snapshot())
+        self.assertEqual(len(ctx.shell.calls), 1)
+        with mock.patch.object(deploy, "studio_command", return_value={"status": "missing"}):
+            deploy.delete_runtime(ctx, self.snapshot())
+        self.assertIn("runtime_deleted_at", ctx.state.section("destroy"))
+
+    def test_foundry_purge_requires_separate_approval_and_confirms_absence(self):
+        ctx = self.context(yes=True, allow_delete=True)
+        ctx.shell = FakeShell([TOKEN_RULE, (command("az", "cognitiveservices", "account", "purge"), deploy.Result(0))])
+        path = (f"/subscriptions/{self.SUBSCRIPTION}/providers/Microsoft.CognitiveServices/locations/westeurope"
+                "/resourceGroups/rg-demo/deletedAccounts/ai-demo")
+        ctx.http.add("GET", re.escape(path), reply(body={"id": path}), reply(body={"id": path}), reply(404))
+        with self.assertRaises(deploy.NeedsApproval):
+            deploy.purge_foundry(ctx, self.snapshot())
+        self.assertFalse(ctx.shell.matching(command("az", "cognitiveservices", "account", "purge")))
+        ctx.args.approve = {"purge-foundry": True}
+        deploy.purge_foundry(ctx, self.snapshot())
+        self.assertEqual(len(ctx.shell.matching(command("az", "cognitiveservices", "account", "purge"))), 1)
+        self.assertIn("--subscription", ctx.shell.calls[-1])
+
+    def test_delete_failures_stop_before_terraform_or_completion(self):
+        ctx = self.context(allow_delete=True, approve={"runtime-delete": True})
+        ctx.shell = FakeShell([(command("ms", "app", "delete"), deploy.Result(1, "", "denied"))])
+        with mock.patch.object(deploy, "studio_command", return_value={"status": "missing"}), \
+                mock.patch.object(deploy, "ms_signed_in", return_value=True), \
+                self.assertRaisesRegex(deploy.Blocked, "ms app delete failed"):
+            deploy.delete_runtime(ctx, self.snapshot(app="my-app"))
+        self.assertNotIn("app_deleted_at", ctx.state.section("destroy"))
+        self.assertNotIn("runtime_deleted_at", ctx.state.section("destroy"))
+
+    def test_no_infrastructure_changes_still_cleans_runtime_and_reports_retention(self):
+        ctx = self.context(allow_delete=True)
+        ctx.shell = FakeShell(plan_rules([], plan_code=0))
+        snapshot = self.snapshot()
+        with mock.patch.object(deploy, "teardown_snapshot", return_value=snapshot), \
+                mock.patch.object(deploy, "delete_runtime") as runtime_delete, \
+                mock.patch.object(deploy, "purge_foundry") as purge:
+            self.assertIn("managed resources deleted", deploy.phase_destroy(ctx))
+        runtime_delete.assert_called_once_with(ctx, snapshot)
+        purge.assert_called_once_with(ctx, snapshot)
+        steps = " ".join(deploy.teardown_next(snapshot))
+        self.assertIn(WORKSPACE, steps)
+        self.assertIn("not immediate data erasure", steps)
+        self.assertIn("not deleted automatically", steps)
+        self.assertTrue((ctx.root / "infra" / "terraform.tfvars").exists())
+
+    def test_runtime_deletion_precedes_full_destroy_and_purge_and_failed_apply_keeps_inventory(self):
+        for code in (0, 1):
+            with self.subTest(apply_code=code):
+                ctx = self.context(allow_delete=True)
+                events = []
+                rules = plan_rules([("fabric_workspace.dev", ["delete"])], apply_code=code)
+
+                def apply(args, options):
+                    events.append("terraform")
+                    return deploy.Result(code)
+
+                rules.insert(0, (terraform("apply"), apply))
+                ctx.shell = FakeShell(rules)
+                snapshot = self.snapshot()
+                ctx.state.section("destroy")["snapshot"] = snapshot
+                with mock.patch.object(deploy, "teardown_snapshot", return_value=snapshot), \
+                        mock.patch.object(deploy, "delete_runtime", side_effect=lambda *_: events.append("runtime")), \
+                        mock.patch.object(deploy, "purge_foundry", side_effect=lambda *_: events.append("purge")):
+                    with self.assertRaises(deploy.NeedsApproval) as approval:
+                        deploy.phase_destroy(ctx)
+                    self.assertEqual(events, [])
+                    ctx.args.approve = {"destroy": approval.exception.approval["sha256"][:12]}
+                    if code:
+                        with self.assertRaisesRegex(deploy.Blocked, "state is preserved"):
+                            deploy.phase_destroy(ctx)
+                        self.assertEqual(events, ["runtime", "terraform"])
+                        self.assertNotIn("managed_resources_deleted_at", ctx.state.section("destroy"))
+                    else:
+                        deploy.phase_destroy(ctx)
+                        self.assertEqual(events, ["runtime", "terraform", "purge"])
+                self.assertEqual(ctx.state.section("destroy")["snapshot"], snapshot)
+
+    def test_down_cannot_reenter_deployment_after_teardown_started(self):
+        ctx = self.context()
+        ctx.state.section("destroy")["started_at"] = "earlier"
+        ctx.state.save()
+        ctx.args.command = "up"
+        with self.assertRaisesRegex(deploy.Blocked, "being torn down"):
+            deploy.run_phases(ctx, ("config",))
+        self.assertFalse(ctx.shell.calls)
+        args = deploy.parse_arguments(["down", "--allow-delete", "--approve", "destroy=abcdef012345",
+                                       "--approve", "runtime-delete", "--approve", "purge-foundry"])
+        self.assertTrue(args.allow_delete)
+        self.assertEqual(args.approve["destroy"], "abcdef012345")
 
 
 class BootstrapTests(unittest.TestCase):
@@ -464,6 +767,163 @@ class BootstrapTests(unittest.TestCase):
         self.assertIn("demo_assets is not pinned to the DEV workspace", placeholder)
 
 
+class NativeBootstrapTests(unittest.TestCase):
+    def context(self, *, definitions=(True,), **options):
+        root = make_root(self)
+        expected = deploy.workspace_items(make_context(self, root))
+        ids = {item["displayName"]: item["id"] for item in ITEMS["value"]}
+        ids["Bootstrap"] = CONNECTION
+        self.items = [{"id": ids[name], "workspaceId": WORKSPACE, "displayName": name,
+                       "type": item["type"], "logicalId": item["logical_id"]}
+                      for name, item in expected.items()]
+        self.result = {"importItemDefinitionsDetails": [
+            {"itemId": item["id"], "itemDisplayName": item["displayName"], "itemType": item["type"],
+             "itemLogicalId": item["logicalId"], "operationType": "Create", "operationStatus": "Succeeded"}
+            for item in self.items]}
+        http = bootstrap_http(root, definitions=definitions)
+        http.routes.insert(0, ("GET", re.compile(rf"/workspaces/{WORKSPACE}/items$"),
+                                [reply(body={"value": []}), reply(body={"value": self.items})]))
+        http.add("POST", r"/items/bulkImportDefinitions\?beta=true$",
+                 reply(202, headers={"x-ms-operation-id": OPERATION, "Retry-After": "1"}))
+        http.add("GET", rf"/operations/{OPERATION}/result$", reply(body=self.result))
+        files = "\0".join(path.relative_to(root).as_posix() for path in sorted((root / "workspace").rglob("*"))
+                         if path.is_file()) + "\0"
+        shell = FakeShell([TOKEN_RULE, *GIT_RULES, (command("git", "ls-files"), deploy.Result(0, files))])
+        ctx = make_context(self, root, shell, http, **options)
+        ctx.environ = {}
+        ctx.cache["variables"]["github_branch_name"] = "main"
+        ctx.cache["outputs"] = {"dev_workspace_id": WORKSPACE}
+        return ctx
+
+    def test_default_import_uses_the_plan_and_preserves_all_definition_bytes_without_git(self):
+        ctx = self.context()
+        self.assertIn(LAKEHOUSE, deploy.phase_bootstrap(ctx))
+        (_, body), = ctx.http.posts(r"/items/bulkImportDefinitions\?beta=true$")
+        self.assertEqual(body["options"], {"allowPairingByName": False, "deploymentPlan": {
+            "logicalId": PLAN_LOGICAL_ID, "referenceType": "ByLogicalId"}})
+        for part in body["definitionParts"]:
+            self.assertEqual(part["payloadType"], "InlineBase64")
+            source = ctx.root / "workspace" / part["path"].lstrip("/")
+            self.assertEqual(base64.b64decode(part["payload"]), source.read_bytes())
+        self.assertEqual(sum(part["path"].endswith("/.platform") for part in body["definitionParts"]), 5)
+        self.assertFalse(any("/git/" in url or "api.github.com" in url for _, url, *_ in ctx.http.calls))
+        self.assertFalse(ctx.http.posts(r"/jobs/execute/instances"))
+        self.assertTrue(ctx.state.section("bootstrap")["native"]["import"]["validated"])
+        before = len(ctx.http.posts(r"/bulkImportDefinitions"))
+        deploy.phase_bootstrap(ctx)
+        self.assertEqual(len(ctx.http.posts(r"/bulkImportDefinitions")), before, "reruns must preserve live definitions")
+
+    def test_an_accepted_import_resumes_without_resubmitting(self):
+        ctx = self.context(timeout_minutes=1)
+        ctx.http.routes.insert(0, ("GET", re.compile(rf"/operations/{OPERATION}$"),
+                                  [reply(body={"status": "Running"})]))
+        with self.assertRaises(deploy.Waiting):
+            deploy.phase_bootstrap(ctx)
+        self.assertEqual(ctx.state.section("bootstrap")["native"]["import"]["status"], "Running")
+        ctx.http.routes.pop(0)
+        ctx.start("bootstrap")
+        deploy.phase_bootstrap(ctx)
+        self.assertEqual(len(ctx.http.posts(r"/bulkImportDefinitions")), 1)
+
+    def test_a_reviewed_retry_imports_only_missing_items_after_partial_failure(self):
+        ctx = self.context()
+        ctx.http.routes.insert(0, ("GET", re.compile(rf"/operations/{OPERATION}$"),
+                                  [reply(body={"status": "Failed", "error": {"message": "Notebook failed"}})]))
+        with self.assertRaisesRegex(deploy.Blocked, "Notebook failed"):
+            deploy.phase_bootstrap(ctx)
+        missing = {"ScenarioOntology", "BindScenario"}
+        existing = [item for item in self.items if item["displayName"] not in missing]
+        ctx.http.routes.insert(0, ("GET", re.compile(rf"/workspaces/{WORKSPACE}/items$"),
+                                  [reply(body={"value": existing}), reply(body={"value": self.items})]))
+        result = {"importItemDefinitionsDetails": [item for item in self.result["importItemDefinitionsDetails"]
+                                                   if item["itemDisplayName"] in missing]}
+        ctx.http.routes.insert(0, ("POST", re.compile(r"/items/bulkImportDefinitions\?beta=true$"), [reply(body=result)]))
+        ctx.args.retry_failed = True
+        deploy.phase_bootstrap(ctx)
+        _, body = ctx.http.posts(r"/bulkImportDefinitions")[-1]
+        platforms = [json.loads(base64.b64decode(part["payload"]))["metadata"]["displayName"]
+                     for part in body["definitionParts"] if part["path"].endswith("/.platform")]
+        self.assertEqual(set(platforms), missing)
+        self.assertFalse(any(part["path"].startswith("/Scenario.Lakehouse/") for part in body["definitionParts"]))
+
+    def test_missing_receipts_and_partial_success_stop_instead_of_claiming_readiness(self):
+        for response in (reply(202), reply(body={})):
+            with self.subTest(status=response.status, body=response.json()):
+                ctx = self.context()
+                ctx.http.routes.insert(0, ("POST", re.compile(r"/items/bulkImportDefinitions\?beta=true$"), [response]))
+                with self.assertRaises(deploy.Blocked):
+                    deploy.phase_bootstrap(ctx)
+                with self.assertRaises(deploy.Blocked):
+                    deploy.phase_bootstrap(ctx)
+                self.assertEqual(len(ctx.http.posts(r"/bulkImportDefinitions")), 1)
+                self.assertFalse(ctx.http.posts(r"/jobs/execute/instances"))
+        ctx = self.context()
+        result = {"importItemDefinitionsDetails": [
+            {**detail, "operationStatus": "SucceededDespiteFailures"} for detail in self.result["importItemDefinitionsDetails"]]}
+        ctx.http.routes.insert(0, ("POST", re.compile(r"/items/bulkImportDefinitions\?beta=true$"), [reply(body=result)]))
+        with self.assertRaisesRegex(deploy.Blocked, "SucceededDespiteFailures"):
+            deploy.phase_bootstrap(ctx)
+        self.assertEqual(ctx.state.section("bootstrap")["native"]["import"]["status"], "Failed")
+
+    def test_conflicting_names_or_renamed_logical_ids_are_not_overwritten(self):
+        for changes in ({"logicalId": TENANT}, {"displayName": "RenamedScenario"}, {"workspaceId": TENANT}):
+            with self.subTest(changes=changes):
+                ctx = self.context()
+                item = next(item for item in self.items if item["displayName"] == "Scenario")
+                ctx.http.routes.insert(0, ("GET", re.compile(rf"/workspaces/{WORKSPACE}/items$"),
+                                          [reply(body={"value": [{**item, **changes}]})]))
+                with self.assertRaises(deploy.Blocked):
+                    deploy.phase_bootstrap(ctx)
+                self.assertFalse(ctx.http.posts(r"/bulkImportDefinitions"))
+
+    def test_imported_definitions_are_not_replaced_after_source_changes(self):
+        ctx = self.context()
+        deploy.phase_bootstrap(ctx)
+        notebook = ctx.root / "workspace" / "SeedScenario.Notebook" / "notebook-content.py"
+        notebook.write_text(notebook.read_text(encoding="utf-8") + "\n# changed source\n", encoding="utf-8")
+        with self.assertRaisesRegex(deploy.Blocked, "changed or unrecorded definitions"):
+            deploy.phase_bootstrap(ctx)
+        self.assertEqual(len(ctx.http.posts(r"/bulkImportDefinitions")), 1)
+
+    def test_import_reads_only_tracked_parts_and_rejects_symlinks(self):
+        ctx = self.context()
+        extra = ctx.root / "workspace" / "Scenario.Lakehouse" / ".env"
+        extra.write_text("not a definition", encoding="utf-8")
+        parts = deploy.workspace_definition_parts(ctx, deploy.workspace_items(ctx))
+        self.assertFalse(any(part["path"].endswith(".env") for group in parts.values() for part in group))
+        notebook = ctx.root / "workspace" / "SeedScenario.Notebook" / "notebook-content.py"
+        notebook.unlink()
+        notebook.symlink_to(extra)
+        with self.assertRaisesRegex(deploy.Blocked, "Not a regular workspace definition"):
+            deploy.phase_bootstrap(ctx)
+        self.assertFalse(ctx.http.posts(r"/bulkImportDefinitions"))
+
+    def test_plan_attachment_failure_requires_an_explicit_notebook_fallback(self):
+        ctx = self.context(definitions=(False, True))
+        ctx.http.routes.insert(0, ("POST", re.compile(r"/items/bulkImportDefinitions\?beta=true$"),
+                                  [reply(403, {"errorCode": "FeatureNotAvailable"})]))
+        with self.assertRaises(deploy.Blocked) as stop:
+            deploy.phase_bootstrap(ctx)
+        self.assertIn("--bootstrap-fallback notebooks", " ".join(stop.exception.next_steps))
+        self.assertFalse(ctx.http.posts(r"/items/bulkImportDefinitions$"))
+        # The refused request did not create items.
+        ctx.http.routes.insert(0, ("GET", re.compile(rf"/workspaces/{WORKSPACE}/items$"),
+                                  [reply(body={"value": []}), reply(body={"value": self.items})]))
+        ctx.args.bootstrap_fallback = "notebooks"
+        ctx.http.add("POST", r"/items/bulkImportDefinitions$", reply(body=self.result))
+        for item, job in ((SEED, SEED_JOB), (BIND, BIND_JOB)):
+            ctx.http.add("GET", rf"/items/{item}/jobs/instances$", reply(body={"value": []}))
+            ctx.http.add("POST", rf"/notebooks/{item}/jobs/execute/instances\?jobType=RunNotebook$",
+                         reply(202, headers={"Location":
+                             f"https://api.fabric.microsoft.com/v1/workspaces/{WORKSPACE}/items/{item}/jobs/instances/{job}"}))
+            ctx.http.add("GET", rf"/items/{item}/jobs/instances/{job}$", reply(body={"status": "Completed"}))
+        deploy.phase_bootstrap(ctx)
+        (_, body), = ctx.http.posts(r"/items/bulkImportDefinitions$")
+        self.assertNotIn("deploymentPlan", body["options"])
+        runs = [url for url, _ in ctx.http.posts(r"/jobs/execute/instances")]
+        self.assertEqual([SEED in runs[0], BIND in runs[1]], [True, True])
+
+
 class ReadinessTests(unittest.TestCase):
     def test_ingestion_is_ready_after_a_clean_sync_even_when_later_syncs_index_nothing(self):
         observed = {"lastSynchronizationState": {"errors": [], "itemsSkipped": 0, "itemsUpdatesFailed": 0,
@@ -620,10 +1080,13 @@ class SearchTests(unittest.TestCase):
         http = FakeHttp()
         http.add("GET", r"/searchServices/srch-demo\?", search_service("p" * 8))
         ctx = self.search_context(http, plan_rules([], plan_code=0))
-        ctx.cache["variables"] = {"knowledge_lakehouse_id": None}
+        ctx.cache["variables"].update(knowledge_lakehouse_id=None)
         ctx.cache["outputs"].update(dev_workspace_id=WORKSPACE, dev_workspace_name="demo-dev",
-                                    github_connect_request=REQUEST)
+                                    web_iq={"resource_id": "web-iq-account"})
         self.assertIn("Search identity " + "p" * 8, deploy.phase_platform(ctx))
+        del ctx.cache["outputs"]["web_iq"]
+        with self.assertRaisesRegex(deploy.Blocked, "Terraform outputs are missing: web_iq"):
+            deploy.phase_platform(ctx)
 
     def test_a_knowledge_plan_creating_serverless_search_is_applied_in_two_reviewed_plans(self):
         replaced = ("azapi_resource.search", ["delete", "create"])
@@ -642,13 +1105,14 @@ class SearchTests(unittest.TestCase):
 
         outputs = deploy.Result(0, json.dumps({"search_management_url": {"value": SEARCH_URL}}))
         rules = [(terraform("plan"), plan), (terraform("show"), show), (terraform("apply"), deploy.Result(0)),
+                 (terraform("console"), deploy.Result(0, json.dumps(json.dumps({"fabric_git_enabled": False})))),
                  (terraform("output"), outputs)]
         http = FakeHttp()
         http.add("GET", r"/searchServices/srch-demo\?", search_service("o" * 8), search_service(), search_service("n" * 8))
         http.add("PATCH", r"/searchServices/srch-demo\?", reply(500))
         ctx = self.search_context(http, rules, yes=True, allow_replace=True)
         ctx.initialized = True
-        ctx.cache["variables"] = {"search_sku": "serverless"}
+        ctx.cache["variables"].update(search_sku="serverless")
         self.assertEqual(deploy.converge_knowledge(ctx), "applied")
         plans = ctx.shell.matching(terraform("plan"))
         self.assertEqual(["-var=search_identity_ready=false" in plan for plan in plans], [False, True, False])
@@ -658,7 +1122,7 @@ class SearchTests(unittest.TestCase):
         self.assertEqual(ctx.state.section("pending_plans"), {})
         ctx = self.search_context(FakeHttp(), plan_rules([replaced, grant]), yes=True, allow_replace=True)
         ctx.cache["outputs"] = {}
-        ctx.cache["variables"] = {"search_sku": "basic"}
+        ctx.cache["variables"].update(search_sku="basic")
         self.assertEqual(deploy.converge_knowledge(ctx), "applied")
         self.assertEqual(len(ctx.shell.matching(terraform("plan"))), 1, "dedicated tiers get their identity at creation")
 
@@ -906,7 +1370,8 @@ class AgentAndAppTests(unittest.TestCase):
         root = make_root(self)
         (root / "package-lock.json").write_text("{}", encoding="utf-8")
         (root / "node_modules").mkdir()
-        (root / "ms.config.json").write_text(json.dumps({"environmentId": self.ENVIRONMENT, "connectionReferences": {}}),
+        (root / "ms.config.json").write_text(json.dumps({
+            "appId": "demo-app", "environmentId": self.ENVIRONMENT, "connectionReferences": {}}),
                                              encoding="utf-8")
         status = {"success": True, "signedIn": True, "activeAccount": {"homeAccountId": f"user.{TENANT}"}}
         ctx, shell = self.agent_context(root, [(command("ms", "auth", "status"), deploy.Result(0, json.dumps(status))),
@@ -938,7 +1403,7 @@ class AgentAndAppTests(unittest.TestCase):
             pinned = dict(self.APP_MANIFEST, devDependencies=self.CLI_PIN)
             (root / "package.json").write_text(json.dumps(pinned), encoding="utf-8")
             (root / "ms.config.json").write_text(json.dumps({
-                "environmentId": self.ENVIRONMENT,
+                "appId": "demo-app", "environmentId": self.ENVIRONMENT,
                 "connectionReferences": {"studio": {"id": "/apis/shared_microsoftcopilotstudio"}}}), encoding="utf-8")
             return deploy.Result(0)
 
@@ -961,7 +1426,7 @@ class AgentAndAppTests(unittest.TestCase):
                                           encoding="utf-8")
         (root / "package-lock.json").write_text(json.dumps({"packages": {"": self.APP_MANIFEST}}), encoding="utf-8")
         (root / "ms.config.json").write_text(json.dumps({
-            "environmentId": self.ENVIRONMENT,
+            "appId": "demo-app", "environmentId": self.ENVIRONMENT,
             "connectionReferences": {"studio": {"id": "/apis/shared_microsoftcopilotstudio"}}}), encoding="utf-8")
         status = {"success": True, "signedIn": True, "activeAccount": {"homeAccountId": f"user.{TENANT}"}}
         ctx, shell = self.agent_context(root, [(command("ms", "auth", "status"), deploy.Result(0, json.dumps(status))),
@@ -1037,6 +1502,7 @@ class AgentAndAppTests(unittest.TestCase):
         (root / "package-lock.json").write_text("{}", encoding="utf-8")
         (root / "node_modules").mkdir()
         (root / "ms.config.json").write_text(json.dumps({
+            "appId": "demo-app",
             "environmentId": self.ENVIRONMENT,
             "connectionReferences": {"studio": {"id": "/apis/shared_microsoftcopilotstudio"}},
         }), encoding="utf-8")
@@ -1075,24 +1541,26 @@ class WebIqTests(unittest.TestCase):
             ctx.environ["WEB_IQ_API_KEY"] = key
         return ctx
 
-    def test_disabled_web_iq_has_no_cloud_or_credential_dependency(self):
+    def test_missing_web_iq_output_blocks_readiness_without_cloud_calls(self):
         ctx = make_context(self, make_root(self))
-        ctx.cache["outputs"] = {}
-        self.assertEqual(deploy.check_web_iq(ctx, "sub", {"web_iq_enabled": False}), "Web IQ disabled")
-        self.assertIsNone(deploy.verify_web_iq(ctx))
-        self.assertFalse(ctx.http.calls)
-        self.assertFalse(ctx.shell.calls)
+        for outputs in ({}, {"web_iq": None}, {"web_iq": {}}):
+            with self.subTest(outputs=outputs):
+                ctx.cache["outputs"] = outputs
+                with self.assertRaisesRegex(deploy.Blocked, "Terraform outputs are missing: web_iq"):
+                    deploy.verify_web_iq(ctx)
+                self.assertFalse(ctx.http.calls)
+                self.assertFalse(ctx.shell.calls)
 
-    def test_opt_in_requires_terms_and_the_pinned_subscription_api(self):
+    def test_every_deployment_requires_terms_and_the_pinned_subscription_api(self):
         ctx = make_context(self, make_root(self))
         with self.assertRaisesRegex(deploy.Waiting, "terms and paid usage"):
-            deploy.check_web_iq(ctx, "sub", {"web_iq_enabled": True, "web_iq_terms_accepted": False})
+            deploy.check_web_iq(ctx, "sub", {"web_iq_terms_accepted": False})
         self.assertFalse(ctx.shell.calls)
         for versions, succeeds in (([], False), ([deploy.WEB_IQ_API_VERSION], True)):
             provider = {"registrationState": "NotRegistered",
                         "resourceTypes": [{"resourceType": "accounts", "apiVersions": versions}]}
             ctx.shell = FakeShell([(command("az", "provider", "show"), deploy.Result(0, json.dumps(provider)))])
-            values = {"web_iq_enabled": True, "web_iq_terms_accepted": True}
+            values = {"web_iq_terms_accepted": True}
             if succeeds:
                 self.assertIn("portal AppID linking remains manual", deploy.check_web_iq(ctx, "sub", values))
             else:
@@ -1100,6 +1568,22 @@ class WebIqTests(unittest.TestCase):
                     deploy.check_web_iq(ctx, "sub", values)
             self.assertIn("sub", ctx.shell.calls[0])
             self.assertFalse(ctx.shell.matching(command("az", "provider", "register")))
+
+    def test_document_and_ontology_success_cannot_bypass_web_iq_readiness(self):
+        ctx = make_context(self, make_root(self))
+        ctx.cache["outputs"] = {
+            "search_endpoint": "https://demo.search.windows.net",
+            "knowledge_source_status_url": "https://demo.search.windows.net/knowledgesources/docs/status?api-version=test",
+            "knowledge_base_name": "knowledge",
+            "knowledge_source_name": "docs",
+            "ontology_knowledge_sources": {"scenario": {"knowledge_source_name": "ontology"}},
+        }
+        with mock.patch.object(deploy, "wait_ingestion", return_value={}), \
+                mock.patch.object(deploy, "prove_retrieval", return_value={}) as retrieval:
+            with self.assertRaisesRegex(deploy.Blocked, "Terraform outputs are missing: web_iq"):
+                deploy.phase_verify(ctx)
+        self.assertEqual(retrieval.call_count, 2)
+        self.assertNotIn("dev_ready_at", ctx.state.section("verify"))
 
     def test_a_provisioned_account_waits_for_portal_onboarding_not_automatic_keys(self):
         ctx = self.web_context()

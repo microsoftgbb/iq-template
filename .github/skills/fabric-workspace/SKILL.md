@@ -22,11 +22,11 @@ Parse changed Python and JSON locally, and check that every plan logical ID reso
 
 ## Bootstrap or promote only when explicitly requested
 
-Confirm the derived repository, reviewed commit, target workspace and caller identity. The deployment runner's `bootstrap` phase performs the initial DEV sync; follow the native operations in `cicd/README.md` for anything else. This skill is not an unattended deployment wrapper.
+Confirm the derived repository, reviewed commit, target workspace and caller identity. The runner's `bootstrap` phase imports DEV definitions through native Fabric APIs by default, without a PAT. Git sync is opt-in with `fabric_git_enabled = true`; follow `cicd/README.md`. This skill is not an unattended deployment wrapper.
 
 - Run the bundled binder as an authorized Fabric **user**. Service-principal NotebookUtils tokens lack the required scopes; unattended authentication needs a separately designed flow, not a token fallback.
-- Attach the reviewed plan explicitly for every operation. Git updates use the plan's logical ID (`ByLogicalId`); pipeline deployments use the plan's physical item ID (`ByItemId`). Keep required API fields, poll to completion and surface failed actions.
-- Review and commit generated DEV bindings/normalization before promotion. Native pipelines copy live definitions, not a Git checkout or data; synchronize/freeze the source. Rebind each target to its own lakehouse and verify readiness before exposing it.
+- Attach the reviewed plan explicitly for every operation. Native imports and Git updates use the plan's logical ID (`ByLogicalId`); pipeline deployments use its physical item ID (`ByItemId`). Keep required API fields, poll to completion and surface failed actions.
+- Review generated DEV bindings before promotion; export reviewed definitions or commit through source control when Git is enabled. Native pipelines copy live definitions, not a Git checkout or data; freeze the source. Rebind each target to its own lakehouse and verify readiness before exposing it.
 - Preserve `ONT_*` binding pins as described in the ontology guide: the SQL database pin is the lakehouse display name, not the SQL endpoint GUID. Git-normalized zero/logical IDs and workspace-name placeholders are not runtime readiness evidence.
 - Treat target-binding differences separately from business-model revisions. Do not overwrite them with DEV values. Do not automatically delete orphans or resolve Git deletions/conflicts in favor of the incoming source.
 - Keep PROD infrastructure/approvals and its non-demo release plan in the derived project. Do not weaken the sample seeding guard.

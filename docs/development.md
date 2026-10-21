@@ -84,25 +84,32 @@ Without `infra/terraform.tfvars`, also pass `--project-name`, `--location` and `
 
 | Phase | What it does | Stops for |
 | --- | --- | --- |
-| `config`, `preflight` | Repository, branch and tfvars checks; Azure user and subscription; provider overrides; PAT read access; Fabric CU and model quota; Search tier offered in its region and, for serverless, the `Microsoft.Search/Serverless` feature | Missing inputs, sign-in, PAT, quota or feature |
+| `config`, `preflight` | Repository, branch and tfvars checks; Azure user and subscription; provider overrides; Fabric CU and model quota; Search tier/feature; PAT access only for opt-in Git | Missing inputs, sign-in, quota or feature; PAT only for opt-in Git |
 | `identity` | Saved plan targeted only at `module.fabric_user_auth`, then apply | Plan approval |
 | `consent` | Reads the tenant-wide grant, then checks the scoped sign-in and Fabric reads | Administrator consent; device-code sign-in |
 | `platform` | Saved untargeted plan, then apply; enables the serverless Search identity that Terraform cannot set and verifies it, because the preview answers HTTP 500 | Plan approval |
-| `bootstrap` | Git connect, credentials and initialize; syncs your pushed `HEAD` with the attached `Bootstrap` plan; verifies the target-local binding | Conflicts, non-additive changes, an unavailable plan attachment |
+| `bootstrap` | Imports your published `HEAD` through native Fabric APIs with `Bootstrap`, then verifies target-local binding; Git connect/sync only when enabled | Conflicting identities, changed existing definitions, an unavailable plan attachment |
 | `knowledge` | Writes the discovered physical GUIDs with the knowledge helper; saved plan, then apply. A plan that creates or replaces serverless Search is applied as two plans: grants deferred, then granted after the identity exists | Plan approval |
-| `verify` | Waits for ingestion; proves live ontology and document retrieval with your own token | Running ingestion; missing evidence |
+| `verify` | Waits for ingestion; proves live ontology and document retrieval with your own token and an authenticated public Web IQ search | Running ingestion; portal onboarding, credentials or missing evidence |
 | `agent` | Creates or clones, renders, pushes, connects, configures, publishes and checks the Studio agent | Creation, connection and publish approvals; your **Fix connection** |
 | `app` | Sets the agent schema, runs `npm ci`, `ms app init` and adds the Studio data source; syncs `package-lock.json` (lockfile only) with the CLI pin that `ms app init` adds to `package.json` | Registration approval; `ms` sign-in |
 
-When `web_iq_enabled = true`, `preflight` also requires explicit Web IQ terms
+Every deployment includes Web IQ. `preflight` requires explicit Web IQ terms
 acceptance and the pinned accounts API in the selected subscription. The normal
 platform/knowledge plan creates its global G3 account. In `verify`, the runner
 checks provisioning and makes one fixed public-only Web IQ search using
 `WEB_IQ_API_KEY` from the environment. Missing portal onboarding/credentials waits;
 API errors or missing citations block. Counts and optional freshness metadata
 are recorded separately from agent/app readiness; no content or keys are saved.
-See [preparation.md](../preparation.md) for the mandatory manual steps and the
-still-separate Studio integration. Disabled Web IQ makes no additional calls.
+See the [manual checklist](../preparation.md#web-iq) for required actions
+and [runtime details](runtime-integration.md#web-iq) for the still-separate
+Studio integration. Missing Web IQ outputs or credentials cannot be skipped.
+
+Fabric GitHub synchronization defaults to **off** (`fabric_git_enabled = false`).
+Native import uses the Azure user's Fabric token, preserves `.platform` identities
+and needs no PAT. It imports only missing items, verifies per-item results and
+resumes accepted operations without overwriting live data or bindings. Set the
+flag to `true` and supply a PAT only when Git synchronization is wanted.
 
 Every phase checks live state before acting, so rerunning `up` resumes. It observes an accepted Fabric operation or an active notebook run instead of submitting another, and creates a fresh plan after a failed apply. Exit code `3` means a person must act; the output names the exact link or command. Exit code `4` means approval is required. Approve interactively, or rerun with `--approve <phase>=<sha256-prefix>` for the exact saved plan it printed (`terraform -chdir=infra show <plan>` shows it), or with `--approve agent-create`, `agent-connections`, `agent-publish` or `app-register`. `--yes` approves everything in that run except deletions and replacements, which also need `--allow-replace`. `up --through <phase>` stops after a phase; every run re-verifies the earlier phases, so no gate can be skipped. `status` summarizes receipts without cloud calls, and `--json` prints a machine-readable report.
 
@@ -111,12 +118,50 @@ These choices are explicit flags, never automatic:
 - `--grant-admin-consent`: you are a tenant administrator and grant consent yourself for exactly the declared delegated scopes. Otherwise the runner waits and prints the administrator's approval link.
 - `--consent-confirmed`: an administrator confirmed consent, but your sign-in cannot read the tenant's consent grants to verify it.
 - `--register-search-serverless`: register the subscription's auto-approved `Microsoft.Search/Serverless` preview feature that the default Search tier needs, then re-register `Microsoft.Search`. Otherwise the runner prints both commands and waits, or you set `search_sku = "basic"`.
-- `--bootstrap-fallback notebooks`: when the tenant rejects attaching a deployment plan to Git sync (`FeatureNotAvailable`), sync the same reviewed commit without it and run `SeedScenario`, then `BindScenario`, as you.
+- `--bootstrap-fallback notebooks`: when the tenant rejects plan attachment (`FeatureNotAvailable`), import or Git-sync the same reviewed definitions without it, then run `SeedScenario` and `BindScenario` as you.
 - `--retry-failed`: after you inspected and fixed a failed or unconfirmed operation, continue from live state; without it the runner never resubmits an accepted request.
 
-The runner refuses the reusable template, a different Git target, conflicts, non-additive incoming changes, any commit other than your pushed `HEAD`, ambient Terraform overrides (`TF_CLI_ARGS*`, `TF_WORKSPACE`, extra `TF_VAR_*`) and a Dataverse URL that belongs to another environment. It never prints or stores tokens. It still needs people for consent, MFA sign-ins, connector OAuth and the App Player check, so it is not unattended CI: the bundled binder and IQ connections need a delegated user. It does not promote, deploy or share the app, or tear anything down.
+The runner refuses the reusable template, a different Git target, conflicts, non-additive incoming changes, any commit other than your pushed `HEAD`, ambient Terraform overrides (`TF_CLI_ARGS*`, `TF_WORKSPACE`, extra `TF_VAR_*`) and a Dataverse URL that belongs to another environment. It never prints or stores tokens. It still needs people for consent, MFA sign-ins, connector OAuth and the App Player check, so it is not unattended CI: the bundled binder and IQ connections need a delegated user. `up` does not promote, host, share or delete resources.
 
 Choose an existing non-Default Power Platform environment with a GUID ID (`dotnet pac env list`) and its matching Org URL. The runner diagnoses Dataverse's `Default-<guid>` environment IDs explicitly rather than treating them as malformed GUIDs. If `ms app init` reports that the Microsoft GitHub App cannot access the bound repository, ask the repository/organization administrator to [install or configure Microsoft Managed Apps](https://github.com/marketplace/microsoft-managed-apps) for that repository. Inspect `ms app list` / `ms app info` before retrying; recover a partial registration instead of registering a duplicate.
+
+## Delete the environment
+
+Use the original checkout, tfvars, backend and `.artifacts/deploy/state.json`.
+Sign in as the original Azure user and select the recorded subscription. Keep
+Fabric consent active until Terraform finishes. App deletion needs its owner;
+agent deletion needs permission in the recorded Power Platform environment.
+
+```sh
+python3 .github/skills/deploy-platform/scripts/deploy.py down --non-interactive
+# Inspect the saved plan path printed above:
+terraform -chdir=infra show "<plan-path>"
+python3 .github/skills/deploy-platform/scripts/deploy.py down --non-interactive \
+  --allow-delete --approve "destroy=<sha256-prefix>" \
+  --approve runtime-delete --approve purge-foundry
+```
+
+| Order | Deletes |
+| --- | --- |
+| 1 | Managed Runtime app, including shares; Copilot Studio agent. |
+| 2 | Full Terraform state: knowledge base/sources, Search ingestion assets, DEV/TEST workspaces and all data, pipeline, connections, capacity, Foundry, Web IQ, role assignments and deployment identity. |
+| 3 | Soft-deleted Foundry account, using its recorded subscription, resource group, name and location. |
+
+`down` checks the repository, caller and targets without deployment quota or
+readiness probes. No targeted destroy, tenant-policy changes or local-file
+deletion. `--yes` cannot approve deletion. `destroy=<hash>`, `runtime-delete` and
+`purge-foundry` are separate approvals. Rerun after sign-in, approval or an
+unfinished operation; use `--retry-failed` only after inspecting an unconfirmed
+agent deletion or purge. A failed Terraform apply requires a fresh plan/hash.
+The runner preserves a nonsecret teardown inventory across partial deletion.
+If the app registration was interrupted, recover `ms.config.json` first.
+
+Manual cleanup:
+
+- Permanently delete the reported DEV/TEST workspace IDs in **OneLake catalog > Govern > Workspaces** as a Fabric tenant admin. [Workspace retention](https://learn.microsoft.com/en-us/fabric/admin/workspace-retention) delays data erasure; [OneLake retains data for seven days after permanent item deletion](https://learn.microsoft.com/en-us/fabric/admin/item-recovery#permanently-delete-a-recoverable-item).
+- Remove project-only Power Apps connections/references and retained agent transcripts/solution components. Connections may be reused by other apps or users, so the runner does not delete them.
+- Revoke Web IQ keys and remove the portal AppID/profile.
+- Retain state and receipts until cleanup is confirmed. GitHub, backend storage, local files, tenant settings, licenses, external sources and service-retained backups/audit records remain.
 
 ## Deploy from one prompt
 
@@ -135,16 +180,16 @@ Read each row left to right, then continue down. See the
 
 This is **one guided request**, not a zero-input or guaranteed unattended deployment. You still need:
 
-- **Target and consent:** choose subscription/tenant, region, project name and capacity admin; approve the actual Terraform plans and reviewed Git content. Quota, preview availability and RBAC propagation can still block a run.
+- **Target and consent:** choose subscription/tenant, region, project name and capacity admin; approve the actual Terraform plans and reviewed workspace definitions. Quota, preview availability and RBAC propagation can still block a run.
 - **Entra setup and approval:** the initial Terraform identity needs directory permissions to create/configure the app, service principal and authorized clients. Copilot can prepare them through the reviewed Entra-only plan and hand the administrator the generated approval link and scope manifest. An administrator grants consent separately, in the portal or by running the runner with `--grant-admin-consent`; subscription Owner alone is not enough, and Terraform does not grant itself consent.
 - **Azure/Fabric user sign-in:** after consent, use the generated tenant/scope outputs and the administrator-owned tenant prerequisites from [getting started](getting-started.md). Copilot can guide device login, but cannot perform your MFA or bypass policy. Plain `az login`, app creation or consent alone is not proof that Fabric write/execute scopes and workspace roles are available.
-- **A secure Fabric Git PAT:** add a [Codespaces secret](https://docs.github.com/en/codespaces/managing-your-codespaces/managing-your-account-specific-secrets-for-github-codespaces) named `FABRIC_GITHUB_TOKEN`, restricted to the derived repository, with Contents read/write. Restart an already-running Codespace after adding it. The skill maps it to Terraform's ephemeral `TF_VAR_github_token` inside each plan/apply shell; it never copies it into files or chat. An existing `TF_VAR_github_token` is also supported. Copilot's login and the default Codespaces `GITHUB_TOKEN` are not this PAT.
+- **Only for opt-in Fabric Git synchronization:** supply `FABRIC_GITHUB_TOKEN` as a repository-scoped [Codespaces secret](https://docs.github.com/en/codespaces/managing-your-codespaces/managing-your-account-specific-secrets-for-github-codespaces), or `TF_VAR_github_token` in the deployment shell. It needs Contents read/write; restart an existing Codespace after adding the secret. Do not reuse Copilot's login or the Codespaces `GITHUB_TOKEN`.
 - **Agent and app access:** a Power Platform environment where you can create agents and apps, a Copilot Studio license and Managed Runtime licensing. You sign in to `pac` and `ms` yourself, connect your own IQ connections and approve agent creation, configuration and app registration.
 - **State retention:** prefer an existing encrypted, access-controlled remote backend and project-specific state key. A single-user local-state demo needs explicit acceptance and secure retention/backup before deleting the Codespace. Deleting a Codespace does not delete its Azure resources. Team/CI deployment requires remote state.
 
 The App route uses GitHub's [authenticated Codespaces SSH transport](https://docs.github.com/en/codespaces/developing-in-a-codespace/using-github-codespaces-with-github-cli#ssh-into-a-codespace), not a claimed native App-to-Codespaces attachment. Do not publish port 2222, configure an SSH password or disable host-key verification. If the App host cannot access Codespaces, use CLI in the Codespace rather than silently deploying from the laptop.
 
-On a failed/paused run, say **"Resume deployment in the same Codespace and backend."** Copilot reruns the runner, which checks existing state and operation receipts instead of resetting knowledge inputs or submitting duplicate jobs. It reports **DEV ready** only after both document and live ontology retrieval succeed, then continues with the agent and app; incomplete authentication or ingestion is reported as blocked/unverified. TEST stays empty and PROD, promotion, hosted deployment and sharing remain separate. Review generated DEV binding changes before committing them and before any later promotion.
+On a failed/paused run, say **"Resume deployment in the same Codespace and backend."** Copilot reruns the runner, which checks existing state and operation receipts instead of resetting knowledge inputs or submitting duplicate jobs. It reports **DEV ready** only after document retrieval, live ontology retrieval and an authenticated public Web IQ search succeed, then continues with the agent and app; incomplete authentication or ingestion is reported as blocked/unverified. TEST stays empty and PROD, promotion, hosted deployment and sharing remain separate. Review generated DEV binding changes before committing them and before any later promotion.
 
 ## Use the repository skills
 

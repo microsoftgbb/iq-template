@@ -1,15 +1,33 @@
 # Native requests for guided DEV deployment
 
-Read this after choosing the derived repository, execution host and delegated user. It is the request contract that the [deterministic runner](../scripts/deploy.py) implements: use it to review the runner's behavior and to diagnose a blocked run. Do not hand-submit mutating requests that a resumable run owns. Keep Terraform as the infrastructure owner and use Fabric's native Git and notebook APIs.
+Read this after choosing the derived repository, execution host and delegated user. It is the request contract that the [deterministic runner](../scripts/deploy.py) implements: use it to review the runner's behavior and diagnose a blocked run. Do not hand-submit mutating requests that a resumable run owns. Terraform owns infrastructure; Fabric APIs own bootstrap and notebook execution.
 
 ## Contents
 
 - [Authentication and response receipts](#authentication-and-response-receipts)
+- [Native item import (default)](#native-item-import-default)
 - [Git connection and synchronization](#git-connection-and-synchronization)
 - [Operation and notebook completion](#operation-and-notebook-completion)
 - [Resolve and verify target bindings](#resolve-and-verify-target-bindings)
 - [Serverless Search identity](#serverless-search-identity)
 - [Knowledge readiness and retrieval](#knowledge-readiness-and-retrieval)
+- [Teardown](#teardown)
+
+## Teardown
+
+`deploy.py down` uses these supported native operations after explicit approvals:
+
+- [Managed Runtime CLI](https://learn.microsoft.com/en-us/microsoft-365/managed-apps/developer/ms-cli-command-reference#ms-app-delete): `ms app delete --app <recorded-appId> --environment-id <guid> --force --non-interactive`.
+- [PAC](https://learn.microsoft.com/en-us/power-platform/developer/cli/reference/copilot#pac-copilot-delete): `dotnet pac copilot delete --bot <verified-bot-guid> --environment <verified-org-url> --confirm`.
+- Terraform: full saved `plan -destroy`, then `apply <approved-plan>`; no targeting.
+- [Deleted Foundry account](https://learn.microsoft.com/en-us/rest/api/aiservices/accountmanagement/deleted-accounts/get?view=rest-aiservices-accountmanagement-2024-10-01): GET `/subscriptions/{subscription}/providers/Microsoft.CognitiveServices/locations/{location}/resourceGroups/{group}/deletedAccounts/{name}?api-version=2024-10-01`; `az cognitiveservices account purge` uses that same target, then GET must return 404.
+
+The runner preserves only cleanup identifiers from state, not keys or retrieved
+content. App deletion is idempotent; agent deletion and Foundry purge retain
+receipts and require inspection before resubmission. Fabric workspace/data
+retention is [administrator-owned](https://learn.microsoft.com/en-us/fabric/admin/workspace-retention),
+not proof of immediate erasure. Shared user connections and portal credentials
+remain explicit manual cleanup.
 
 ## Authentication and response receipts
 
@@ -52,7 +70,58 @@ Use a separate, private scratch directory per request. Read only the needed resu
 
 Do not blindly retry POSTs after network timeouts: the server may already have accepted the operation. Inspect its receipt/current status first. For `429`, honor `Retry-After`; retry read-only polling transient failures within the phase deadline. Treat unexpected status/error codes as failures, not empty successful responses.
 
+## Native item import (default)
+
+With `fabric_git_enabled = false`, no PAT or Fabric Git connection is needed.
+The runner sends the reviewed, tracked files beneath each `workspace/` item
+folder to:
+
+```http
+POST https://api.fabric.microsoft.com/v1/workspaces/{devWorkspaceId}/items/bulkImportDefinitions?beta=true
+```
+
+```json
+{
+  "definitionParts": [
+    {
+      "path": "/Scenario.Lakehouse/.platform",
+      "payload": "<base64-file-content>",
+      "payloadType": "InlineBase64"
+    }
+  ],
+  "options": {
+    "allowPairingByName": false,
+    "deploymentPlan": {
+      "logicalId": "<Bootstrap-logical-id>",
+      "referenceType": "ByLogicalId"
+    }
+  }
+}
+```
+
+The example shows one part; include every definition part of each missing item,
+including `.platform`, notebook source, lakehouse metadata, TMDL and `plan.yml`.
+Preserve bytes and logical IDs. The delegated user needs `Item.ReadWrite.All`
+and `Item.Execute.All`; do not substitute a service principal for notebook execution.
+
+List current items first and match logical ID, type, name and workspace.
+Refuse collisions, changed recorded definitions and unrecorded existing items.
+Import additions only. Record the operation before polling and validate every
+`importItemDefinitionsDetails` entry: expected identity, `operationType: Create`
+and `operationStatus: Succeeded`. Missing results, `Failed` and
+`SucceededDespiteFailures` block readiness.
+
+Only an explicit `--bootstrap-fallback notebooks` permits retrying a
+`FeatureNotAvailable` plan rejection without the plan. The runner then runs the
+existing seed/bind checks. A timeout or missing receipt is not permission to
+resubmit an import.
+
+References: [Bulk Import](https://learn.microsoft.com/rest/api/fabric/core/items/bulk-import-item-definitions),
+[plan attachment](https://learn.microsoft.com/fabric/cicd/deployment-plan/deployment-plan-automation#import-item-definitions).
+
 ## Git connection and synchronization
+
+This path runs only with `fabric_git_enabled = true` and a repository-scoped PAT.
 
 Use `dev_workspace_id` and `github_connect_request` from Terraform output, not a display-name guess. Resolve the plan logical ID from the **reviewed** `workspace/Bootstrap.DeploymentPlan/.platform`.
 

@@ -68,6 +68,13 @@ variable "fabric_capacity_sku" {
   }
 }
 
+variable "fabric_git_enabled" {
+  description = "Connect DEV to GitHub using a PAT. Defaults to native Fabric item import without Git synchronization."
+  type        = bool
+  default     = false
+  nullable    = false
+}
+
 variable "github_owner" {
   description = "GitHub organization or user that owns the existing repository."
   type        = string
@@ -91,13 +98,13 @@ variable "github_repository_name" {
 }
 
 variable "github_branch_name" {
-  description = "Existing GitHub branch to select during DEV's plan-driven Git bootstrap."
+  description = "Published GitHub branch containing the reviewed DEV definitions."
   type        = string
   default     = "main"
 }
 
 variable "github_directory_name" {
-  description = "Repository directory to select during Git bootstrap, containing Fabric item definitions."
+  description = "Repository directory containing Fabric definitions for opt-in Git synchronization."
   type        = string
   default     = "/workspace"
 
@@ -108,15 +115,15 @@ variable "github_directory_name" {
 }
 
 variable "github_token" {
-  description = "GitHub PAT with repository Contents read/write. Supply through TF_VAR_github_token for plan and apply."
+  description = "GitHub PAT with repository Contents read/write, required only when fabric_git_enabled is true. Supply through TF_VAR_github_token."
   type        = string
+  default     = null
   sensitive   = true
   ephemeral   = true
-  nullable    = false
 
   validation {
-    condition     = length(trimspace(var.github_token)) > 0
-    error_message = "Supply a nonempty GitHub PAT through TF_VAR_github_token."
+    condition     = !var.fabric_git_enabled || try(length(trimspace(var.github_token)) > 0, false)
+    error_message = "When fabric_git_enabled is true, supply a nonempty GitHub PAT through TF_VAR_github_token."
   }
 }
 
@@ -132,7 +139,7 @@ variable "github_token_version" {
 }
 
 variable "knowledge_lakehouse_id" {
-  description = "DEV lakehouse GUID created by Git bootstrap. Leave null for platform setup; set after bootstrap succeeds to enable knowledge sources, the base and MCP connection."
+  description = "DEV lakehouse GUID created by bootstrap. Leave null for platform setup; set after bootstrap succeeds to enable knowledge sources, the base and MCP connection."
   type        = string
   default     = null
 
@@ -141,7 +148,7 @@ variable "knowledge_lakehouse_id" {
       can(regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$", var.knowledge_lakehouse_id)) &&
       var.knowledge_lakehouse_id != "00000000-0000-0000-0000-000000000000"
     )
-    error_message = "knowledge_lakehouse_id must be null or the nonzero GUID of the Git-created DEV lakehouse, not its logical ID or an Azure resource ID."
+    error_message = "knowledge_lakehouse_id must be null or the nonzero GUID of the bootstrapped DEV lakehouse, not its logical ID or an Azure resource ID."
   }
 }
 
@@ -176,19 +183,12 @@ variable "knowledge_ontologies" {
 
   validation {
     condition     = length(var.knowledge_ontologies) == 0 || var.knowledge_lakehouse_id != null
-    error_message = "Register ontologies during knowledge setup, after setting knowledge_lakehouse_id to the Git-created DEV lakehouse GUID."
+    error_message = "Register ontologies during knowledge setup, after setting knowledge_lakehouse_id to the bootstrapped DEV lakehouse GUID."
   }
 }
 
-variable "web_iq_enabled" {
-  description = "Opt in to a billable global Microsoft Web IQ account (G3, preview). Requires a paid, Web IQ-enabled subscription; portal AppID linking and runtime integration remain separate."
-  type        = bool
-  default     = false
-  nullable    = false
-}
-
 variable "web_iq_terms_accepted" {
-  description = "Set true only after explicitly accepting https://www.microsoft.com/en-us/webiq/webiq-legal and paid public-endpoint usage. Does not grant service eligibility or perform portal onboarding."
+  description = "Required for deployment: set true only after explicitly accepting https://www.microsoft.com/en-us/webiq/webiq-legal and paid public-endpoint usage. Does not grant service eligibility or perform portal onboarding."
   type        = bool
   default     = false
   nullable    = false

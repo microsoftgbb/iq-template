@@ -11,7 +11,7 @@ provider "azurerm" {
     "Microsoft.CognitiveServices",
     "Microsoft.Fabric",
     "Microsoft.Search",
-  ], var.web_iq_enabled && var.web_iq_terms_accepted ? ["Microsoft.WebIQ"] : [])
+  ], var.web_iq_terms_accepted ? ["Microsoft.WebIQ"] : [])
 }
 
 provider "fabric" {
