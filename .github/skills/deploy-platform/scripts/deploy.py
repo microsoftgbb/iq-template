@@ -2097,7 +2097,7 @@ def administrator_consent(ctx, *, what, api_name, api_app_id, registration, flag
         lacking = f" (the existing grant lacks {', '.join(grant[1])})" if isinstance(grant, tuple) else ""
         raise Waiting(f"Administrator consent is pending for {what} {client}{lacking}.",
                       f"An administrator opens {link} and selects Grant admin consent for the {len(scopes)} delegated "
-                      f"{api_name} scopes.{scope_note}",
+                      f"{api_name} scope{'' if len(scopes) == 1 else 's'}.{scope_note}",
                       f"If you are that administrator, rerun with {flag}.")
     ctx.log(f"Granting tenant-wide consent for exactly {len(scopes)} declared delegated scopes of {what} "
             f"as the signed-in administrator ({flag}).")

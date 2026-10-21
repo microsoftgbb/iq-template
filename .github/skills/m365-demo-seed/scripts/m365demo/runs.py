@@ -25,7 +25,7 @@ import traceback
 
 from .common import CLI, Blocked, Stop, Usage, Waiting, utc_now
 from . import auth, cleanup, content, demo, pace, pages, proc, receipts, tenant, users, workspace
-from .graph import Graph, odata_string, query
+from .graph import ClaimsWaits, Graph, odata_string, query
 
 RUN_ID = re.compile(r"^\d{8}-\d{6}-(seed|restore|cleanup)-[a-z0-9][a-z0-9-]{0,44}$")
 ACTIVE = ("starting", "signing-in-admin", "waiting-for-sign-in", "resolving-users", "preparing-tenant",
@@ -602,12 +602,13 @@ def cleanup_run(run, info):
     state = tenant.State(run.path("tenant_state.json"), run.id)
     progress, advance = progress_writer(run, len(rows))
     by_upn = {person["upn"]: person for person in people.values()}
+    claims = ClaimsWaits()
 
     def graph_for(upn):
         person = by_upn.get(upn)
         if not person or not person.get("session"):
             raise Stop("no-session", f"{upn} could not sign in, so their items were not deleted.")
-        return Graph(person["session"], log=run.log)
+        return Graph(person["session"], log=run.log, claims=claims)
 
     run.status("preparing-tenant")
     with tenant.prepared(graph, [{"upn": p["upn"], "id": p["id"]} for p in people.values()], state, run.log):
@@ -617,7 +618,7 @@ def cleanup_run(run, info):
         for upn, verdict in sign_in_failures.items():
             run.warn(f"{upn} could not sign in ({verdict['status']}): their items are not deleted. {verdict['hint']}")
         cleaner = cleanup.Cleaner(manifest, by_upn, admin, shared=shared, log=run.log, advance=advance,
-                                  cancelled=run.cancel_requested, graph_for=graph_for)
+                                  cancelled=run.cancel_requested, graph_for=graph_for, claims=claims)
         run.status("cleaning", progress=dict(progress))
         # Recorded before the first deletion: from here on, resuming the seed run would re-create content.
         record_cleanup(target, run.id, create=True, outcome="running", startedAt=utc_now())

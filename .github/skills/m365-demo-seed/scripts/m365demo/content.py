@@ -14,7 +14,7 @@ import urllib.parse
 
 from .common import Stop, utc_now
 from . import office, pace, text, workspace
-from .graph import Graph, GraphError, add_to_group, odata_string, query, segment
+from .graph import ClaimsWaits, Graph, GraphError, add_to_group, odata_string, query, segment
 
 DELIVERY = [0, 3, 5, 8, 12, 20, 30, 45, 60]
 CHAT_PROPAGATION = [0, 2, 5, 10, 20, 30]
@@ -102,7 +102,8 @@ class Seeder:
     def __init__(self, doc, people, admin, manifest, *, run_id, log, advance, cancelled, today=None):
         """people maps a person key to {key, upn, name, id, session (or None when they could not sign in)}."""
         self.doc, self.people, self.admin, self.manifest = doc, people, admin, manifest
-        self.admin_graph = Graph(admin, log=log)
+        self.claims = ClaimsWaits()
+        self.admin_graph = Graph(admin, log=log, claims=self.claims)
         self.run_id, self.log, self._advance, self._cancelled = run_id, log, advance, cancelled
         self.today = today or datetime.now(timezone.utc).date()
         self.links, self.failures, self._drives, self._on_roster = {}, [], set(), set()
@@ -142,7 +143,7 @@ class Seeder:
         person = self.people[key]
         if not person.get("session"):
             raise Stop("no-session", f"{person['upn']} could not sign in, so their content was skipped.")
-        return Graph(person["session"], log=self.log)
+        return Graph(person["session"], log=self.log, claims=self.claims)
 
     def upn(self, key):
         return self.people[key]["upn"]

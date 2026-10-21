@@ -13,9 +13,10 @@ RETRY_STATUSES = frozenset({429, 503, 504})
 # Throttling answers mean the request was not processed; a POST that timed out upstream (504) may have been.
 RETRY_POST = frozenset({429, 503})
 MAX_WAIT = 60
-# Conditional Access changes made for a run reach Teams and Exchange minutes after sign-in honours them. Until
-# then a call can answer a claims challenge; each account waits at most this schedule (about ten minutes) per run.
-CLAIMS_WAITS = (30, 60, 90, 120, 150, 150)
+# Conditional Access changes made for a run reach Teams and Exchange minutes after sign-in honours them (a live
+# run needed about 13 minutes). Until then a call can answer a claims challenge; one run waits at most this
+# schedule (about 22 minutes) in total, shared by all its accounts.
+CLAIMS_WAITS = (30, 60, 90, 120, 150, 180, 180, 180, 180, 180)
 
 
 class GraphError(Blocked):
@@ -36,11 +37,22 @@ class GraphError(Blocked):
         return self.message
 
 
+class ClaimsWaits:
+    """The claims-challenge waits a run has left; share one between all of a run's Graph clients."""
+
+    def __init__(self, schedule=CLAIMS_WAITS):
+        self._left = list(schedule)
+
+    def next(self):
+        return self._left.pop(0) if self._left else None
+
+
 class Graph:
-    def __init__(self, session, *, version="v1.0", sleep=None, attempts=6, log=None):
+    def __init__(self, session, *, version="v1.0", sleep=None, attempts=6, log=None, claims=None):
         self.session, self.version, self._attempts = session, version, attempts
         self._sleep = sleep or pace.sleep
         self._log = log
+        self._claims = claims if claims is not None else ClaimsWaits()
 
     def url(self, path, version=None):
         base = transport.graph_url()
@@ -69,14 +81,13 @@ class Graph:
             if response.status == 401 and claims_challenge(response):
                 # Renewing would not help (and can itself be refused while the change propagates): wait, then retry.
                 # A refused request created nothing, so even a POST is safe to repeat.
-                waited = getattr(self.session, "claims_waits", 0)
-                if waited >= len(CLAIMS_WAITS):
+                wait = self._claims.next()
+                if wait is None:
                     return response
-                self.session.claims_waits = waited + 1
                 if self._log:
-                    self._log(f"Waiting {CLAIMS_WAITS[waited]}s: Conditional Access changes have not reached the "
+                    self._log(f"Waiting {wait}s: Conditional Access changes have not reached the "
                               f"service yet (claims challenge on {method} {path.split('?', 1)[0]}).")
-                self._sleep(CLAIMS_WAITS[waited])
+                self._sleep(wait)
                 continue
             if response.status == 401 and not renewed:
                 renewed = True

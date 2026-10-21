@@ -158,8 +158,8 @@ Anything else stops.
    the file yourself.
 5. **Monitor.** Run `monitor --run ID --wait 600` repeatedly and summarize `step` and
    `progress` briefly. Team channel posts can wait several minutes for Teams to add members,
-   and Teams or Exchange calls up to about ten minutes for the run's Conditional Access
-   changes to reach them (the log says so); that is expected. On `failed`, relay
+   and Teams or Exchange calls up to about twenty minutes in total for the run's Conditional
+   Access changes to reach them (the log says so); that is expected. On `failed`, relay
    `result.message` and `next`; on `interrupted` or `needs-restore`, restore before anything
    else.
 6. **Report honestly.** On `finished`, report `result.outcome`, any `failures` and

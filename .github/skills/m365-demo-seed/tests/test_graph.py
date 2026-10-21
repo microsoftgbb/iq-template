@@ -5,7 +5,7 @@ from fake_tenant import Reply, claims_challenge
 
 from m365demo import auth
 from m365demo.common import Blocked
-from m365demo.graph import CLAIMS_WAITS, Graph, GraphError, quote
+from m365demo.graph import CLAIMS_WAITS, ClaimsWaits, Graph, GraphError, quote
 
 MEGAN = "megan@contoso-demo.example"
 
@@ -104,15 +104,18 @@ class GraphTests(TenantCase):
         self.assertFalse(self.refreshes(), "a renewed token cannot satisfy the challenge, and renewing can be refused")
         self.assertIn("Conditional Access changes have not reached the service yet", logs[0])
 
-    def test_claims_challenges_stop_once_the_account_has_waited_its_share(self):
+    def test_claims_challenges_stop_once_the_run_has_waited_its_share(self):
         self.fake.route("POST", r"^/v1\.0/chats$", lambda request: claims_challenge())
+        run = ClaimsWaits()
         with self.assertRaises(GraphError) as caught:
-            self.graph.post("chats", {})
+            Graph(self.session, sleep=self.sleeps.append, claims=run).post("chats", {})
         self.assertEqual(caught.exception.status, 401)
         self.assertEqual(self.sleeps, list(CLAIMS_WAITS))
+        self.assertGreaterEqual(sum(CLAIMS_WAITS), 20 * 60, "a live run needed about 13 minutes")
+        other = auth.password_sign_in(self.fake.receipt(), MEGAN, "pw")[0]
         with self.assertRaises(GraphError):
-            Graph(self.session, sleep=self.sleeps.append).post("chats", {})
-        self.assertEqual(self.sleeps, list(CLAIMS_WAITS), "the waiting budget belongs to the account, not one client")
+            Graph(other, sleep=self.sleeps.append, claims=run).post("chats", {})
+        self.assertEqual(self.sleeps, list(CLAIMS_WAITS), "the budget belongs to the run, not one account or client")
 
     def test_an_expired_token_is_still_renewed_once(self):
         answers = [Reply(401, {"error": {"code": "InvalidAuthenticationToken", "message": "Lifetime validation failed."}}),

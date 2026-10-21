@@ -100,7 +100,6 @@ class Session:
         self.tenant, self.client, self.account = tenant, client, account
         self.user_id = None
         self.warnings = []
-        self.claims_waits = 0
         self._clock = clock
         self._refresh = None
         self._retry_at = 0
