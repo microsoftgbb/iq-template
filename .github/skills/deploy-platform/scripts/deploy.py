@@ -54,7 +54,7 @@ OK, USAGE, BLOCKED, WAITING, APPROVAL = 0, 1, 2, 3, 4
 PLAN_PHASES = ("identity", "platform", "knowledge", "m365-demo", "destroy")
 DESTRUCTIVE_APPROVALS = ("destroy", "runtime-delete", "purge-foundry")
 APPROVAL_KEYS = PLAN_PHASES + ("agent-create", "agent-connections", "agent-publish", "app-register",
-                             "runtime-delete", "purge-foundry")
+                             "app-connection", "runtime-delete", "purge-foundry")
 
 FABRIC_API = "https://api.fabric.microsoft.com"
 SEARCH_RESOURCE = "https://search.azure.com"
@@ -117,8 +117,9 @@ PAT_STEPS = (
     "Never paste the PAT into chat, files or command arguments.",
 )
 APP_NEXT = (
-    "Before playback, open Power Apps Connections in the app's environment, select New connection -> "
-    "Microsoft Copilot Studio, and sign in as the app user (or verify that user's existing connection is Connected).",
+    "Before playback, every other app user creates and authorizes their own connection in Power Apps "
+    "Connections in the app's environment (New connection -> Microsoft Copilot Studio); the runner checked "
+    "that yours is Connected.",
     "Run `ms app dev` and open the App Player URL it prints.",
     "Select Check connection. Separately, follow the agent's Studio user-connections link to authorize "
     "your own Fabric IQ and Foundry IQ connections when prompted, then check again for the fresh challenge. "
@@ -2618,9 +2619,28 @@ def phase_app(ctx):
                           "Inspect ms.config.json; rerun with --retry-failed after review.")
     receipts.setdefault("registered_at", utc_now())
     ctx.state.save()
-    return ("app registered with the Copilot Studio data source; each user must authorize their own "
-            f"Microsoft Copilot Studio connection at https://make.powerapps.com/environments/{environment}/connections "
-            "before playback, then the agent's IQ connections when prompted. Verify it in the App Player (next steps).")
+    connection = app_connection(ctx, environment)
+    return (f"app registered with the Copilot Studio data source; your Microsoft Copilot Studio connection "
+            f"{connection} is Connected. Every other user authorizes their own at "
+            f"https://make.powerapps.com/environments/{environment}/connections before playback, then the agent's IQ "
+            "connections when prompted. Verify it in the App Player (next steps).")
+
+
+def app_connection(ctx, environment):
+    """Your own Microsoft Copilot Studio connection, which the App Player uses to call the agent as you."""
+    arguments = ("app-connection", "--tenant-id", ctx.target("tenant_id"), "--environment-id", environment)
+    plan = studio_command(ctx, *arguments)
+    if plan.get("action") == "create":
+        approve(ctx, "app-connection", f"Create your Microsoft Copilot Studio connection for the app in environment "
+                                       f"{environment} (you then sign in to it)")
+        plan = studio_command(ctx, *arguments, "--apply")
+    if plan.get("status") != "connected":
+        raise Waiting("Your Microsoft Copilot Studio connection for the app needs your own sign-in.",
+                      f"Open {plan.get('sign_in')} and select Fix connection on the Microsoft Copilot Studio "
+                      "connection.", "Then rerun deploy.py up.")
+    ctx.state.section("app").update(studio_connection=plan["connection"], connection_checked_at=utc_now())
+    ctx.state.save()
+    return plan["connection"]
 
 
 def app_registration(config, environment):
@@ -3010,8 +3030,8 @@ def parse_arguments(argv):
                        help="approve plans and creations in this run (never deletions or replacements)")
     group.add_argument("--approve", action="append", default=[], metavar="KEY[=SHA]",
                        help="approve a saved plan by hash (identity|platform|knowledge|m365-demo|destroy=SHA) or an "
-                            "action (agent-create, agent-connections, agent-publish, app-register, runtime-delete, "
-                            "purge-foundry)")
+                            "action (agent-create, agent-connections, agent-publish, app-register, app-connection, "
+                            "runtime-delete, purge-foundry)")
     group.add_argument("--retry-failed", action="store_true", help="resubmit a reviewed failed or unconfirmed operation")
     group.add_argument("--non-interactive", action="store_true", help="never prompt; stop with exit 3 or 4 instead")
     group.add_argument("--timeout-minutes", type=int, default=30, help="observation window per phase (default 30)")

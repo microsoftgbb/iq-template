@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Render, connect, configure and check the scenario's Copilot Studio agent.
 
-`connections` and `configure` print their intended changes and change nothing
-unless `--apply` is given. Commands use the caller's Azure CLI sign-in and never
-print tokens. PAC CLI commands create, push and publish the agent itself.
+`connections`, `app-connection` and `configure` print their intended changes and
+change nothing unless `--apply` is given. Commands use the caller's Azure CLI
+sign-in and never print tokens. PAC CLI commands create, push and publish the
+agent itself.
 """
 
 import argparse
@@ -25,6 +26,9 @@ POWERAPPS_API = "https://api.powerapps.com/providers/Microsoft.PowerApps/apis"
 POWERAPPS_RESOURCE = "https://service.powerapps.com/"
 FABRIC_IQ = "shared_fabriciqmcpserver"
 FOUNDRY_IQ = "shared_azureaisearchfoundryiq"
+# The app's own connector: the App Player calls the published agent through each user's connection.
+COPILOT_STUDIO = "shared_microsoftcopilotstudio"
+APP_CONNECTION = ("oauthDefault", {})
 REFERENCE_SUFFIX = {
     FABRIC_IQ: "00000000000000000000000000000001",
     FOUNDRY_IQ: "00000000000000000000000000000002",
@@ -290,6 +294,25 @@ def command_connections(args):
     }
 
 
+def command_app_connection(args):
+    environment, connections, create = powerapps(args)
+    parameter_set, values = APP_CONNECTION
+    action, name, status = plan_connection(connections(COPILOT_STUDIO), parameter_set, values)
+    if action == "create" and args.apply:
+        name = create(COPILOT_STUDIO, f"{args.display_name} {COPILOT_STUDIO}", parameter_set, values)
+        action, status = "sign-in", "NotConnected"
+    pending = status != "Connected"
+    return {
+        "status": "connected" if not pending else ("needs-sign-in" if args.apply else "plan"),
+        "connector": COPILOT_STUDIO,
+        "action": action,
+        "connection": name,
+        "connection_status": status,
+        "sign_in": f"https://make.powerapps.com/environments/{environment}/connections" if pending else None,
+        "applied": bool(args.apply),
+    }
+
+
 def command_configure(args):
     schema = schema_name(args.agent_schema)
     query, patch = dataverse(args)
@@ -375,6 +398,8 @@ def main(argv=None):
     render_parser.add_argument("--search-api-version", default=DEFAULT_SEARCH_API_VERSION)
 
     for name, help_text in (("connections", "Find or create the caller's two IQ connections."),
+                            ("app-connection", "Find or create the caller's Microsoft Copilot Studio connection "
+                                               "that the app uses."),
                             ("configure", "Set access, grounding and connection bindings."),
                             ("check", "Read-only readiness check of the published agent."),
                             ("find", "Read-only lookup of the agent by schema name.")):
@@ -386,6 +411,9 @@ def main(argv=None):
             sub.add_argument("--fabric-workspace-id", required=True)
             sub.add_argument("--ontology-id", required=True)
             sub.add_argument("--search-endpoint", required=True)
+        elif name == "app-connection":
+            sub.add_argument("--environment-id", required=True)
+            sub.add_argument("--display-name", default="IQ scenario")
         else:
             sub.add_argument("--dataverse-url", required=True)
             sub.add_argument("--agent-schema", required=True)
@@ -396,7 +424,7 @@ def main(argv=None):
             sub.add_argument("--environment-id", required=True)
         if name == "find":
             sub.add_argument("--environment-id", help="Also prove the Dataverse URL belongs to this environment.")
-        if name in ("connections", "configure"):
+        if name in ("connections", "app-connection", "configure"):
             sub.add_argument("--apply", action="store_true", help="Make the planned changes.")
 
     args = parser.parse_args(argv)
@@ -404,7 +432,8 @@ def main(argv=None):
         if args.command != "render":
             guid(args.tenant_id, "tenant-id")
         handler = {"render": command_render, "connections": command_connections,
-                   "configure": command_configure, "check": command_check, "find": command_find}[args.command]
+                   "app-connection": command_app_connection, "configure": command_configure,
+                   "check": command_check, "find": command_find}[args.command]
         report = handler(args)
     except StudioError as error:
         print(f"Studio agent step blocked: {error}", file=sys.stderr)

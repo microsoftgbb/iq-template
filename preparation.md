@@ -59,10 +59,10 @@
 - [ ] Review and approve the untargeted knowledge Terraform plan.
 - [ ] Sign in to PAC for the selected environment with `dotnet pac auth create --environment "<environment-id>" --deviceCode`.
 - [ ] Sign in to Managed Runtime with `ms auth login --device-code`.
-- [ ] Approve Studio agent creation, IQ connection creation, publication and Managed Runtime app registration when requested.
-- [ ] Open the IQ connection sign-in links and complete **Fix connection** for both Fabric IQ and Foundry IQ.
+- [ ] Approve Studio agent creation, IQ connection creation, publication, Managed Runtime app registration and your app connection when requested.
+- [ ] Open the IQ connection sign-in links and complete **Fix connection** for both Fabric IQ and Foundry IQ, then for your Microsoft Copilot Studio connection when the runner created it.
 - [ ] For each additional user, share both the agent and app, grant read access to the required DEV Fabric items, and assign **Search Index Data Reader** on the deployed Search service.
-- [ ] For each app user, open **Power Apps > selected environment > Connections** and create or reuse their own **Connected Microsoft Copilot Studio** connection.
+- [ ] For each other app user, open **Power Apps > selected environment > Connections** and create or reuse their own **Connected Microsoft Copilot Studio** connection.
 - [ ] Run `ms app dev`, open its App Player URL and select **Check connection**.
 - [ ] For each app user, follow the agent's Studio **user-connections** link and authorize their own Fabric IQ and Foundry IQ connections.
 - [ ] Repeat **Check connection** and confirm the fresh challenge; ask the sample question and confirm **Pump B at North Works**.

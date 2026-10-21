@@ -1494,6 +1494,9 @@ class StateAndCliTests(unittest.TestCase):
 class AgentAndAppTests(unittest.TestCase):
     SCHEMA = "iq_demo_assistant"
     ENVIRONMENT = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+    CONNECTIONS = f"https://make.powerapps.com/environments/{ENVIRONMENT}/connections"
+    APP_CONNECTED = {"status": "connected", "action": "reuse", "connection": "c" * 32,
+                     "connection_status": "Connected", "sign_in": None}
 
     def agent_context(self, root, rules):
         shell = FakeShell([
@@ -1504,6 +1507,7 @@ class AgentAndAppTests(unittest.TestCase):
             (studio("find"), deploy.Result(0, json.dumps({"status": "found", "bot_id": "bot"}))),
             (studio("render"), deploy.Result(0, json.dumps({"status": "rendered"}))),
             *rules,
+            (studio("app-connection"), deploy.Result(0, json.dumps(self.APP_CONNECTED))),
         ])
         ctx = make_context(self, root, shell, environment_id=self.ENVIRONMENT,
                            environment_url="https://org.crm.dynamics.com")
@@ -1727,8 +1731,9 @@ class AgentAndAppTests(unittest.TestCase):
         ctx.state.section("app").update(installed=deploy.sha256_file(root / "package-lock.json"))
         for _ in range(2):
             message = deploy.phase_app(ctx)
-            self.assertIn(f"https://make.powerapps.com/environments/{self.ENVIRONMENT}/connections", message)
-            self.assertIn("each user", message)
+            self.assertIn(self.CONNECTIONS, message)
+            self.assertIn(f"your Microsoft Copilot Studio connection {'c' * 32} is Connected", message)
+            self.assertIn("Every other user", message)
             self.assertIn("when prompted", message)
             self.assertNotIn("app ready", message)
         steps = " ".join(deploy.APP_NEXT)
@@ -1738,7 +1743,57 @@ class AgentAndAppTests(unittest.TestCase):
         self.assertNotIn("ms app deploy", steps)
         self.assertFalse(shell.matching(command("ms", "app", "init")))
         self.assertFalse(shell.matching(command("ms", "app", "add", "data-source")))
+        self.assertFalse(shell.matching(lambda args: "--apply" in args), "a Connected connection is reused")
+        found = shell.matching(studio("app-connection"))[0]
+        self.assertEqual(found[found.index("--environment-id") + 1], self.ENVIRONMENT)
         self.assertIn("registered_at", ctx.state.section("app"))
+        self.assertEqual(ctx.state.section("app")["studio_connection"], "c" * 32)
+
+    def registered_app(self, rules):
+        root = make_root(self)
+        (root / "package-lock.json").write_text("{}", encoding="utf-8")
+        (root / "node_modules").mkdir()
+        (root / "ms.config.json").write_text(json.dumps({
+            "appId": "demo-app", "environmentId": self.ENVIRONMENT,
+            "connectionReferences": {"studio": {"id": "/apis/shared_microsoftcopilotstudio"}}}), encoding="utf-8")
+        status = {"success": True, "signedIn": True, "activeAccount": {"homeAccountId": f"user.{TENANT}"}}
+        ctx, shell = self.agent_context(root, [(command("ms", "auth", "status"), deploy.Result(0, json.dumps(status))),
+                                               *rules])
+        ctx.state.section("app").update(installed=deploy.sha256_file(root / "package-lock.json"))
+        return ctx, shell
+
+    def test_the_app_connection_is_created_only_after_approval_then_waits_for_your_fix(self):
+        plan = {"status": "plan", "action": "create", "connection": None, "connection_status": None,
+                "sign_in": self.CONNECTIONS}
+        created = {"status": "needs-sign-in", "action": "sign-in", "connection": "f" * 32,
+                   "connection_status": "NotConnected", "sign_in": self.CONNECTIONS}
+
+        def app_connection(args, options):
+            return deploy.Result(0, json.dumps(created if "--apply" in args else plan))
+
+        ctx, shell = self.registered_app([(studio("app-connection"), app_connection)])
+        with self.assertRaisesRegex(deploy.NeedsApproval, "Create your Microsoft Copilot Studio connection") as stop:
+            deploy.phase_app(ctx)
+        self.assertIn("--approve app-connection", " ".join(stop.exception.next_steps))
+        self.assertFalse(shell.matching(lambda args: "--apply" in args))
+        ctx.args.approve = {"app-connection": True}
+        with self.assertRaises(deploy.Waiting) as stop:
+            deploy.phase_app(ctx)
+        self.assertIn(self.CONNECTIONS, " ".join(stop.exception.next_steps))
+        self.assertIn("Fix connection", " ".join(stop.exception.next_steps))
+        self.assertEqual(len(shell.matching(lambda args: "--apply" in args)), 1)
+        self.assertNotIn("studio_connection", ctx.state.section("app"))
+        self.assertIn("registered_at", ctx.state.section("app"))
+
+    def test_an_unauthenticated_app_connection_waits_without_creating_another(self):
+        pending = {"status": "plan", "action": "sign-in", "connection": "f" * 32, "connection_status": "NotConnected",
+                   "sign_in": self.CONNECTIONS}
+        ctx, shell = self.registered_app([(studio("app-connection"), deploy.Result(0, json.dumps(pending)))])
+        ctx.args.yes = True
+        with self.assertRaisesRegex(deploy.Waiting, "needs your own sign-in") as stop:
+            deploy.phase_app(ctx)
+        self.assertIn(self.CONNECTIONS, " ".join(stop.exception.next_steps))
+        self.assertFalse(shell.matching(lambda args: "--apply" in args))
 
 
 WORK_IQ_CLIENT = "99999999-9999-4999-8999-999999999999"

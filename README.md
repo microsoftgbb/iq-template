@@ -16,7 +16,7 @@ Set `fabric_git_enabled = true` to opt into Fabric GitHub synchronization.
 - **Search:** service, indexed OneLake source, generated ingestion assets, live ontology source and knowledge base.
 - **Web IQ:** global G3 account; portal AppID/key setup is manual.
 - **Copilot Studio:** published agent, Fabric IQ/Foundry IQ tools and user connections.
-- **Managed Runtime:** app registration and Copilot Studio data source; hosting and sharing are separate.
+- **Managed Runtime:** app registration, Copilot Studio data source and your Copilot Studio connection; hosting and sharing are separate.
 
 ## What is where
 

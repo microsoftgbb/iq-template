@@ -417,7 +417,11 @@ Before playback, each app user can authorize the connection through
 `https://make.powerapps.com/environments/<environment-id>/connections`:
 select **New connection** -> **Microsoft Copilot Studio**, then sign in.
 Use the same tenant, environment and user as the app; reuse an existing matching
-**Connected** connection instead of creating duplicates. Return to the App
+**Connected** connection instead of creating duplicates. The runner's `app`
+phase does this for you, the deploying user, with the Power Apps connections API
+it uses for the IQ connections: it reuses your **Connected** connection or,
+after approval, creates an unauthenticated one for your **Fix connection**. It
+never uses a service principal or a shared credential. Return to the App
 Player and select **Check connection** again. This avoided the loopback
 creation flow in the observed deployment; if the player still requests a
 connection or fails, report the native blocker rather than claiming readiness.

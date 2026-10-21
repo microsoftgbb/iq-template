@@ -179,6 +179,42 @@ class StudioAgentTests(unittest.TestCase):
                                 "--agent-schema", SCHEMA, "--environment-id", WORKSPACE])
         self.assertEqual(code, 2)
         self.assertIn("tenant-id must be a GUID", stderr.getvalue())
+        with contextlib.redirect_stderr(io.StringIO()), mock.patch.object(studio, "powerapps") as powerapps:
+            code = studio.main(["app-connection", "--tenant-id", "not-a-guid", "--environment-id", WORKSPACE])
+        self.assertEqual(code, 2)
+        powerapps.assert_not_called()
+
+    def app_connection(self, existing, *extra):
+        create = mock.Mock(return_value="f" * 32)
+        connections = mock.Mock(return_value=existing)
+        stdout = io.StringIO()
+        with mock.patch.object(studio, "powerapps", return_value=(WORKSPACE, connections, create)), \
+                contextlib.redirect_stdout(stdout):
+            code = studio.main(["app-connection", "--tenant-id", ONTOLOGY, "--environment-id", WORKSPACE, *extra])
+        self.assertEqual(code, 0)
+        connections.assert_called_once_with(studio.COPILOT_STUDIO)
+        return json.loads(stdout.getvalue()), create
+
+    def test_the_app_connection_is_reused_or_signed_in_before_any_creation(self):
+        connected = connection("c" * 32, "oauthDefault", {})
+        pending = connection("e" * 32, "oauthDefault", {}, status="Error")
+        report, create = self.app_connection([pending, connected], "--apply")
+        self.assertEqual((report["status"], report["action"], report["connection"]), ("connected", "reuse", "c" * 32))
+        self.assertIsNone(report["sign_in"])
+        report, create = self.app_connection([pending], "--apply")
+        self.assertEqual((report["status"], report["action"], report["connection"]),
+                         ("needs-sign-in", "sign-in", "e" * 32))
+        self.assertEqual(report["sign_in"], f"https://make.powerapps.com/environments/{WORKSPACE}/connections")
+        create.assert_not_called()
+
+    def test_the_app_connection_is_created_unauthenticated_only_with_apply(self):
+        report, create = self.app_connection([])
+        self.assertEqual((report["status"], report["action"], report["applied"]), ("plan", "create", False))
+        create.assert_not_called()
+        report, create = self.app_connection([], "--apply")
+        create.assert_called_once_with(studio.COPILOT_STUDIO, f"IQ scenario {studio.COPILOT_STUDIO}", "oauthDefault", {})
+        self.assertEqual((report["status"], report["action"], report["connection"], report["connection_status"]),
+                         ("needs-sign-in", "sign-in", "f" * 32, "NotConnected"))
 
 
 if __name__ == "__main__":
