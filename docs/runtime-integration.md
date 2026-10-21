@@ -1,7 +1,9 @@
 # Foundry agents and Managed Runtime
 
 The shell is **Fabric -> Foundry IQ -> agent -> Copilot Managed Runtime app**,
-with Work IQ, Web IQ and additional Fabric capabilities as prescribed opt-ins.
+with Work IQ and additional Fabric capabilities as prescribed opt-ins.
+The platform always deploys a Web IQ account; connecting it to the agent is a
+separate approval and verification gate.
 The template ships it: a standard-harness Copilot Studio agent
 ([`agents/scenario-assistant/`](../agents/scenario-assistant/README.md)) with
 native [Fabric IQ and Foundry IQ tools](#studio-iq-tools), and the Managed
@@ -24,6 +26,42 @@ Use [runtime-integration](../.github/skills/runtime-integration/SKILL.md) for th
 preflight, the remaining evidence and re-validation. An explicitly chosen
 disposable derived project is the right place for live verification, not this
 reusable template.
+
+## Web IQ
+
+Terraform provisions a global `Microsoft.WebIQ/accounts` resource,
+kind `WebIQ.Grounding`, SKU `G3`, API `2026-06-01-preview`, with statistics
+disabled. The service is Microsoft-hosted and multi-tenant at a public HTTPS endpoint,
+without Private Link or VNet integration. The resource group's region does not
+provide regional Web IQ residency. The pinned AzAPI provider lacks its embedded
+schema, so only this resource disables local schema validation; ARM still
+validates requests.
+
+Follow the [manual checklist](../preparation.md#web-iq) for terms,
+portal resource/AppID linking and credentials. Terraform does not complete that
+portal onboarding. The runner's `verify` phase uses `WEB_IQ_API_KEY` for one
+billable, fixed public-only search, without automatic retries. It requires cited
+grounding passages and records result counts and the presence of optional
+freshness metadata, not keys or retrieved content. The operator confirms that
+the credential belongs to the deployed resource; the probe does not establish
+that association or scenario-level freshness/conflict handling. Missing terms
+acceptance blocks deployment; missing account outputs or authenticated-search
+evidence block verification rather than silently skipping Web IQ.
+
+The native MCP endpoint is `https://api.microsoft.ai/v3/mcp`; exposed tools depend
+on the account's allowed services. The shipped Studio agent has no Web IQ tool.
+Adding one requires a separately approved native Studio connection/tool,
+authentication, governance and consuming-app proof. An authoring MCP registration
+or successful REST search is not that integration. Keep existing IQ tools in
+`Invoker` mode and built-in web grounding off; do not add a backend or browser
+credentials to bypass a blocked connection.
+
+Production Entra authentication requires manually binding an approved
+application's client ID to the Web IQ AppID in the portal, then obtaining app-only
+tokens for `https://api.microsoft.ai/.default`; availability can require Microsoft
+enablement. Do not create credentials on the Fabric deployment application or
+reuse its delegated-user token. The runner's probe supports only the explicitly
+supplied API key.
 
 ## Runtime at a glance
 
@@ -326,9 +364,9 @@ and actual service capacity are separate from that quota. A partial provisioning
 failure can leave working resources behind; retain the same state and obtain a
 fresh plan approval before changing regions or replacing anything.
 
-Infrastructure creation and native Git/bootstrap still follow [getting
+Infrastructure creation and native bootstrap still follow [getting
 started](getting-started.md), with one state, reviewed plans, administrator
-consent and an ephemeral repository-scoped Fabric Git PAT. Runtime sign-in is a
+consent and user sign-in. A PAT is needed only for opt-in Fabric Git synchronization. Runtime sign-in is a
 different flow; do not expand the deployment registration into a credential
 broker.
 

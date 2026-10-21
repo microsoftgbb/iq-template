@@ -45,7 +45,7 @@ The binder is intentionally **sample-specific**, not a generic TMDL rewriter. It
 
 ### Review the generated binding
 
-Binding updates the live ontology definition, so the first run can leave it **modified in Fabric source control**. Review and commit the generated partitions, expression and any service-normalized TMDL in the derived DEV repository before promotion. Endpoint IDs are configuration, not credentials. Preserve the binding markers when accepting that export.
+Review the generated partitions, expression and service-normalized TMDL before promotion. With native bootstrap, use Get Definition to inspect or export the live binding; with opt-in Git synchronization, review and commit it through Fabric source control. Endpoint IDs are configuration, not credentials. Preserve the binding markers in any reviewed export.
 
 Native promotion copies those definitions, including their source references. Always attach the plan so `BindScenario` rebinds the target to its **own** lakehouse before it is used. Target-specific binding differences are expected; don't mistake them for unreviewed business-model changes or overwrite them with DEV values.
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-cli_version=0.27.0
+cli_version=0.28.0
 gcm_version=3.0.1
 plugin_ref=d227ee470a8300801505546d643bacf79c12ab36
 
