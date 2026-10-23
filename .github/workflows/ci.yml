@@ -1,6 +1,8 @@
 name: CI
 
 # Static checks only: no cloud sign-in, secrets, plans, deployments or notebook runs.
+# Pull requests from forks run untrusted code: keep the token read-only, add no secrets
+# and never switch to pull_request_target.
 on:
   pull_request:
   push:

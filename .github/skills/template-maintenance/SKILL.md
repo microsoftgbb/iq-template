@@ -70,7 +70,7 @@ into a temporary workspace. Teardown tests must cover exact destroy-plan
 approval, native deletion ordering, target isolation, partial failure/resume and
 retention reporting without cloud calls. Do not run the runner's `up` or `down` command or the helper's
 `connections`, `configure`, `check` or `find` subcommands as a template check;
-the runner refuses the template anyway. When changing a phase, keep it
+the runner refuses the template and its forks anyway. When changing a phase, keep it
 check-then-act, resumable and gated: persist a receipt before polling any
 accepted mutation, and update `docs/development.md`.
 
@@ -79,8 +79,10 @@ repository root. Do not regenerate `generated/` or run `ms app init`/`dev` as a
 template check; they need a chosen environment.
 
 [CI](../../workflows/ci.yml) runs the Terraform, Python, app and shell syntax checks on
-every pull request with a read-only token and no secrets or cloud access. Keep its
-commands in step with this section and its Terraform version with the devcontainer.
+every pull request with a read-only token and no secrets or cloud access. Contributions
+arrive from forks, so keep it that way: never add `pull_request_target`, secrets or write
+permissions. Keep its commands in step with this section and its Terraform version with the
+devcontainer.
 `package-lock.json` must resolve from `https://registry.npmjs.org/`; CI rejects private
 mirror URLs, and `CONTRIBUTING.md` shows how to normalize them.
 

@@ -11,7 +11,7 @@ If the user requested deployment rather than configuration only, let `deploy-pla
 
 ## Resolve the inputs
 
-1. Confirm this is the user's **new derived repository**, not the template or an existing deployment. Inspect Git status and filenames only for existing tfvars/state; do not read secrets or overwrite local configuration. If already configured, stop first-time initialization and ask what needs changing.
+1. Confirm this is the user's **new derived repository**, not the template, a fork of it or an existing deployment. Inspect Git status and filenames only for existing tfvars/state; do not read secrets or overwrite local configuration. If already configured, stop first-time initialization and ask what needs changing.
 2. Resolve the intended GitHub repository, not the template parent or an upstream remote. Use `gh repo view --json nameWithOwner,defaultBranchRef`, specifying `--repo OWNER/REPO` when the checkout/CLI repository selection is ambiguous. Confirm the result only if the user has not already chosen that target. If authentication/discovery fails, ask for the missing `OWNER/REPO` or existing bootstrap branch; never guess.
 3. Use the repository's **published default branch**, unless the user explicitly chooses another published branch. Do not use the current Copilot worktree/feature branch automatically. Verify an explicitly chosen branch on GitHub.
 4. Ask only for missing choices: a stable 3-16 character `project_name`, an explicit Azure region, and the Fabric capacity administrator UPN(s) or service-principal object ID(s). Do not silently truncate a repository name into a project name, infer region/quota, or substitute an application/client ID for an object ID.

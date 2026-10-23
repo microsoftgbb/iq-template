@@ -2,6 +2,11 @@
 
 A starter for independent **Fabric + Foundry IQ** projects: Terraform infrastructure, Git-versioned Fabric items, a Copilot Studio agent with native IQ tools, a Copilot Managed Runtime app that calls it, and guided Copilot deployment. Derived projects add their scenario workflow; they do not redesign this shell.
 
+> [!IMPORTANT]
+> This template is provided as is, without warranty or support, and you use it at your own risk.
+> Deploying it creates billable Azure and Fabric resources, registers Entra applications and uses
+> preview features. Read the [disclaimer](#disclaimer) before you deploy.
+
 Fabric bootstrap uses native APIs by default: **no GitHub PAT required**.
 Set `fabric_git_enabled = true` to opt into Fabric GitHub synchronization.
 
@@ -63,7 +68,7 @@ than redesigning the platform.
 
 ## Get started
 
-1. Select **Use this template** to create your own repository.
+1. Select **Use this template** to create your own repository; it can be private. Don't fork this repository for a project: forks of a public repository are public, and the deployment runner refuses to deploy from them.
 2. Open its **Codespace** for the prepared toolchain, or follow [developer setup](docs/development.md) for a local environment.
 3. Tell Copilot **"Deploy the platform"**. When using Copilot App with Codespaces, name the Codespace to keep deployment in that checkout and state. It finishes with the agent and app running in the App Player. To skip the agent, run the same [deterministic runner](docs/development.md#deploy-deterministically) yourself: `python3 .github/skills/deploy-platform/scripts/deploy.py up`.
 
@@ -121,6 +126,63 @@ still registers Foundry Fabric IQ connections for that route; see
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md), the [code of conduct](CODE_OF_CONDUCT.md) and the
-[security policy](SECURITY.md). Maintainers follow [AGENTS.md](AGENTS.md) and keep
-**Template repository** enabled in GitHub **Settings > General**.
+This project welcomes contributions and suggestions through pull requests from forks; start with
+[CONTRIBUTING.md](CONTRIBUTING.md). Most contributions require you to agree to a Contributor License
+Agreement (CLA) declaring that you have the right to, and actually do, grant us the rights to use
+your contribution. For details, visit [Contributor License Agreements](https://cla.opensource.microsoft.com).
+
+This project has adopted the [Microsoft Open Source Code of Conduct](https://opensource.microsoft.com/codeofconduct/).
+For more information see the [Code of Conduct FAQ](https://opensource.microsoft.com/codeofconduct/faq/) or
+contact [opencode@microsoft.com](mailto:opencode@microsoft.com) with any additional questions or comments.
+Report security issues as described in [SECURITY.md](SECURITY.md); for help, see [SUPPORT.md](SUPPORT.md).
+
+Maintainers follow [AGENTS.md](AGENTS.md) and keep **Template repository** enabled in GitHub
+**Settings > General**.
+
+## Disclaimer
+
+This template is a sample for development and evaluation. It is not supported under any Microsoft
+standard support program or service, and it is provided AS IS without warranty of any kind.
+Microsoft further disclaims all implied warranties including, without limitation, any implied
+warranties of merchantability or of fitness for a particular purpose. The entire risk arising out
+of the use or performance of the template and its documentation remains with you. In no event
+shall Microsoft, its authors, or anyone else involved in the creation, production, or delivery of
+the template be liable for any damages whatsoever (including, without limitation, damages for loss
+of business profits, business interruption, loss of business information, or other pecuniary loss)
+arising out of the use of or inability to use the template or its documentation, even if Microsoft
+has been advised of the possibility of such damages.
+
+You use the template at your own risk. In particular, you are responsible for:
+
+- **Costs:** deployment creates billable Azure and Fabric resources, such as Fabric capacity,
+  Azure AI Search, Foundry models and Web IQ, that can incur charges until you
+  [delete the environment](#delete-the-environment). Check pricing and quota first.
+- **Preview features:** Fabric ontology, deployment plans, Foundry IQ, serverless Search and
+  Web IQ are previews. They are subject to the
+  [Supplemental Terms of Use for Microsoft Azure Previews](https://azure.microsoft.com/support/legal/preview-supplemental-terms/)
+  and their own terms, and may change or stop working without notice.
+- **Your tenant and data:** deployment registers Entra applications, needs administrator consent,
+  assigns roles and processes the data you add. Review every plan and permission before you
+  approve it, and follow your organization's policies and applicable law.
+- **Security and production use:** this is a development baseline with authenticated public
+  endpoints, not a hardened production system. Complete your own security, privacy, compliance
+  and Responsible AI reviews before any production use.
+- **AI output and automation:** AI models and agents, including Copilot, can produce inaccurate or
+  inappropriate output, and Copilot can run deployment commands for you. Check their output and
+  every plan before you approve it.
+- **Third-party components:** the tools, packages, plugins and services that the template
+  installs or calls have their own licenses, terms and privacy statements, and some collect
+  usage data.
+
+## License
+
+This project is licensed under the [MIT License](LICENSE). Third-party icons in the architecture
+diagrams have their own terms; see [docs/diagrams/LICENSE](docs/diagrams/LICENSE).
+
+## Trademarks
+
+This project may contain trademarks or logos for projects, products, or services. Authorized use of Microsoft
+trademarks or logos is subject to and must follow
+[Microsoft's Trademark & Brand Guidelines](https://www.microsoft.com/legal/intellectualproperty/trademarks/usage/general).
+Use of Microsoft trademarks or logos in modified versions of this project must not cause confusion or imply Microsoft sponsorship.
+Any use of third-party trademarks or logos are subject to those third-party's policies.
