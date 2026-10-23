@@ -1,0 +1,26 @@
+name: Feature request
+description: Suggest an improvement to the template.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The template is a fixed platform shell. Scenario-specific workflows belong in derived repositories; see docs/scenario-authoring.md.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What is hard or impossible today, and for whom?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: The change you suggest, including any new inputs, permissions, costs or preview features it needs.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered

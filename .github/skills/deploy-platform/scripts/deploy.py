@@ -944,6 +944,7 @@ def project_repository(ctx):
         raise Blocked("GitHub CLI did not return repository metadata.") from None
     if str(metadata.get("nameWithOwner", "")).lower() != origin.lower():
         raise Blocked("GitHub CLI resolved a different repository than origin.")
+    # Forks inherit isTemplate, so this also refuses forks of the template.
     if metadata.get("isTemplate") is not False:
         raise Blocked("This is the reusable template, not a derived project.",
                       "Create your own repository with Use this template and deploy from it.")

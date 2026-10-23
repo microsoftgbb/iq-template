@@ -17,7 +17,7 @@ Load the matching repository skill before its workflow:
 | Task | Skill |
 | --- | --- |
 | "Deploy the platform" or resume complete DEV setup, agent and app | [deploy-platform](.github/skills/deploy-platform/SKILL.md) |
-| If this agent is running directly on the template, recommend configuring a new repository from this template and do not proceed with infra deployment, unless the user is developing the template itself | [initialize-project](.github/skills/initialize-project/SKILL.md) |
+| If this agent is running directly on the template or a fork of it, recommend configuring a new repository from this template and do not proceed with infra deployment, unless the user is developing the template itself | [initialize-project](.github/skills/initialize-project/SKILL.md) |
 | Change or statically validate the template/toolchain | [template-maintenance](.github/skills/template-maintenance/SKILL.md) |
 | Edit Fabric items, inspect bindings, bootstrap or promote | [fabric-workspace](.github/skills/fabric-workspace/SKILL.md) |
 | Preflight the agent/app route, prove shell readiness or re-validate a blocked route | [runtime-integration](.github/skills/runtime-integration/SKILL.md) |

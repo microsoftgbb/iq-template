@@ -1,6 +1,6 @@
 # Getting started
 
-Use this template for a **new project**, not an existing deployment. Each derived repository gets its own resources and Terraform state.
+Use this template for a **new project**, not an existing deployment. Each derived repository gets its own resources and Terraform state. Create it with **Use this template**, not a fork: forks of this public repository are public and inherit the template setting, so the deployment runner refuses to deploy from them. You use the template at your own risk; read the [disclaimer](../README.md#disclaimer) first.
 
 The default Fabric bootstrap imports definitions through native APIs and needs
 **no GitHub PAT**. Fabric GitHub synchronization is opt-in.
@@ -34,7 +34,7 @@ DEV readiness from the agent/app and later promotion.
 
 ## 1. Create your repository
 
-On GitHub, select **Use this template > Create a new repository**, then open **that repository** in Codespaces or clone it locally. Keep the five item folders under `workspace/`, including their `.platform` logical IDs: these are portable identities, not someone else's deployment bindings. The notebooks resolve physical bindings in each target workspace. Select your new repository's published bootstrap branch and `/workspace` directory; do not select an unpublished Copilot worktree branch. Push any customization to the selected branch before synchronizing Fabric.
+On GitHub, select **Use this template > Create a new repository**, then open **that repository** in Codespaces or clone it locally. Keep the five item folders under `workspace/`, including their `.platform` logical IDs: these are portable identities, not someone else's deployment bindings. The notebooks resolve physical bindings in each target workspace. Select your new repository's published bootstrap branch and `/workspace` directory; do not select an unpublished Copilot worktree branch. Push any customization to the selected branch before synchronizing Fabric. Replace the template's code owners and contribution, conduct, security and support policies with your own, and keep its MIT license notice ([what gets templated](development.md#what-gets-templated)).
 
 ## 2. Configure
 

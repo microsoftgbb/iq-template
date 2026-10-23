@@ -1,0 +1,54 @@
+name: Bug report
+description: Something in the template is broken, wrong or unclear.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Never include credentials, tokens, tfvars, `.env` files, Terraform state, saved plans, or tenant, subscription or physical Fabric IDs. Redact output before pasting it.
+        Report security vulnerabilities privately as described in SECURITY.md, not in an issue.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Deployment runner or teardown
+        - Terraform infrastructure
+        - Fabric items or notebooks
+        - Studio agent
+        - Managed Runtime app
+        - Dev container or tooling
+        - Copilot skills or guidance
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: The command or prompt you ran, the stage or runner phase, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+  - type: input
+    id: commit
+    attributes:
+      label: Template commit
+      description: The template commit your repository was created from or last updated to.
+  - type: dropdown
+    id: environment
+    attributes:
+      label: Environment
+      options:
+        - Codespaces
+        - Local dev container
+        - Local without a dev container
+  - type: textarea
+    id: output
+    attributes:
+      label: Redacted output
+      render: text

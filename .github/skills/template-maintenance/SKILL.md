@@ -46,7 +46,7 @@ terraform validate
 
 If local deployment files exist, make an isolated temporary configuration directory. Copy **only reviewed Terraform source under `infra/` (including local modules, preserving relative paths) and `infra/.terraform.lock.hcl`**, using current working-tree contents. Start from tracked source paths and explicitly include new source files from the current change. Do not copy tfvars, state, overrides, saved plans, `.terraform/`, credentials or logs. Run the same commands there. Do not use `git archive HEAD` to validate uncommitted edits. Clean up only the temporary files you created.
 
-Do not upgrade providers during unrelated maintenance; retain the lock file. An intentional provider update requires updating constraints and reviewing the lock change separately. A static-check failure is not permission to use `plan`, `apply`, `destroy` or a live Fabric operation.
+Do not upgrade providers during unrelated maintenance; retain the lock file. An intentional provider update requires updating constraints and reviewing the lock change separately. Record its checksums for every supported platform with `terraform providers lock -platform=linux_amd64 -platform=linux_arm64 -platform=darwin_amd64 -platform=darwin_arm64 -platform=windows_amd64`; CI and Codespaces run on Linux. A static-check failure is not permission to use `plan`, `apply`, `destroy` or a live Fabric operation.
 
 For changed Python, parse/compile source without executing notebook cells; Fabric supplies NotebookUtils, Spark and Delta. Exercise initializer behavior in a **temporary fixture repository**, not by creating deployment config in this template: valid inputs, a non-main branch, repeated execution, existing tfvars/state, invalid inputs and literal HCL escaping. Check the generated shape and owner-only permissions.
 
@@ -70,13 +70,21 @@ into a temporary workspace. Teardown tests must cover exact destroy-plan
 approval, native deletion ordering, target isolation, partial failure/resume and
 retention reporting without cloud calls. Do not run the runner's `up` or `down` command or the helper's
 `connections`, `configure`, `check` or `find` subcommands as a template check;
-the runner refuses the template anyway. When changing a phase, keep it
+the runner refuses the template and its forks anyway. When changing a phase, keep it
 check-then-act, resumable and gated: persist a receipt before polling any
 accepted mutation, and update `docs/development.md`.
 
 For the app, run `npm ci`, `npm run lint`, `npm run build` and `npm test` from the
 repository root. Do not regenerate `generated/` or run `ms app init`/`dev` as a
 template check; they need a chosen environment.
+
+[CI](../../workflows/ci.yml) runs the Terraform, Python, app and shell syntax checks on
+every pull request with a read-only token and no secrets or cloud access. Contributions
+arrive from forks, so keep it that way: never add `pull_request_target`, secrets or write
+permissions. Keep its commands in step with this section and its Terraform version with the
+devcontainer.
+`package-lock.json` must resolve from `https://registry.npmjs.org/`; CI rejects private
+mirror URLs, and `CONTRIBUTING.md` shows how to normalize them.
 
 For devcontainer changes, validate the configuration against the Dev Container schema and inspect feature options against their published definitions. If Docker is available, build/start an isolated checkout without local credentials/state, run `.devcontainer/check-tools.sh`, then stop/remove only that test container. A container check must not sign in, initialize Terraform, seed or deploy.
 

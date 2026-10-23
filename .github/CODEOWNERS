@@ -1,0 +1,21 @@
+# Template code owners. A derived repository should replace these owners with its own.
+# Owners need write access. Enforce their review with a ruleset on main.
+
+# Agent guidance, skills, CI and repository policy that Copilot and Actions follow.
+/AGENTS.md            @microsoftgbb/iq-gbb
+/.github/             @microsoftgbb/iq-gbb
+
+# Toolchain that runs during dev container builds and tool restore.
+/.devcontainer/       @microsoftgbb/iq-gbb
+/.config/             @microsoftgbb/iq-gbb
+
+# Infrastructure, Fabric items, the Studio agent and generated connector code.
+/infra/               @microsoftgbb/iq-gbb
+/workspace/           @microsoftgbb/iq-gbb
+/agents/              @microsoftgbb/iq-gbb
+/generated/           @microsoftgbb/iq-gbb
+
+# Dependency manifests and the lockfile.
+/package.json         @microsoftgbb/iq-gbb
+/package-lock.json    @microsoftgbb/iq-gbb
+/app/package.json     @microsoftgbb/iq-gbb
