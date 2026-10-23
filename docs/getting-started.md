@@ -1,6 +1,6 @@
 # Getting started
 
-Use this template for a **new project**, not an existing deployment. Each derived repository gets its own resources and Terraform state. Create it with **Use this template**, not a fork: forks of this public repository are public, and the deployment runner refuses to deploy from them. You use the template at your own risk; read the [disclaimer](../README.md#disclaimer) first.
+Use this template for a **new project**, not an existing deployment. Each derived repository gets its own resources and Terraform state. Create it with **Use this template**, not a fork: forks of this public repository are public and inherit the template setting, so the deployment runner refuses to deploy from them. You use the template at your own risk; read the [disclaimer](../README.md#disclaimer) first.
 
 The default Fabric bootstrap imports definitions through native APIs and needs
 **no GitHub PAT**. Fabric GitHub synchronization is opt-in.

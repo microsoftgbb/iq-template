@@ -68,7 +68,7 @@ than redesigning the platform.
 
 ## Get started
 
-1. Select **Use this template** to create your own repository; it can be private. Don't fork this repository for a project: forks of a public repository are public, and the deployment runner refuses to deploy from them.
+1. Select **Use this template** to create your own repository; it can be private. Don't fork this repository for a project: forks of a public repository are public, and they inherit the template setting, so the deployment runner refuses to deploy from them.
 2. Open its **Codespace** for the prepared toolchain, or follow [developer setup](docs/development.md) for a local environment.
 3. Tell Copilot **"Deploy the platform"**. When using Copilot App with Codespaces, name the Codespace to keep deployment in that checkout and state. It finishes with the agent and app running in the App Player. To skip the agent, run the same [deterministic runner](docs/development.md#deploy-deterministically) yourself: `python3 .github/skills/deploy-platform/scripts/deploy.py up`.
 

@@ -247,6 +247,7 @@ def preflight(checkout, repository, subscription, tenant, root, fabric_location,
     metadata = json_command(
         ["gh", "repo", "view", repository, "--json", "nameWithOwner,isTemplate"], checkout
     )
+    # Forks inherit isTemplate, so this also refuses forks of the template.
     if (
         not isinstance(metadata.get("nameWithOwner"), str)
         or metadata["nameWithOwner"].lower() != repository.lower()

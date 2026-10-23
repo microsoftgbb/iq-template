@@ -5,7 +5,8 @@
 This guide covers contributions to the **template itself**, through pull requests from forks.
 To build a project from it, select **Use this template** and follow
 [getting started](docs/getting-started.md) in your new repository. Don't fork it for a project:
-forks of this public repository are public, and the deployment runner refuses to deploy from them.
+forks of this public repository are public and inherit the template setting, so the deployment
+runner refuses to deploy from them.
 
 This project welcomes contributions and suggestions. Most contributions require you to agree to a
 Contributor License Agreement (CLA) declaring that you have the right to, and actually do, grant us
