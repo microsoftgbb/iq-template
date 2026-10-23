@@ -220,6 +220,7 @@ The shipped workspace has **no physical workspace/lakehouse/ontology IDs, SQL ho
 | `Scenario` / `ScenarioOntology`, `dbo` and demo table names | Portable workspace-local names; no project-name substitution is required. Coordinate any deliberate rename using the workspace skill. |
 | Physical workspace/item GUIDs, OneLake URLs and SQL endpoint binding | The notebooks discover these in the **current Fabric workspace** when the explicitly attached Bootstrap plan runs. |
 | Terraform knowledge item IDs | After successful DEV bootstrap, put the actual physical GUIDs into the same local tfvars file. Never use `.platform` IDs. |
+| `.github/CODEOWNERS`, `CONTRIBUTING.md`, `SECURITY.md` | Template-owned. Replace them with your project's owners, contribution guide and security policy. CI (`.github/workflows/ci.yml`) and Dependabot work unchanged. |
 
 For a non-Copilot setup, run the [initializer](../.github/skills/initialize-project/scripts/initialize_project.py) directly with `--help`, or follow the manual configuration in [getting started](getting-started.md). The helper uses Python's standard library and Git, offers `--dry-run`, creates the local file with owner-only permissions, and refuses existing tfvars/state. It never rewrites workspace definitions or changes Git remotes.
 

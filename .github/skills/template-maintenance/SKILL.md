@@ -78,6 +78,12 @@ For the app, run `npm ci`, `npm run lint`, `npm run build` and `npm test` from t
 repository root. Do not regenerate `generated/` or run `ms app init`/`dev` as a
 template check; they need a chosen environment.
 
+[CI](../../workflows/ci.yml) runs the Terraform, Python, app and shell syntax checks on
+every pull request with a read-only token and no secrets or cloud access. Keep its
+commands in step with this section and its Terraform version with the devcontainer.
+`package-lock.json` must resolve from `https://registry.npmjs.org/`; CI rejects private
+mirror URLs, and `CONTRIBUTING.md` shows how to normalize them.
+
 For devcontainer changes, validate the configuration against the Dev Container schema and inspect feature options against their published definitions. If Docker is available, build/start an isolated checkout without local credentials/state, run `.devcontainer/check-tools.sh`, then stop/remove only that test container. A container check must not sign in, initialize Terraform, seed or deploy.
 
 For official IQ plugin updates, inspect each pinned marketplace's actual plugin

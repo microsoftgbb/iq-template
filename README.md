@@ -119,4 +119,8 @@ Agent Service connector currently fails in Managed Runtime. The knowledge stage
 still registers Foundry Fabric IQ connections for that route; see
 [routes to re-validate](docs/runtime-integration.md#routes-to-re-validate).
 
-**Template maintainers:** follow [AGENTS.md](AGENTS.md) and enable **Template repository** in GitHub **Settings > General**.
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md), the [code of conduct](CODE_OF_CONDUCT.md) and the
+[security policy](SECURITY.md). Maintainers follow [AGENTS.md](AGENTS.md) and keep
+**Template repository** enabled in GitHub **Settings > General**.

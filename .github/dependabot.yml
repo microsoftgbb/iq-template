@@ -1,0 +1,34 @@
+version: 2
+
+# Terraform providers and the dev container's Copilot, Managed Runtime CLI and plugin pins
+# are updated deliberately, not here; see AGENTS.md and the template-maintenance skill.
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # Keep the Managed Runtime SDK and Vite plugin together and in step with the CLI
+      # pinned in .devcontainer/features/managed-runtime/install.sh.
+      managed-runtime:
+        patterns:
+          - "@microsoft/managed-apps*"
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+
+  - package-ecosystem: devcontainers
+    directory: /
+    schedule:
+      interval: weekly
