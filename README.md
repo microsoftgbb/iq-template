@@ -70,9 +70,9 @@ than redesigning the platform.
 
 1. Select **Use this template** to create your own repository; it can be private. Don't fork this repository for a project: forks of a public repository are public, and they inherit the template setting, so the deployment runner refuses to deploy from them.
 2. Open its **Codespace** for the prepared toolchain, or follow [developer setup](docs/development.md) for a local environment.
-3. Tell Copilot **"Deploy the platform"**. When using Copilot App with Codespaces, name the Codespace to keep deployment in that checkout and state. It finishes with the agent and app running in the App Player. To skip the agent, run the same [deterministic runner](docs/development.md#deploy-deterministically) yourself: `python3 .github/skills/deploy-platform/scripts/deploy.py up`.
+3. Tell Copilot **"Deploy the platform"**. When using Copilot App with Codespaces, name the Codespace to keep deployment in that checkout and state. It finishes with the agent and app running in the App Player. To deploy without Copilot, run the same [deterministic runner](docs/development.md#deploy-deterministically) yourself: `python3 .github/skills/deploy-platform/scripts/deploy.py up`. It stops to ask for any missing choice, such as the subscription or Power Platform environment.
 
-Review [prerequisites and manual steps](docs/getting-started.md) before deploying. You choose the target, sign in, arrange administrator consent and approve the plans. For **configuration only**, use **/initialize-project**.
+Review [prerequisites and manual steps](docs/getting-started.md) before deploying. You choose the target, complete every sign-in once at the start and approve the plans. The runner assumes you are an administrator, grants consent as you, and names a specific grant only if an API refuses. For **configuration only**, use **/initialize-project**.
 
 Use one explicit region by default. Check Fabric CU quota first; the default
 serverless Search tier is offered in fewer regions than dedicated tiers, which

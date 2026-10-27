@@ -12,9 +12,9 @@ The diagram's Git-sync step is opt-in; the default uses native Fabric import wit
 
 | Step | Stage | Required gate or result |
 | --- | --- | --- |
-| 1 | Create and configure | Use a **derived repository** and published bootstrap branch. Choose the target, execution host and secured backend; configure one local tfvars file and sign in. No PAT is needed unless `fabric_git_enabled = true`. |
+| 1 | Create and configure | Use a **derived repository** and published bootstrap branch. Choose the target, execution host, secured backend and Power Platform environment; configure one local tfvars file and complete every CLI sign-in up front. No PAT is needed unless `fabric_git_enabled = true`. |
 | 2 | Prepare deployment identity | Review and approve the saved **Entra-only** plan. This initial bootstrap is the only plan allowed to target `module.fabric_user_auth`. Registration alone is not consent or Fabric readiness. |
-| 3 | Consent and sign in | An administrator grants consent. The user signs in with the generated scope; verify the delegated scopes and actual Fabric roles. Terraform does not grant consent. |
+| 3 | Consent and sign in | Consent covers exactly the declared delegated scopes. The runner grants it as you, assuming you are an administrator; another administrator grants it only if Entra refuses. The deployment-scope token is acquired silently where possible; verify the delegated scopes and actual Fabric roles. Terraform does not grant consent. |
 | 4 | Provision the platform | Review and approve the saved **full, untargeted** plan. It creates capacity, empty DEV/TEST workspaces, deployment pipeline, Foundry/models, Search and Web IQ; the Git connection is opt-in. Search's system identity is enabled after creation and granted by the knowledge plan. Bootstrap and knowledge setup are still pending. |
 | 5 | Import DEV and run Bootstrap | Import the reviewed definitions through native Fabric APIs with `Bootstrap` attached. Git sync is the opt-in alternative. Include all five starter items and wait for the operation and notebook actions. |
 | 6 | Check bindings and discover IDs | Confirm files, tables, target-local binding and a data-backed Fabric query. Discover the physical DEV lakehouse and ontology GUIDs, not `.platform` logical IDs. Review generated bindings before promotion; commit through source control when Git is enabled. |
@@ -25,7 +25,7 @@ The diagram's Git-sync step is opt-in; the default uses native Fabric import wit
 
 The three highlighted approvals in the diagram are **Terraform plan approvals**, not a replacement for administrator consent, user sign-in or review of incoming Git changes. Every phase uses the same execution host, checkout, tfvars file and state/backend.
 
-The [deterministic runner](development.md#deploy-deterministically) executes these stages as phases `config` through `app` with the same gates: it approves each saved plan by its hash, stops for consent, sign-ins and connector OAuth, and resumes from live state when rerun. Both bootstrap paths deploy only additions from the reviewed, published `workspace/` revision.
+The [deterministic runner](development.md#deploy-deterministically) executes these stages as phases `signin` through `app` with the same gates: it completes every sign-in first, approves each saved plan by its hash, names the exact grant when an API refuses for lack of permission, stops for connector OAuth, and resumes from live state when rerun. Both bootstrap paths deploy only additions from the reviewed, published `workspace/` revision.
 
 ## What Bootstrap does
 
