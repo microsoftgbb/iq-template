@@ -5,6 +5,7 @@ Read this after choosing the derived repository, execution host and delegated us
 ## Contents
 
 - [Authentication and response receipts](#authentication-and-response-receipts)
+- [Tenant-wide consent](#tenant-wide-consent)
 - [Native item import (default)](#native-item-import-default)
 - [Git connection and synchronization](#git-connection-and-synchronization)
 - [Operation and notebook completion](#operation-and-notebook-completion)
@@ -69,6 +70,28 @@ unset token
 Use a separate, private scratch directory per request. Read only the needed result/error fields, retain non-secret operation/job IDs in session artifacts, and clean up the response files when no longer needed. Do not print entire headers, tokens, claims or provider debug logs. Do not follow redirects or send authorization to a `Location`/continuation URL without verifying the expected Fabric origin and target path.
 
 Do not blindly retry POSTs after network timeouts: the server may already have accepted the operation. Inspect its receipt/current status first. For `429`, honor `Retry-After`; retry read-only polling transient failures within the phase deadline. Treat unexpected status/error codes as failures, not empty successful responses.
+
+## Tenant-wide consent
+
+The `consent` phase uses the signed-in user's Azure CLI Microsoft Graph token.
+It reads `GET https://graph.microsoft.com/v1.0/servicePrincipals/{client-sp-object-id}/oauth2PermissionGrants`
+and keeps only `consentType: AllPrincipals` grants whose `resourceId` is the
+tenant's Power BI Service principal. Assuming the user is an administrator, it
+then [creates](https://learn.microsoft.com/en-us/graph/api/oauth2permissiongrant-post?view=graph-rest-1.0)
+a missing grant with `POST /v1.0/oauth2PermissionGrants` and
+`{"clientId", "consentType": "AllPrincipals", "resourceId", "scope"}`, where
+`scope` is exactly the space-separated `delegated_scopes` output. A partial
+grant is [updated](https://learn.microsoft.com/en-us/graph/api/oauth2permissiongrant-update?view=graph-rest-1.0)
+with `PATCH /v1.0/oauth2PermissionGrants/{id}`: Graph replaces `scope`, so it
+keeps every existing value and adds only the missing declared scopes. It reads
+the grant back before continuing.
+
+HTTP `401`/`403` on the write means the user lacks a role that can grant
+tenant-wide consent; the runner hands over the registration's
+`api_permissions_url` for an administrator instead of retrying. With
+`--manual-grants` it never writes. If the read itself is refused, the user can
+neither grant nor verify consent, so only `--consent-confirmed` after an
+administrator's confirmation continues.
 
 ## Native item import (default)
 

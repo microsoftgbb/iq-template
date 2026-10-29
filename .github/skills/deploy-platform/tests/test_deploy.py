@@ -342,6 +342,31 @@ class PlanTests(unittest.TestCase):
         self.assertIn("-target=module.fabric_user_auth", shell.matching(terraform("plan"))[0])
         self.assertFalse(shell.matching(terraform("apply")))
 
+    def test_the_identity_approval_discloses_the_consent_granted_next(self):
+        changes = [("module.fabric_user_auth.azuread_application.fabric", ["create"])]
+        for manual, disclosed in ((False, True), (True, False)):
+            ctx = make_context(self, make_root(self), FakeShell(plan_rules(changes)), manual_grants=manual)
+            ctx.initialized = True
+            with self.assertRaises(deploy.NeedsApproval) as stop:
+                deploy.phase_identity(ctx)
+            self.assertEqual("tenant-wide as you" in stop.exception.approval["description"], disclosed)
+
+    def test_a_failed_apply_hands_its_output_to_the_refusal_mapping(self):
+        denied = ("│ Error: creating Resource Group \"rg-demo\"\n│ Status=403 Code=\"AuthorizationFailed\" Message=\"The "
+                  "client 'u' with object id 'o' does not have authorization to perform action "
+                  "'Microsoft.Resources/subscriptions/resourcegroups/write' over scope '/subscriptions/s'\"")
+        rules = [(terraform("apply"), deploy.Result(1, denied)), *plan_rules([("azurerm_resource_group.main", ["create"])])]
+        ctx = make_context(self, make_root(self), FakeShell(rules), yes=True)
+        with self.assertRaises(deploy.Blocked) as stop:
+            deploy.converge(ctx, "platform")
+        self.assertIn("AuthorizationFailed", stop.exception.detail)
+        self.assertNotIn("AuthorizationFailed", stop.exception.message)
+        self.assertFalse([step for step in stop.exception.next_steps if "scoped sign-in" in step],
+                         "an Azure RBAC refusal is not a Fabric sign-in problem")
+        grants = deploy.as_missing_permission(ctx, "platform", stop.exception).grants
+        self.assertEqual(len(grants), 1)
+        self.assertIn("Contributor (or Owner)", grants[0])
+
     def test_no_changes_leaves_nothing_behind(self):
         root = make_root(self)
         ctx = make_context(self, root, FakeShell(plan_rules([], plan_code=0)))
@@ -442,6 +467,24 @@ class TeardownTests(unittest.TestCase):
             with self.subTest(identity=identity), mock.patch.object(deploy.runtime, "check_environment"), \
                     self.assertRaises(deploy.Blocked):
                 deploy.teardown_snapshot(ctx)
+
+    def test_an_identity_only_deployment_tears_down_without_agent_outputs(self):
+        # The environment is chosen before sign-in, so it alone must not demand agent outputs.
+        ctx = self.context()
+        state = {"values": {"root_module": {"child_modules": [{"resources": [
+            {"address": "module.fabric_user_auth.azuread_application.fabric", "mode": "managed",
+             "values": {"id": "/applications/app-object"}}]}]},
+            "outputs": {"fabric_user_auth_scope": {"value": "api://client/.default"}}}}
+        ctx.shell = FakeShell(self.state_rules(state))
+        with mock.patch.object(deploy.runtime, "check_environment"):
+            snapshot = deploy.teardown_snapshot(ctx)
+        self.assertIsNone(snapshot["agent_schema"])
+        ctx = self.context()
+        ctx.state.section("phases")["agent"] = {"status": "approval"}
+        ctx.shell = FakeShell(self.state_rules(state))
+        with mock.patch.object(deploy.runtime, "check_environment"), \
+                self.assertRaisesRegex(deploy.Blocked, "agent schema is missing"):
+            deploy.teardown_snapshot(ctx)
 
     def test_wrong_user_or_app_environment_blocks_before_any_delete(self):
         ctx = self.context()
@@ -1136,7 +1179,7 @@ class SearchTests(unittest.TestCase):
                                                                "search_sku": "basic"}),
                          "Search basic offered in westeurope")
 
-    def test_the_serverless_feature_is_registered_only_with_its_explicit_flag(self):
+    def test_the_serverless_feature_is_registered_as_you_once_per_subscription(self):
         feature = {"state": "NotRegistered"}
 
         def register(args, options):
@@ -1149,21 +1192,40 @@ class SearchTests(unittest.TestCase):
                  (command("az", "feature", "register"), register),
                  (command("az", "provider", "register"), deploy.Result(0))]
         values = {"location": "centralus", "search_location": None, "search_sku": "serverless"}
-        ctx = self.search_context(FakeHttp(), rules)
-        with self.assertRaisesRegex(deploy.Waiting, "Microsoft.Search/Serverless preview feature"):
+        ctx = self.search_context(FakeHttp(), rules, manual_grants=True)
+        with self.assertRaises(deploy.Waiting) as stop:
             deploy.check_search_tier(ctx, "sub", values)
+        self.assertIn("az feature register --namespace Microsoft.Search --name Serverless",
+                      " ".join(stop.exception.next_steps))
         self.assertFalse(ctx.shell.matching(command("az", "feature", "register")))
-        ctx = self.search_context(FakeHttp(), rules, register_search_serverless=True)
+        ctx = self.search_context(FakeHttp(), rules)
         self.assertIn("Microsoft.Search re-registered", deploy.check_search_tier(ctx, "sub", values))
         self.assertEqual(len(ctx.shell.matching(command("az", "feature", "register"))), 1)
         self.assertIn("--wait", ctx.shell.matching(command("az", "provider", "register"))[0])
-        # An interrupted earlier run left the feature registered: the flag still completes the provider step.
-        ctx = self.search_context(FakeHttp(), rules, register_search_serverless=True)
+        # The receipt keeps later runs from changing the subscription again.
+        self.assertTrue(deploy.check_search_tier(ctx, "sub", values).endswith("Microsoft.Search/Serverless registered"))
+        self.assertEqual(len(ctx.shell.matching(command("az", "provider", "register"))), 1)
+        # Registered by someone else (or an interrupted run): the provider is re-registered once to propagate it.
+        ctx = self.search_context(FakeHttp(), rules)
         self.assertIn("Microsoft.Search re-registered", deploy.check_search_tier(ctx, "sub", values))
         self.assertFalse(ctx.shell.matching(command("az", "feature", "register")))
-        self.assertEqual(len(ctx.shell.matching(command("az", "provider", "register"))), 1)
-        ctx = self.search_context(FakeHttp(), rules)
+        ctx = self.search_context(FakeHttp(), rules, manual_grants=True)
         self.assertTrue(deploy.check_search_tier(ctx, "sub", values).endswith("Microsoft.Search/Serverless registered"))
+        self.assertFalse(ctx.shell.matching(command("az", "provider", "register")))
+
+    def test_a_refused_feature_registration_names_the_owner_grant(self):
+        denied = ("(AuthorizationFailed) The client 'user@example.com' with object id 'o' does not have authorization "
+                  "to perform action 'Microsoft.Features/providers/Microsoft.Search/features/register/action' over "
+                  "scope '/subscriptions/sub' or the scope is invalid.")
+        rules = [(az_rest("features/Serverless"), deploy.Result(0, json.dumps({"properties": {"state": "NotRegistered"}}))),
+                 (command("az", "feature", "register"), deploy.Result(1, "", denied))]
+        ctx = self.search_context(FakeHttp(), rules)
+        with self.assertRaises(deploy.Blocked) as stop:
+            deploy.serverless_feature(ctx, "sub")
+        grants = deploy.permission_grants(ctx, "preflight", stop.exception.message)
+        self.assertEqual(len(grants), 1)
+        self.assertIn("registers the required resource providers and preview features", grants[0])
+        self.assertIn("az provider register --namespace Microsoft.Search --wait", " ".join(stop.exception.next_steps))
         self.assertFalse(ctx.shell.matching(command("az", "provider", "register")))
 
 
@@ -1173,54 +1235,369 @@ class ConsentTests(unittest.TestCase):
             "login_scope": "api://bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/.default",
             "api_permissions_url": "https://portal.azure.com/#approve",
             "delegated_scopes": ["Capacity.ReadWrite.All", "Item.Execute.All", "Workspace.ReadWrite.All"]}
+    RESOURCE = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+    GRANTED = {"consentType": "AllPrincipals", "resourceId": RESOURCE,
+               "scope": "Capacity.ReadWrite.All Item.Execute.All Workspace.ReadWrite.All"}
 
     def consent_context(self, http, shell_rules=(), **overrides):
         root = make_root(self)
         shell = FakeShell([*shell_rules, TOKEN_RULE,
-                           (command("az", "ad", "sp", "show"), deploy.Result(0, json.dumps({"id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd"})))])
+                           (command("az", "ad", "sp", "show"), deploy.Result(0, json.dumps({"id": self.RESOURCE})))])
         ctx = make_context(self, root, shell, http, **overrides)
         ctx.cache["outputs"] = {"fabric_user_auth": self.AUTH}
         ctx.state.section("target").update(tenant_id=TENANT, subscription_id="sub", user_object_id="user")
         return ctx, shell
 
-    def test_missing_consent_waits_for_an_administrator(self):
-        http = FakeHttp()
-        http.add("GET", r"oauth2PermissionGrants$", reply(body={"value": []}))
-        ctx, shell = self.consent_context(http)
-        with self.assertRaises(deploy.Waiting) as stop:
-            deploy.phase_consent(ctx)
-        steps = " ".join(stop.exception.next_steps)
-        self.assertIn("https://portal.azure.com/#approve", steps)
-        self.assertIn("--grant-admin-consent", steps)
-        self.assertFalse(shell.matching(command("az", "ad", "app", "permission")))
-
-    def test_an_administrator_grants_exactly_the_declared_scopes(self):
-        http = FakeHttp()
-        granted = {"consentType": "AllPrincipals", "resourceId": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
-                   "scope": " ".join(self.AUTH["delegated_scopes"])}
-        http.add("GET", r"oauth2PermissionGrants$", reply(body={"value": []}), reply(body={"value": [granted]}))
+    @staticmethod
+    def fabric_reads(http):
         for path in ("workspaces", "capacities", "connections"):
             http.add("GET", rf"/v1/{path}$", reply(body={"value": []}))
-        grant = (command("az", "ad", "app", "permission", "grant"), deploy.Result(0))
-        ctx, shell = self.consent_context(http, [grant], grant_admin_consent=True)
+
+    def test_missing_consent_is_granted_as_you_for_exactly_the_declared_scopes(self):
+        http = FakeHttp()
+        http.add("GET", r"oauth2PermissionGrants$", reply(body={"value": []}), reply(body={"value": [self.GRANTED]}))
+        http.add("POST", r"/v1\.0/oauth2PermissionGrants$", reply(201, self.GRANTED))
+        self.fabric_reads(http)
+        ctx, shell = self.consent_context(http)
+        self.assertIn("by you just now", deploy.phase_consent(ctx))
+        (_, body), = http.posts(r"oauth2PermissionGrants$")
+        self.assertEqual(body, {"clientId": self.AUTH["service_principal_object_id"], "consentType": "AllPrincipals",
+                                "resourceId": self.RESOURCE, "scope": self.GRANTED["scope"]})
+        self.assertFalse(shell.matching(command("az", "ad", "app", "permission")))
+        receipt = ctx.state.section("consent")
+        self.assertEqual(receipt["login_scope"], self.AUTH["login_scope"])
+        self.assertIn("granted_at", receipt)
+        self.assertIn("verified_at", receipt)
+
+    def test_a_refused_grant_hands_over_the_administrator_link(self):
+        http = FakeHttp()
+        http.add("GET", r"oauth2PermissionGrants$", reply(body={"value": []}))
+        http.add("POST", r"/v1\.0/oauth2PermissionGrants$", reply(403, {"error": {
+            "code": "Authorization_RequestDenied", "message": "Insufficient privileges to complete the operation."}}))
+        ctx, _ = self.consent_context(http)
+        with self.assertRaises(deploy.MissingPermission) as stop:
+            deploy.phase_consent(ctx)
+        self.assertEqual(stop.exception.code, deploy.WAITING)
+        self.assertIn("Authorization_RequestDenied", stop.exception.message)
+        self.assertIn("https://portal.azure.com/#approve", " ".join(stop.exception.grants))
+        self.assertEqual(stop.exception.next_steps[0], stop.exception.grants[0])
+        self.assertFalse([call for call in http.calls if "/v1/workspaces" in call[1]])
+
+    def test_a_partial_grant_gains_only_the_missing_declared_scopes(self):
+        http = FakeHttp()
+        partial = {"id": "grant/1", "consentType": "AllPrincipals", "resourceId": self.RESOURCE,
+                   "scope": "Capacity.ReadWrite.All Other.Scope"}
+        complete = dict(partial, scope="Capacity.ReadWrite.All Item.Execute.All Other.Scope Workspace.ReadWrite.All")
+        http.add("GET", r"oauth2PermissionGrants$", reply(body={"value": [partial]}), reply(body={"value": [complete]}))
+        http.add("PATCH", r"/v1\.0/oauth2PermissionGrants/grant%2F1$", reply(204))
+        self.fabric_reads(http)
+        ctx, _ = self.consent_context(http)
         deploy.phase_consent(ctx)
-        call, = shell.matching(command("az", "ad", "app", "permission", "grant"))
-        self.assertEqual(call[call.index("--scope") + 1], "Capacity.ReadWrite.All Item.Execute.All Workspace.ReadWrite.All")
-        self.assertEqual(call[call.index("--consent-type") + 1], "AllPrincipals")
-        self.assertEqual(call[call.index("--api") + 1], deploy.POWER_BI_APP_ID)
+        (_, _, body, _), = [call for call in http.calls if call[0] == "PATCH"]
+        self.assertEqual(body, {"scope": complete["scope"]})
+        self.assertFalse(http.posts(r"oauth2PermissionGrants"))
+
+    def test_manual_grants_leave_consent_to_an_administrator(self):
+        http = FakeHttp()
+        http.add("GET", r"oauth2PermissionGrants$", reply(body={"value": []}))
+        ctx, _ = self.consent_context(http, manual_grants=True)
+        with self.assertRaises(deploy.Waiting) as stop:
+            deploy.phase_consent(ctx)
+        self.assertIn("https://portal.azure.com/#approve", " ".join(stop.exception.next_steps))
+        self.assertEqual([call[0] for call in http.calls], ["GET"])
 
     def test_unreadable_grants_wait_for_an_explicit_confirmation(self):
         http = FakeHttp()
         http.add("GET", r"oauth2PermissionGrants$", reply(403, {"error": {"code": "Authorization_RequestDenied"}}))
-        for path in ("workspaces", "capacities", "connections"):
-            http.add("GET", rf"/v1/{path}$", reply(body={"value": []}))
+        self.fabric_reads(http)
         ctx, _ = self.consent_context(http)
-        with self.assertRaises(deploy.Waiting) as stop:
+        with self.assertRaises(deploy.MissingPermission) as stop:
             deploy.phase_consent(ctx)
         self.assertIn("--consent-confirmed", " ".join(stop.exception.next_steps))
+        self.assertIn("https://portal.azure.com/#approve", " ".join(stop.exception.grants))
+        self.assertFalse(http.posts(r"oauth2PermissionGrants"))
         self.assertFalse([call for call in http.calls if "/v1/workspaces" in call[1]])
         ctx.args.consent_confirmed = True
-        self.assertIn("consent granted", deploy.phase_consent(ctx))
+        self.assertIn("confirmed by an administrator", deploy.phase_consent(ctx))
+
+    def test_only_a_fresh_grant_is_given_time_to_reach_fabric(self):
+        http = FakeHttp()
+        http.add("GET", r"oauth2PermissionGrants$", reply(body={"value": []}), reply(body={"value": [self.GRANTED]}))
+        http.add("POST", r"/v1\.0/oauth2PermissionGrants$", reply(201, self.GRANTED))
+        http.add("GET", r"/v1/workspaces$", reply(403), reply(403), reply(body={"value": []}))
+        http.add("GET", r"/v1/capacities$", reply(body={"value": []}))
+        ctx, _ = self.consent_context(http)
+        deploy.phase_consent(ctx)
+        self.assertEqual(len([call for call in http.calls if call[1].endswith("/v1/workspaces")]), 3)
+        http = FakeHttp()
+        http.add("GET", r"oauth2PermissionGrants$", reply(body={"value": [self.GRANTED]}))
+        http.add("GET", r"/v1/workspaces$", reply(403))
+        ctx, _ = self.consent_context(http)
+        with self.assertRaisesRegex(deploy.Waiting, "Fabric refused /v1/workspaces"):
+            deploy.phase_consent(ctx)
+        self.assertEqual(len([call for call in http.calls if call[1].endswith("/v1/workspaces")]), 1)
+
+
+ACCOUNT = {"id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "tenantId": TENANT, "user": {"type": "user"}}
+MS_STATUS = {"success": True, "signedIn": True, "activeAccount": {"homeAccountId": f"user.{TENANT}"}}
+REPOSITORY_RULES = [
+    (command("gh", "auth", "status"), deploy.Result(0)),
+    (command("git", "remote", "get-url", "origin"), deploy.Result(0, "https://github.com/example/demo-repo.git\n")),
+    (command("gh", "repo", "view"), deploy.Result(0, json.dumps({"nameWithOwner": "example/demo-repo",
+                                                                 "isTemplate": False}))),
+    (command("dotnet", "tool", "restore"), deploy.Result(0)),
+]
+SIGNED_IN = [
+    (command("az", "account", "show"), deploy.Result(0, json.dumps(ACCOUNT))),
+    TOKEN_RULE,
+    (command("dotnet", "pac", "env", "who"), deploy.Result(0, "Org URL: https://org.crm.dynamics.com/\n")),
+    (command("ms", "auth", "status"), deploy.Result(0, json.dumps(MS_STATUS))),
+]
+
+
+def signing_in(args):
+    return args[:2] == ["az", "login"] or args[:4] == ["dotnet", "pac", "auth", "create"] or args[1:3] == ["auth", "login"]
+
+
+class SignInTests(unittest.TestCase):
+    ENVIRONMENT = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+    URL = "https://org.crm.dynamics.com"
+    SUBSCRIPTION = ACCOUNT["id"]
+
+    def context(self, rules, phases=deploy.PHASES, **overrides):
+        for key, value in (("environment_id", self.ENVIRONMENT), ("environment_url", self.URL),
+                           ("subscription", self.SUBSCRIPTION)):
+            overrides.setdefault(key, value)
+        ctx = make_context(self, make_root(self), FakeShell([*rules, *REPOSITORY_RULES]), **overrides)
+        ctx.phases = phases
+        return ctx
+
+    def test_a_signed_in_host_starts_without_sign_ins_after_checking_every_audience(self):
+        ctx = self.context(SIGNED_IN)
+        ctx.state.section("consent")["login_scope"] = "api://client/.default"
+        summary = deploy.phase_signin(ctx)
+        self.assertFalse(ctx.shell.matching(signing_in))
+        probes = ctx.shell.matching(command("az", "account", "get-access-token"))
+        requested = {call[call.index("--resource" if "--resource" in call else "--scope") + 1] for call in probes}
+        self.assertEqual(requested, {deploy.ARM_API + "/", deploy.GRAPH_API, deploy.FABRIC_API, "api://client/.default",
+                                     deploy.SEARCH_RESOURCE, self.URL, deploy.studio.POWERAPPS_RESOURCE})
+        self.assertTrue(all(call[call.index("--tenant") + 1] == TENANT for call in probes))
+        for expected in ("GitHub CLI for example/demo-repo", f"Azure CLI in tenant {TENANT}",
+                         f"Power Platform CLI on {self.URL}", "Managed Runtime CLI"):
+            self.assertIn(expected, summary)
+
+    def test_missing_sign_ins_run_back_to_back_with_codes_only_on_stderr(self):
+        signed, seen = set(), {}
+
+        def signed_in(name, result):
+            return lambda args, options: result if name in signed else deploy.Result(1, "", "not signed in")
+
+        def sign_in(name):
+            def run(args, options):
+                signed.add(name)
+                seen[name] = options
+                return deploy.Result(0)
+            return run
+
+        ctx = self.context([
+            (command("az", "account", "show"), signed_in("az", deploy.Result(0, json.dumps(ACCOUNT)))),
+            (command("az", "login"), sign_in("az")),
+            (command("az", "account", "set"), deploy.Result(0)),
+            TOKEN_RULE,
+            (command("dotnet", "pac", "env", "who"), signed_in("pac", SIGNED_IN[2][1])),
+            (command("dotnet", "pac", "env", "select"), deploy.Result(1, "", "No profiles")),
+            (command("dotnet", "pac", "auth", "create"), sign_in("pac")),
+            (command("ms", "auth", "status"), signed_in("ms", SIGNED_IN[3][1])),
+            (command("ms", "auth", "login"), sign_in("ms")),
+        ])
+        deploy.phase_signin(ctx)
+        self.assertEqual(ctx.shell.matching(lambda args: signing_in(args) or args[:3] == ["az", "account", "set"]), [
+            ["az", "login", "--use-device-code"],
+            ["az", "account", "set", "--subscription", self.SUBSCRIPTION],
+            ["dotnet", "pac", "auth", "create", "--environment", self.ENVIRONMENT, "--deviceCode"],
+            ["ms", "auth", "login", "--device-code"],
+        ])
+        self.assertTrue(all(options["stream"] and not options["interactive"] for options in seen.values()))
+        self.assertEqual(seen["az"]["env"]["AZURE_CORE_LOGIN_EXPERIENCE_V2"], "off")
+        self.assertIsNone(seen["pac"]["env"])
+        self.assertTrue(any(message.startswith("Sign-in 3 of 3: Managed Runtime CLI") for message in ctx.messages))
+
+    def test_declining_lists_every_missing_sign_in_at_once(self):
+        ctx = self.context([(command("az", "account", "show"), deploy.Result(1)),
+                            (command("dotnet", "pac", "env"), deploy.Result(1)),
+                            (command("ms", "auth", "status"), deploy.Result(1))])
+        ctx.interactive, ctx.prompt = True, lambda text: "n\n"
+        with self.assertRaises(deploy.Waiting) as stop:
+            deploy.phase_signin(ctx)
+        steps = " ".join(stop.exception.next_steps)
+        for expected in ("Run: az login --use-device-code", f"Then: az account set --subscription {self.SUBSCRIPTION}",
+                         f"Run: dotnet pac auth create --environment {self.ENVIRONMENT} --deviceCode",
+                         "Run: ms auth login --device-code"):
+            self.assertIn(expected, steps)
+        self.assertFalse(ctx.shell.matching(signing_in))
+
+    def test_an_unfinished_device_code_sign_in_waits_with_its_command(self):
+        ctx = self.context([(command("az", "account", "show"), deploy.Result(1)),
+                            (command("az", "login"), deploy.Result(1, "", "code expired"))], phases=("signin", "config"))
+        with self.assertRaisesRegex(deploy.Waiting, "Sign-in did not complete") as stop:
+            deploy.phase_signin(ctx)
+        self.assertIn("Run: az login --use-device-code", stop.exception.next_steps)
+
+    def test_github_cli_is_checked_before_any_other_sign_in(self):
+        ctx = make_context(self, make_root(self), FakeShell([(command("gh", "auth", "status"), deploy.Result(1))]))
+        with self.assertRaises(deploy.Waiting) as stop:
+            deploy.phase_signin(ctx)
+        self.assertIn("Run: gh auth login --hostname github.com --git-protocol https --web", stop.exception.next_steps)
+        self.assertEqual(ctx.shell.calls, [["gh", "auth", "status", "--hostname", "github.com"]])
+
+    def test_the_environment_is_chosen_before_signing_in_only_when_the_agent_runs(self):
+        ctx = self.context(SIGNED_IN, environment_id=None, environment_url=None)
+        with self.assertRaises(deploy.Waiting) as stop:
+            deploy.phase_signin(ctx)
+        self.assertIn("--through verify", " ".join(stop.exception.next_steps))
+        self.assertFalse(ctx.shell.matching(command("az")))
+        ctx = self.context(SIGNED_IN, deploy.PHASES[:deploy.PHASES.index("verify") + 1],
+                           environment_id=None, environment_url=None)
+        deploy.phase_signin(ctx)
+        self.assertFalse(ctx.shell.matching(lambda args: args[0] in ("dotnet", "ms")))
+
+    def test_only_the_token_audiences_that_fail_are_signed_in_again(self):
+        def token(args, options):
+            fabric = "--resource" in args and args[args.index("--resource") + 1] == deploy.FABRIC_API
+            return deploy.Result(1, "", "AADSTS50076") if fabric else TOKEN_RULE[1]
+
+        account = (command("az", "account", "show"), deploy.Result(0, json.dumps(ACCOUNT)))
+        ctx = self.context([account, (command("az", "account", "get-access-token"), token)])
+        pending, _ = deploy.missing_sign_ins(ctx, {"pac": None, "ms": False})
+        self.assertEqual([(command, after) for _, command, after in pending], [(
+            ["az", "login", "--use-device-code", "--tenant", TENANT, "--scope", deploy.FABRIC_API + "/.default"],
+            (["az", "account", "set", "--subscription", self.SUBSCRIPTION],))])
+        # Without a Resource Manager token the whole sign-in expired: one plain login, not one per audience.
+        ctx = self.context([account, (command("az", "account", "get-access-token"), deploy.Result(1))])
+        pending, _ = deploy.missing_sign_ins(ctx, {"pac": None, "ms": False})
+        self.assertEqual([command for _, command, _ in pending], [["az", "login", "--use-device-code", "--tenant", TENANT]])
+
+    def test_a_service_principal_or_another_tenant_is_not_the_deploying_user(self):
+        principal = dict(ACCOUNT, user={"type": "servicePrincipal"})
+        ctx = self.context([(command("az", "account", "show"), deploy.Result(0, json.dumps(principal)))])
+        with self.assertRaisesRegex(deploy.Blocked, "service principal"):
+            deploy.azure_sign_in(ctx)
+        other = "ffffffff-ffff-4fff-8fff-ffffffffffff"
+        ctx = self.context([(command("az", "account", "show"), deploy.Result(0, json.dumps(ACCOUNT)))], tenant=other)
+        self.assertEqual(deploy.azure_sign_in(ctx)[2], ["az", "login", "--use-device-code", "--tenant", other])
+
+    def test_a_signed_in_pac_profile_is_pointed_at_the_environment_instead_of_signing_in(self):
+        who = iter([deploy.Result(0, "Org URL: https://other.crm.dynamics.com/\n"), SIGNED_IN[2][1]])
+        ctx = self.context([(command("dotnet", "pac", "env", "who"), lambda args, options: next(who)),
+                            (command("dotnet", "pac", "env", "select"), deploy.Result(0))])
+        self.assertTrue(deploy.pac_ready(ctx, self.URL))
+        select, = ctx.shell.matching(command("dotnet", "pac", "env", "select"))
+        self.assertEqual(select[-1], self.URL)
+        self.assertFalse(ctx.shell.matching(command("dotnet", "pac", "auth")))
+
+    def test_teardown_signs_in_only_to_the_clis_it_will_use(self):
+        ctx = self.context([], ("signin", "destroy"))
+        ctx.state.section("choices").update(environment_id=self.ENVIRONMENT, environment_url=self.URL)
+        self.assertEqual(deploy.sign_in_needs(ctx), {"pac": None, "ms": False})
+        ctx.state.section("agent")["workspace"] = ".artifacts/studio/iq_demo_assistant"
+        (ctx.root / "ms.config.json").write_text("{}", encoding="utf-8")
+        self.assertEqual(deploy.sign_in_needs(ctx), {"pac": (self.ENVIRONMENT, self.URL), "ms": True})
+        ctx.state.section("destroy").update(app_deleted_at="earlier", runtime_deleted_at="earlier")
+        self.assertEqual(deploy.sign_in_needs(ctx), {"pac": None, "ms": False})
+        # Teardown deletes the registration behind the deployment scope, so a resumed `down` never requires it.
+        ctx.state.section("consent")["login_scope"] = "api://client/.default"
+        self.assertNotIn("the Fabric deployment scope",
+                         [label for label, _ in deploy.token_audiences(ctx, {"pac": None, "ms": False})])
+        ctx.phases = deploy.PHASES
+        self.assertIn("the Fabric deployment scope",
+                      [label for label, _ in deploy.token_audiences(ctx, {"pac": None, "ms": False})])
+
+    def test_the_last_sign_in_round_is_checked_before_giving_up(self):
+        logins = []
+        other = dict(MS_STATUS, activeAccount={"homeAccountId": "user.ffffffff-ffff-4fff-8fff-ffffffffffff"})
+
+        def status(args, options):
+            return deploy.Result(0, json.dumps(MS_STATUS if len(logins) == 3 else other))
+
+        ctx = self.context([*SIGNED_IN[:3], (command("ms", "auth", "status"), status),
+                            (command("ms", "auth", "login"), lambda args, options: logins.append(args) or deploy.Result(0))])
+        self.assertIn("Managed Runtime CLI", deploy.phase_signin(ctx))
+        self.assertEqual(len(logins), 3)
+
+
+class PermissionTests(unittest.TestCase):
+    def context(self):
+        ctx = make_context(self, make_root(self))
+        ctx.state.section("target")["subscription_id"] = "sub-1"
+        ctx.state.section("choices")["environment_id"] = "env-1"
+        ctx.state.section("consent")["api_permissions_url"] = "https://portal.azure.com/#approve"
+        return ctx
+
+    def test_each_refusal_names_its_own_grant_and_other_failures_name_none(self):
+        ctx = self.context()
+        arm = ("Status=403 Code=\"AuthorizationFailed\" Message=\"The client 'u' with object id 'o' does not have "
+               "authorization to perform action '{}' over scope '/subscriptions/sub-1/resourceGroups/rg'\"")
+        cases = (
+            ("platform", "│ Error: creating role assignment\n│ " + arm.format("Microsoft.Authorization/roleAssignments/write"),
+             ("Role Based Access Control Administrator", "sub-1")),
+            ("platform", "│ Error: creating Resource Group\n│ " + arm.format("Microsoft.Resources/subscriptions/resourcegroups/write"),
+             ("Contributor (or Owner) on subscription sub-1",)),
+            ("identity", "│ Error: Could not create application\n│ unexpected status 403 with OData error: "
+                         "Authorization_RequestDenied: Insufficient privileges to complete the operation.",
+             ("Application Developer",)),
+            ("platform", "│ Error: RequestDisallowedByPolicy: Resource 'x' was disallowed by policy.",
+             ("Azure Policy administrator",)),
+            ("bootstrap", "Bulk Import with the Bootstrap plan failed with HTTP 403 InsufficientScopes: missing scope",
+             ("https://portal.azure.com/#approve",)),
+            ("bootstrap", "Listing DEV items failed with HTTP 403 Unauthorized: denied", ("fabric_capacity_admins",)),
+            ("knowledge", "│ Error: Create operation\n│   with fabric_workspace_role_assignment.search_onelake_contributor,\n"
+                          "│ StatusCode: 403 Forbidden", ("fabric_capacity_admins",)),
+            ("config", "terraform init failed; nothing was planned.\nStatus=403 Code=\"AuthorizationPermissionMismatch\"",
+             ("Storage Blob Data Contributor",)),
+            ("agent", "Studio agent step blocked: GET /api/data/v9.2/bots failed with HTTP 403: missing prvReadbot privilege",
+             ("Environment Maker", "env-1")),
+            ("agent", "pac copilot init failed (exit 1).\nThe connector is blocked by a Data Loss Prevention policy.",
+             ("data policies of environment env-1",)),
+            ("app", "ms app init failed (exit 1).\nThe user does not have a valid license for this operation.",
+             ("Power Apps Premium",)),
+        )
+        for phase, text, fragments in cases:
+            with self.subTest(phase=phase, text=text[:60]):
+                grants = deploy.permission_grants(ctx, phase, text)
+                self.assertEqual(len(grants), 1, grants)
+                for fragment in fragments:
+                    self.assertIn(fragment, grants[0])
+        for phase, text in (
+            ("bootstrap", "Bulk Import with the Bootstrap plan failed with HTTP 403 FeatureNotAvailable: no plans"),
+            ("verify", "fabricOntology retrieval is not verified: Retrieval from scenario failed with HTTP 403"),
+            ("platform", "terraform apply failed during platform; state is preserved.\n│ Error: quota exceeded"),
+            ("app", "ms app init failed (exit 1).\nMicrosoft GitHub App can't access the bound repository."),
+            ("app", "npm ci failed (exit 1).\nnpm ERR! 403 403 Forbidden - GET https://registry.npmjs.org/react"),
+            ("app", "ms app init failed (exit 1).\nnpm ERR! 403 403 Forbidden - GET https://registry.npmjs.org/vite"),
+            ("agent", "dotnet tool restore failed (exit 1).\nerror NU1301: Unable to load the service index for "
+                      "https://pkgs.example/nuget: 401 (Unauthorized). Microsoft.PowerApps.CLI.Tool"),
+        ):
+            with self.subTest(phase=phase, text=text[:60]):
+                self.assertEqual(deploy.permission_grants(ctx, phase, text), [])
+
+    def test_a_refusal_waits_for_its_grant_and_reaches_the_report(self):
+        refusal = deploy.Blocked(
+            "terraform apply failed during platform; state is preserved.",
+            "Investigate the error above, then rerun: a fresh plan is created from the current state.",
+            detail="│ Error: creating role assignment\n│ AuthorizationFailed: does not have authorization to perform "
+                   "action 'Microsoft.Authorization/roleAssignments/write' over scope 'x'")
+        with mock.patch.dict(deploy.PHASE_FUNCTIONS, {"platform": mock.Mock(side_effect=refusal)}):
+            code, report = deploy.run_phases(self.context(), ("platform",))
+        self.assertEqual((code, report["result"]), (deploy.WAITING, "waiting"))
+        self.assertTrue(report["message"].startswith("Missing permission: terraform apply failed"))
+        self.assertIn("Role Based Access Control Administrator", report["grants"][0])
+        self.assertEqual(report["next"][0], report["grants"][0])
+        self.assertIn("Investigate the error above, then rerun: a fresh plan is created from the current state.",
+                      report["next"])
+        with mock.patch.dict(deploy.PHASE_FUNCTIONS, {"platform": mock.Mock(side_effect=deploy.Blocked("quota"))}):
+            code, report = deploy.run_phases(self.context(), ("platform",))
+        self.assertEqual(code, deploy.BLOCKED)
+        self.assertNotIn("grants", report)
 
 
 class StateAndCliTests(unittest.TestCase):
@@ -1250,15 +1627,33 @@ class StateAndCliTests(unittest.TestCase):
             self.assertEqual(deploy.main(["status", "--json"], root=root), deploy.OK)
         self.assertEqual(json.loads(stdout.getvalue())["phases"]["config"]["status"], "not run")
         shell = FakeShell([
+            (command("gh", "auth", "status"), deploy.Result(0)),
             (command("git", "remote", "get-url", "origin"), deploy.Result(0, "https://github.com/example/template.git\n")),
             (command("gh", "repo", "view"), deploy.Result(0, json.dumps({"nameWithOwner": "example/template", "isTemplate": True}))),
         ])
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(io.StringIO()):
-            code = deploy.main(["up", "--through", "config", "--json"], root=root, shell=shell, http=FakeHttp(),
-                               interactive=False)
+            code = deploy.main(["up", "--json"], root=root, shell=shell, http=FakeHttp(), interactive=False)
         self.assertEqual(code, deploy.BLOCKED)
-        self.assertIn("reusable template", json.loads(stdout.getvalue())["message"])
+        report = json.loads(stdout.getvalue())
+        self.assertIn("reusable template", report["message"])
+        # Refused in the first phase, before any Azure, Power Platform or Managed Runtime sign-in.
+        self.assertEqual(report["phase"], "signin")
+        self.assertFalse(shell.matching(lambda args: args[0] in ("az", "dotnet", "ms")))
+
+    def test_admin_actions_are_the_default_and_only_manual_grants_opt_out(self):
+        self.assertEqual(deploy.PHASES[0], "signin")
+        self.assertTrue(deploy.parse_arguments(["up", "--manual-grants"]).manual_grants)
+        self.assertFalse(deploy.parse_arguments(["up"]).manual_grants)
+        for retired in ("--grant-admin-consent", "--register-search-serverless"):
+            with self.assertRaises(SystemExit) as stop, contextlib.redirect_stderr(io.StringIO()):
+                deploy.parse_arguments(["up", retired])
+            self.assertEqual(stop.exception.code, deploy.USAGE)
+        done = (deploy.OK, {"result": "done", "phases": {}})
+        with mock.patch.object(deploy, "run_phases", return_value=done) as runner, \
+                contextlib.redirect_stdout(io.StringIO()):
+            deploy.main(["down"], root=make_root(self), shell=FakeShell(), http=FakeHttp(), interactive=False)
+        self.assertEqual(runner.call_args.args[1], ("signin", "destroy"))
 
     def test_there_is_no_single_phase_entry_that_skips_earlier_gates(self):
         with self.assertRaises(SystemExit) as stop, contextlib.redirect_stderr(io.StringIO()):

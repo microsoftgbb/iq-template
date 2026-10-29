@@ -19,7 +19,7 @@ integrations.
 
 The post-create command restores the pinned Power Platform CLI with `dotnet tool restore`, then only checks tool availability, minimum Node/Git/Python versions, native authentication bindings and all six plugin registrations. It does **not** install or update packages, start MCP servers, invoke skills, sign in, accept terms, generate tfvars, initialize Terraform, provision resources, synchronize Fabric, query Microsoft 365, or run notebooks. Python supports the local initializer, plugin hooks and static source checks; Node supports app builds and Node-based developer/MCP tools. Spark, Delta and NotebookUtils still run in Fabric, not locally. No Fabric CLI, fabric-cicd or azd is needed for the template's native deployment flow; the .NET SDK only runs the pinned Power Platform CLI. On a host without the devcontainer, install the .NET 10 SDK and run `dotnet tool restore` at the repository root. Use optional product-workflow dependency checks only when that workflow is explicitly requested.
 
-Authenticate separately when needed:
+The [deterministic runner](#deploy-deterministically) signs you in itself: its first phase, `signin`, completes every CLI sign-in the run needs, back to back, before anything is created. Sign in by hand only for work outside the runner:
 
 ```sh
 # Only if GitHub CLI is not already authenticated:
@@ -28,12 +28,12 @@ gh auth login
 # Start from the repository root; use /login in Copilot if prompted:
 copilot
 
-# Initial user sign-in for the Entra-only bootstrap (device code works in Codespaces):
+# Azure CLI user sign-in (device code works in Codespaces):
 az login --use-device-code --tenant "<tenant-id>"
 az account set --subscription "<subscription-name-or-id>"
 ```
 
-Follow [identity bootstrap and administrator consent](getting-started.md#3-bootstrap-the-fabric-user-auth-application) before the first Fabric plan. Terraform prepares the app and permissions in the same state as the platform; only that initial plan targets `module.fabric_user_auth`. After admin consent, or when resuming with an already-consented registration, sign in with its generated scope:
+For a manual deployment, follow [identity bootstrap and consent](getting-started.md#3-bootstrap-the-fabric-user-auth-application) before the first Fabric plan. Terraform prepares the app and permissions in the same state as the platform; only that initial plan targets `module.fabric_user_auth`. After consent, or when resuming with an already-consented registration, sign in with its generated scope if Azure CLI cannot get that token silently:
 
 ```sh
 az login --use-device-code \
@@ -59,7 +59,7 @@ The container supplies the prerequisites in Microsoft's [developer guide](https:
 
 The plugin is already installed in the container; do not repeat the quickstart's marketplace installation there. Copilot App/CLI on another host needs its own plugin installation; rebuilding the container does not modify that host. Do not scaffold another app with `/microsoft-managed-apps:create-app` or `ms app create`: the shipped `app/` is the shell.
 
-Complete the **separate** Managed Runtime sign-in in your own terminal: use `ms auth login --device-code` in headless Codespaces/SSH sessions, then `ms auth status`. Browser-based `ms auth login` is also available. Azure CLI, Copilot and Fabric Git authentication do not sign you into `ms`. GCM uses Git's ephemeral in-memory cache in this headless container (900 seconds by default), not a plaintext Git credential store or a desktop keyring. Protect all CLI authentication caches; never commit them or put credentials in the image.
+Managed Runtime has its **separate** sign-in. The runner's `signin` phase runs `ms auth login --device-code` for you when the run includes the app; by hand, use it in headless Codespaces/SSH sessions, then `ms auth status`. Browser-based `ms auth login` is also available. Azure CLI, Copilot and Fabric Git authentication do not sign you into `ms`. GCM uses Git's ephemeral in-memory cache in this headless container (900 seconds by default), not a plaintext Git credential store or a desktop keyring. Protect all CLI authentication caches; never commit them or put credentials in the image.
 
 The app's React, TypeScript, Vite, `@microsoft/managed-apps` and `@microsoft/managed-apps-vite-plugin` dependencies are locked in the root `package-lock.json` for the `app` npm workspace, not installed as global tools. Use `ms`, **not `npx ms`**, which can resolve an unrelated npm package.
 
@@ -82,17 +82,22 @@ python3 .github/skills/deploy-platform/scripts/deploy.py up \
 
 Without `infra/terraform.tfvars`, also pass `--project-name`, `--location` and `--capacity-admin`; the runner calls the [initializer](#what-gets-templated). Use `--local-state` only for a single-user demo whose state you back up. For anything shared, declare a secured remote backend in `infra/` and pass `--backend-config <file>`. Target choices are remembered in ignored `.artifacts/deploy/state.json`, so later runs need only `up`; a different subscription, tenant or caller is refused.
 
+**Sign in once, up front.** The first phase, `signin`, completes every sign-in the run needs before anything is created: GitHub CLI, the Azure CLI user and each token audience its tools request (Resource Manager, Graph, Fabric, Search, Dataverse, Power Apps), PAC for the chosen Power Platform environment and `ms`. Missing ones run back to back, and each prints its device code in your terminal or, without one, on stderr; reports never contain codes. A signed-in PAC profile is pointed at the environment rather than signed in again. Only GitHub CLI's browser flow needs your own terminal (`gh auth login`); Codespaces are already signed in. Choose the Power Platform environment before the first run, or add `--through verify` to deploy DEV first and sign in to PAC and `ms` when you continue. To finish every sign-in now and deploy later, run `up --through signin`. Afterwards a sign-in prompt is rare: the deployment-scope token after consent is normally acquired silently, and the first `ms app init` may run GitHub's device-code flow to map your identity, which the pinned `ms` CLI cannot do before registration.
+
+**Administrator access is assumed.** The runner grants tenant-wide consent for exactly the declared delegated scopes and registers the serverless Search preview feature as you, and lets Terraform, Fabric, PAC and `ms` attempt every change. Only if an API refuses for lack of permission does it stop with exit code `3`, naming who must grant what (`grants` in the `--json` report), for example the administrator consent link or Role Based Access Control Administrator on the subscription. After that grant, rerun; completed work is not repeated. With `--manual-grants`, it never attempts consent or feature registration and prints them for an administrator instead.
+
 | Phase | What it does | Stops for |
 | --- | --- | --- |
-| `config`, `preflight` | Repository, branch and tfvars checks; Azure user and subscription; provider overrides; Fabric CU and model quota; Search tier/feature; PAT access only for opt-in Git | Missing inputs, sign-in, quota or feature; PAT only for opt-in Git |
+| `signin` | Checks GitHub CLI and refuses the template; signs in to Azure CLI (and any token audience that needs it), PAC for the chosen environment and `ms` | Your device codes; the environment choice; `gh auth login` in your own terminal |
+| `config`, `preflight` | Repository, branch and tfvars checks; Azure user and subscription; provider overrides; Fabric CU and model quota; Search tier; registers the serverless Search feature as you; PAT access only for opt-in Git | Missing inputs or quota; a refused registration; PAT only for opt-in Git |
 | `identity` | Saved plan targeted only at `module.fabric_user_auth`, then apply | Plan approval |
-| `consent` | Reads the tenant-wide grant, then checks the scoped sign-in and Fabric reads | Administrator consent; device-code sign-in |
+| `consent` | Grants tenant-wide consent for exactly the declared scopes as you when it is missing or partial, then checks the scoped token and Fabric reads, giving a fresh grant a few minutes to propagate | An administrator only if Entra refuses your grant |
 | `platform` | Saved untargeted plan, then apply; enables the serverless Search identity that Terraform cannot set and verifies it, because the preview answers HTTP 500 | Plan approval |
 | `bootstrap` | Imports your published `HEAD` through native Fabric APIs with `Bootstrap`, then verifies target-local binding; Git connect/sync only when enabled | Conflicting identities, changed existing definitions, an unavailable plan attachment |
 | `knowledge` | Writes the discovered physical GUIDs with the knowledge helper; saved plan, then apply. A plan that creates or replaces serverless Search is applied as two plans: grants deferred, then granted after the identity exists | Plan approval |
 | `verify` | Waits for ingestion; proves live ontology and document retrieval with your own token and an authenticated public Web IQ search | Running ingestion; portal onboarding, credentials or missing evidence |
 | `agent` | Creates or clones, renders, pushes, connects, configures, publishes and checks the Studio agent | Creation, connection and publish approvals; your **Fix connection** |
-| `app` | Sets the agent schema, runs `npm ci`, `ms app init` and adds the Studio data source; syncs `package-lock.json` (lockfile only) with the CLI pin that `ms app init` adds to `package.json` | Registration approval; `ms` sign-in |
+| `app` | Sets the agent schema, runs `npm ci`, `ms app init` and adds the Studio data source; syncs `package-lock.json` (lockfile only) with the CLI pin that `ms app init` adds to `package.json` | Registration approval |
 
 Every deployment includes Web IQ. `preflight` requires explicit Web IQ terms
 acceptance and the pinned accounts API in the selected subscription. The normal
@@ -111,24 +116,24 @@ and needs no PAT. It imports only missing items, verifies per-item results and
 resumes accepted operations without overwriting live data or bindings. Set the
 flag to `true` and supply a PAT only when Git synchronization is wanted.
 
-Every phase checks live state before acting, so rerunning `up` resumes. It observes an accepted Fabric operation or an active notebook run instead of submitting another, and creates a fresh plan after a failed apply. Exit code `3` means a person must act; the output names the exact link or command. Exit code `4` means approval is required. Approve interactively, or rerun with `--approve <phase>=<sha256-prefix>` for the exact saved plan it printed (`terraform -chdir=infra show <plan>` shows it), or with `--approve agent-create`, `agent-connections`, `agent-publish` or `app-register`. `--yes` approves everything in that run except deletions and replacements, which also need `--allow-replace`. `up --through <phase>` stops after a phase; every run re-verifies the earlier phases, so no gate can be skipped. `status` summarizes receipts without cloud calls, and `--json` prints a machine-readable report.
+Every phase checks live state before acting, so rerunning `up` resumes. It observes an accepted Fabric operation or an active notebook run instead of submitting another, and creates a fresh plan after a failed apply. Exit code `3` means a person must act; the output names the exact grant, link or command. Exit code `4` means approval is required. Approve interactively, or rerun with `--approve <phase>=<sha256-prefix>` for the exact saved plan it printed (`terraform -chdir=infra show <plan>` shows it), or with `--approve agent-create`, `agent-connections`, `agent-publish` or `app-register`. `--yes` approves everything in that run except deletions and replacements, which also need `--allow-replace`. `up --through <phase>` stops after a phase; every run re-verifies the earlier phases, so no gate can be skipped. `status` summarizes receipts without cloud calls, and `--json` prints a machine-readable report.
 
 These choices are explicit flags, never automatic:
 
-- `--grant-admin-consent`: you are a tenant administrator and grant consent yourself for exactly the declared delegated scopes. Otherwise the runner waits and prints the administrator's approval link.
-- `--consent-confirmed`: an administrator confirmed consent, but your sign-in cannot read the tenant's consent grants to verify it.
-- `--register-search-serverless`: register the subscription's auto-approved `Microsoft.Search/Serverless` preview feature that the default Search tier needs, then re-register `Microsoft.Search`. Otherwise the runner prints both commands and waits, or you set `search_sku = "basic"`.
+- `--manual-grants`: you are not an administrator, or your organization requires one for these changes. The runner prints the consent link and the feature-registration commands for an administrator instead of trying them as you.
+- `--consent-confirmed`: an administrator confirmed consent, but your sign-in cannot read the tenant's consent grants to verify it (so it could not grant them either).
 - `--bootstrap-fallback notebooks`: when the tenant rejects plan attachment (`FeatureNotAvailable`), import or Git-sync the same reviewed definitions without it, then run `SeedScenario` and `BindScenario` as you.
 - `--retry-failed`: after you inspected and fixed a failed or unconfirmed operation, continue from live state; without it the runner never resubmits an accepted request.
 
-The runner refuses the reusable template, a different Git target, conflicts, non-additive incoming changes, any commit other than your pushed `HEAD`, ambient Terraform overrides (`TF_CLI_ARGS*`, `TF_WORKSPACE`, extra `TF_VAR_*`) and a Dataverse URL that belongs to another environment. It never prints or stores tokens. It still needs people for consent, MFA sign-ins, connector OAuth and the App Player check, so it is not unattended CI: the bundled binder and IQ connections need a delegated user. `up` does not promote, host, share or delete resources.
+The runner refuses the reusable template, a different Git target, conflicts, non-additive incoming changes, any commit other than your pushed `HEAD`, ambient Terraform overrides (`TF_CLI_ARGS*`, `TF_WORKSPACE`, extra `TF_VAR_*`) and a Dataverse URL that belongs to another environment. It never prints or stores tokens. It still needs you for device codes and MFA (up front), connector OAuth and the App Player check, and an administrator only when your own permissions are refused, so it is not unattended CI: the bundled binder and IQ connections need a delegated user. `up` does not promote, host, share or delete resources.
 
 Choose an existing non-Default Power Platform environment with a GUID ID (`dotnet pac env list`) and its matching Org URL. The runner diagnoses Dataverse's `Default-<guid>` environment IDs explicitly rather than treating them as malformed GUIDs. If `ms app init` reports that the Microsoft GitHub App cannot access the bound repository, ask the repository/organization administrator to [install or configure Microsoft Managed Apps](https://github.com/marketplace/microsoft-managed-apps) for that repository. Inspect `ms app list` / `ms app info` before retrying; recover a partial registration instead of registering a duplicate.
 
 ## Delete the environment
 
 Use the original checkout, tfvars, backend and `.artifacts/deploy/state.json`.
-Sign in as the original Azure user and select the recorded subscription. Keep
+`down` also starts with `signin`, for only the CLIs teardown uses; sign in as the
+original Azure user with the recorded subscription. Keep
 Fabric consent active until Terraform finishes. App deletion needs its owner;
 agent deletion needs permission in the recorded Power Platform environment.
 
@@ -180,11 +185,11 @@ Read each row left to right, then continue down. See the
 
 This is **one guided request**, not a zero-input or guaranteed unattended deployment. You still need:
 
-- **Target and consent:** choose subscription/tenant, region, project name and capacity admin; approve the actual Terraform plans and reviewed workspace definitions. Quota, preview availability and RBAC propagation can still block a run.
-- **Entra setup and approval:** the initial Terraform identity needs directory permissions to create/configure the app, service principal and authorized clients. Copilot can prepare them through the reviewed Entra-only plan and hand the administrator the generated approval link and scope manifest. An administrator grants consent separately, in the portal or by running the runner with `--grant-admin-consent`; subscription Owner alone is not enough, and Terraform does not grant itself consent.
-- **Azure/Fabric user sign-in:** after consent, use the generated tenant/scope outputs and the administrator-owned tenant prerequisites from [getting started](getting-started.md). Copilot can guide device login, but cannot perform your MFA or bypass policy. Plain `az login`, app creation or consent alone is not proof that Fabric write/execute scopes and workspace roles are available.
+- **Target and consent:** choose subscription/tenant, region, project name, capacity admin and the Power Platform environment; approve the actual Terraform plans and reviewed workspace definitions. Quota, preview availability and RBAC propagation can still block a run.
+- **Sign-ins, first:** the runner signs you in to Azure CLI, PAC and `ms` (and checks GitHub CLI) before it creates anything. You enter each device code and complete MFA yourself; Copilot never relays a code or bypasses policy. The deployment-scope token after consent is normally acquired silently.
+- **Administrator access, assumed:** creating the deployment app registration needs Entra rights such as Application Developer, tenant-wide consent needs a role such as Cloud Application Administrator, and Terraform's role assignments need Owner or Role Based Access Control Administrator; subscription Owner alone does not cover the Entra parts. The runner assumes you have them: after the reviewed Entra-only plan it grants consent for exactly the declared scopes as you. Only when an API refuses does Copilot relay the exact grant, such as the administrator approval link and scope manifest. Terraform never grants itself consent, and a sign-in, app creation or consent alone is not proof that Fabric write/execute scopes, tenant settings and workspace roles are available.
 - **Only for opt-in Fabric Git synchronization:** supply `FABRIC_GITHUB_TOKEN` as a repository-scoped [Codespaces secret](https://docs.github.com/en/codespaces/managing-your-codespaces/managing-your-account-specific-secrets-for-github-codespaces), or `TF_VAR_github_token` in the deployment shell. It needs Contents read/write; restart an existing Codespace after adding the secret. Do not reuse Copilot's login or the Codespaces `GITHUB_TOKEN`.
-- **Agent and app access:** a Power Platform environment where you can create agents and apps, a Copilot Studio license and Managed Runtime licensing. You sign in to `pac` and `ms` yourself, connect your own IQ connections and approve agent creation, configuration and app registration.
+- **Agent and app access:** a Power Platform environment where you can create agents and apps, a Copilot Studio license and Managed Runtime licensing. The up-front sign-in covers `pac` and `ms`; you connect your own IQ connections and approve agent creation, configuration and app registration.
 - **State retention:** prefer an existing encrypted, access-controlled remote backend and project-specific state key. A single-user local-state demo needs explicit acceptance and secure retention/backup before deleting the Codespace. Deleting a Codespace does not delete its Azure resources. Team/CI deployment requires remote state.
 
 The App route uses GitHub's [authenticated Codespaces SSH transport](https://docs.github.com/en/codespaces/developing-in-a-codespace/using-github-codespaces-with-github-cli#ssh-into-a-codespace), not a claimed native App-to-Codespaces attachment. Do not publish port 2222, configure an SSH password or disable host-key verification. If the App host cannot access Codespaces, use CLI in the Codespace rather than silently deploying from the laptop.

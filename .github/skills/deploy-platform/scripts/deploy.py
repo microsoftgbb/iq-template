@@ -2,18 +2,25 @@
 """Deterministic deployment and teardown of the DEV platform, agent and app.
 
 `up` runs the documented phases in order with native tools only: Terraform,
-Azure CLI, Fabric/Search/Graph REST, PAC and `ms`. Every phase checks live state
-first and acts only on what is missing, so a rerun resumes instead of
-duplicating work. Plans and creations need approval. Administrator consent,
-sign-ins and connector OAuth stay with people.
+Azure CLI, Fabric/Search/Graph REST, PAC and `ms`. Its first phase completes
+every CLI sign-in the run needs, back to back, before anything is created.
+Every phase checks live state first and acts only on what is missing, so a
+rerun resumes instead of duplicating work. Plans and creations need approval.
 
-`down` deletes the app and agent, applies a reviewed full Terraform destroy
-plan, and purges the deleted Foundry account. Retained Fabric data and shared
-connections are reported for manual cleanup. Local configuration and state stay.
+The signed-in user is assumed to administer every target: the runner grants
+tenant-wide consent and registers required subscription features as that user,
+and names a manual grant only when an API refuses for lack of permission.
+Device-code entry and connector OAuth stay with people.
+
+`down` signs in the same way, deletes the app and agent, applies a reviewed full
+Terraform destroy plan, and purges the deleted Foundry account. Retained Fabric
+data and shared connections are reported for manual cleanup. Local
+configuration and state stay.
 
 Exit codes: 0 done, 1 usage error, 2 blocked (investigate), 3 waiting for a
-person or a long-running cloud operation, 4 approval required. Tokens stay in
-memory; nothing secret is printed or written.
+person (a sign-in, a missing permission's grant) or a long-running cloud
+operation, 4 approval required. Device codes go only to the terminal or stderr;
+tokens stay in memory; nothing secret is printed or written.
 """
 
 import argparse
@@ -48,7 +55,7 @@ sys.path.insert(0, str(SCRIPTS))
 import preflight_runtime as runtime  # noqa: E402
 import studio_agent as studio  # noqa: E402
 
-PHASES = ("config", "preflight", "identity", "consent", "platform",
+PHASES = ("signin", "config", "preflight", "identity", "consent", "platform",
           "bootstrap", "knowledge", "verify", "agent", "app")
 OK, USAGE, BLOCKED, WAITING, APPROVAL = 0, 1, 2, 3, 4
 PLAN_PHASES = ("identity", "platform", "knowledge", "destroy")
@@ -103,6 +110,21 @@ DOCUMENT_QUESTION = ("According to the indexed starter document, what does Git s
                      "SeedScenario materialize, and which source should be used for current entity "
                      "values? Answer from the OneLake document and cite it.")
 EXPECTED_FACTS = ("Pump B", "North Works")
+# The runner selects the deployment subscription itself after an Azure CLI sign-in.
+SIGN_IN_ENV = {"AZURE_CORE_LOGIN_EXPERIENCE_V2": "off"}
+# An API's refusal for lack of permission, as ARM, Graph, Fabric, Power Platform and the native CLIs report it.
+DENIED = re.compile(
+    r"\b(?:HTTP|status ?code|status)[ =:]*(?:401|403)\b|\bunexpected status (?:401|403)\b"
+    r"|\b(?:Unauthorized|Forbidden|AuthorizationFailed|LinkedAuthorizationFailed|Authorization_RequestDenied"
+    r"|InsufficientScopes|InsufficientPrivileges|InsufficientPermissions|PrincipalTypeNotSupported|AccessDenied)\b"
+    r"|insufficient (?:privileges|permissions)|not authori[sz]ed|missing prv\w* privilege"
+    r"|(?:does not|doesn't|do not|don't) have (?:the |a |any )?(?:required |valid )?"
+    r"(?:permissions?|privileges?|access|authorization|licen[cs]es?)\b", re.I)
+ARM_ACTION = re.compile(r"perform action '([^']+)'", re.I)
+# Agent/app refusals name a Power Platform grant only when Power Platform refused, not a package registry.
+POWER_PLATFORM = re.compile(r"\bpac (?:copilot|auth|env)\b|\bms (?:app|auth|connector)\b|Studio agent step|/api/data/v"
+                            r"|Microsoft\.PowerApps/|\bprv[A-Z]\w*|\.crm\d*\.dynamics\.com|Copilot Studio|Dataverse", re.I)
+PACKAGE_REGISTRY = re.compile(r"\bnpm (?:ERR!|error)|\bNU\d{4}\b|nuget|registry\.npmjs\.org", re.I)
 PAT_STEPS = (
     "Add a Codespaces secret FABRIC_GITHUB_TOKEN for this repository (fine-grained, Contents read/write) "
     "and restart the Codespace, or export TF_VAR_github_token in your own shell with `read -rs`.",
@@ -128,11 +150,13 @@ class Stop(Exception):
     code = BLOCKED
     result = "blocked"
 
-    def __init__(self, message, *next_steps, approval=None):
+    def __init__(self, message, *next_steps, approval=None, detail=""):
         super().__init__(message)
         self.message = message
         self.next_steps = [step for step in next_steps if step]
         self.approval = approval
+        # Native output, used only to recognize a permission refusal; never reported.
+        self.detail = detail or ""
 
 
 class Blocked(Stop):
@@ -142,6 +166,14 @@ class Blocked(Stop):
 class Waiting(Stop):
     code = WAITING
     result = "waiting"
+
+
+class MissingPermission(Waiting):
+    """An API refused for lack of permission: name the exact manual grant, then wait for it."""
+
+    def __init__(self, message, *next_steps, grants):
+        super().__init__(message, *grants, *next_steps)
+        self.grants = list(grants)
 
 
 class NeedsApproval(Stop):
@@ -320,6 +352,7 @@ class Context:
         self.interactive = interactive
         self.environ = os.environ if environ is None else environ
         self.state = State(self.root / ".artifacts" / "deploy")
+        self.phases = PHASES
         self.phase = "deploy"
         self.deadline = None
         self.tokens = {}
@@ -472,16 +505,35 @@ def claims(token):
 
 
 def sign_in(ctx, command, reason, after=()):
-    """Run a person's sign-in interactively, or stop with the exact command to run."""
-    if ctx.interactive and ctx.prompt(f"{reason}\nRun `{quoted(command)}` now? [Y/n] ").strip().lower() in ("", "y", "yes"):
-        if run(ctx, command, interactive=True).code:
-            raise Blocked(f"{command[0]} sign-in did not complete.")
+    """Run one person's device-code sign-in now (see complete_sign_ins)."""
+    complete_sign_ins(ctx, [(reason, command, tuple(after))])
+
+
+def complete_sign_ins(ctx, pending):
+    """Run device-code sign-ins back to back before anything changes.
+
+    Each code prints to the terminal or, without one, to stderr (the caller's private log), never to a
+    report. In a terminal, one confirmation covers them all; declining stops with the commands instead.
+    """
+    names = "; ".join(label for label, *_ in pending)
+    steps = [step for _, command, after in pending
+             for step in (f"Run: {quoted(command)}", *(f"Then: {quoted(follow)}" for follow in after))]
+    rerun = f"Then rerun deploy.py {ctx.args.command}."
+    if ctx.interactive and ctx.prompt(f"Sign in now, before anything changes: {names}.\n"
+                                      "Each sign-in prints a device code here. Continue? [Y/n] "
+                                      ).strip().lower() not in ("", "y", "yes"):
+        raise Waiting(f"Sign-in required before anything changes: {names}.", *steps, rerun)
+    for number, (label, command, after) in enumerate(pending, 1):
+        ctx.log(f"Sign-in {number} of {len(pending)}: {label}. Open the device-code page below and enter its code "
+                "yourself; the code never reaches the report.")
+        env = dict(ctx.environ, **SIGN_IN_ENV) if command[0] == "az" else None
+        result = run(ctx, command, stream=not ctx.interactive, interactive=ctx.interactive, env=env)
+        if result.code:
+            raise Waiting(f"Sign-in did not complete: {label} (exit {result.code}).", f"Run: {quoted(command)}",
+                          *(f"Then: {quoted(follow)}" for follow in after), rerun)
         for follow in after:
             checked(ctx, follow, quiet=True)
-        ctx.tokens.clear()
-        return
-    raise Waiting(reason, f"Run: {quoted(command)}", *(f"Then: {quoted(follow)}" for follow in after),
-                  f"Then rerun deploy.py {ctx.args.command}.")
+    ctx.tokens.clear()
 
 
 def approve(ctx, key, description, pending=None):
@@ -649,7 +701,7 @@ def discard_plan(ctx, phase):
         ctx.state.save()
 
 
-def converge(ctx, phase, target=None, check=None, variables=None, before_apply=None):
+def converge(ctx, phase, target=None, check=None, variables=None, before_apply=None, note=None):
     """Plan, approve exactly that saved plan, apply it. Returns 'unchanged' or 'applied'."""
     destroy = phase == "destroy"
     if destroy and (target or variables):
@@ -685,7 +737,8 @@ def converge(ctx, phase, target=None, check=None, variables=None, before_apply=N
             return "unchanged"
         if result.code != 2:
             path.unlink(missing_ok=True)
-            raise Blocked(f"terraform plan failed for {phase}; nothing was applied.\n{tail(result.stdout)}")
+            raise Blocked(f"terraform plan failed for {phase}; nothing was applied.\n{tail(result.stdout)}",
+                          detail=result.stdout)
         shown = terraform(ctx, "show", "-json", str(path))
         try:
             summary = summarize(json.loads(shown.stdout)) if not shown.code else None
@@ -723,7 +776,7 @@ def converge(ctx, phase, target=None, check=None, variables=None, before_apply=N
                             f"Inspect: terraform -chdir=infra show {pending['path']}",
                             f"To apply exactly this plan, rerun with --allow-replace --approve {phase}={pending['sha256'][:12]}.",
                             approval=approval_record(phase, f"Apply the saved {phase} plan", pending))
-    approve(ctx, phase, f"Apply the saved {phase} plan ({describe(summary)})", pending)
+    approve(ctx, phase, f"Apply the saved {phase} plan ({describe(summary)})" + (f"; {note}" if note else ""), pending)
     if before_apply:
         before_apply()
     result = terraform(ctx, "apply", "-input=false", pending["path"], token=git_token_required(ctx), stream=True)
@@ -731,13 +784,13 @@ def converge(ctx, phase, target=None, check=None, variables=None, before_apply=N
     ctx.forget()
     if result.code:
         stale = " The saved plan was stale." if "stale" in result.stdout.lower() else ""
-        refused = re.search(r"\b(401|403|Unauthorized|Forbidden|InsufficientScopes|insufficient privileges)\b",
-                            result.stdout, re.I)
-        hints = fabric_login_steps(ctx) if refused else ()
+        fabric_refused = (re.search(r"with fabric_|api\.fabric\.microsoft\.com|InsufficientScopes", result.stdout)
+                          and DENIED.search(result.stdout))
+        hints = fabric_login_steps(ctx) if fabric_refused else ()
         raise Blocked(f"terraform apply failed during {phase}; state is preserved.{stale}",
                       "Investigate the error above, then rerun: a fresh plan is created from the current state.",
-                      *(("An authorization error can need consent propagation or the scoped sign-in:",) + hints
-                        if hints else ()))
+                      *(("Right after consent, Fabric can refuse until it propagates or you refresh the scoped sign-in:",)
+                        + hints if hints else ()), detail=result.stdout)
     return "applied"
 
 
@@ -749,7 +802,7 @@ def retry_after(response, default=5):
 
 
 def fabric_login_steps(ctx):
-    auth = ctx.cache.get("outputs", {}).get("fabric_user_auth") or {}
+    auth = ctx.cache.get("outputs", {}).get("fabric_user_auth") or ctx.state.data.get("consent") or {}
     if auth.get("login_scope"):
         return (f"Run: az login --use-device-code --tenant {auth.get('tenant_id')} --scope {auth['login_scope']}",
                 "Then select your subscription again and rerun deploy.py up.")
@@ -915,6 +968,155 @@ def git_token_required(ctx):
     return variables(ctx)["fabric_git_enabled"]
 
 
+def phase_signin(ctx):
+    """Complete every sign-in this run's phases need, back to back, before anything is created or changed."""
+    github_sign_in(ctx)
+    origin, _ = project_repository(ctx)  # Refuses the template and its forks before any other sign-in.
+    needs = sign_in_needs(ctx)
+    if needs["pac"]:
+        checked(ctx, ["dotnet", "tool", "restore"], "dotnet tool restore")
+    # Three rounds of sign-ins, each checked afterwards.
+    for attempt in range(4):
+        pending, done = missing_sign_ins(ctx, needs)
+        if not pending:
+            return "; ".join([f"GitHub CLI for {origin}", *done])
+        if attempt < 3:
+            complete_sign_ins(ctx, pending)
+    directory = any(command[:2] == ["az", "login"] and "--scope" not in command for _, command, _ in pending)
+    raise Waiting("Sign-in is still incomplete: " + "; ".join(label for label, *_ in pending) + ".",
+                  *(f"Run: {quoted(command)}" for _, command, _ in pending),
+                  "If the subscription belongs to another directory, rerun with --tenant <tenant-id>." if directory else "",
+                  "Use the deploying user's account in the deployment tenant for every CLI, "
+                  f"then rerun deploy.py {ctx.args.command}.")
+
+
+def github_sign_in(ctx):
+    """GitHub CLI reads the repository before anything else; its browser flow needs a terminal."""
+    status = ["gh", "auth", "status", "--hostname", "github.com"]
+    if not run(ctx, status).code:
+        return
+    login = ["gh", "auth", "login", "--hostname", "github.com", "--git-protocol", "https", "--web"]
+    if ctx.interactive:
+        complete_sign_ins(ctx, [("GitHub CLI", login, ())])
+        if not run(ctx, status).code:
+            return
+    raise Waiting("Sign in to GitHub CLI first; the runner reads this repository with it.",
+                  f"Run: {quoted(login)}", f"Then rerun deploy.py {ctx.args.command}.")
+
+
+def sign_in_needs(ctx):
+    """The Power Platform environment PAC must target, and whether `ms` runs, in this run's phases."""
+    if "destroy" in ctx.phases:
+        choices, data = ctx.state.section("choices"), ctx.state.data
+        environment, url = choices.get("environment_id"), choices.get("environment_url")
+        deleted = data.get("destroy") or {}
+        agent = ((bool(data.get("agent")) or "agent" in (data.get("phases") or {}))
+                 and not deleted.get("runtime_deleted_at"))
+        app = (((ctx.root / "ms.config.json").is_file() or bool((data.get("app") or {}).get("app_id")))
+               and not deleted.get("app_deleted_at"))
+        return {"pac": (environment, url) if agent and environment and url else None, "ms": app}
+    return {"pac": power_platform(ctx) if "agent" in ctx.phases else None, "ms": "app" in ctx.phases}
+
+
+def missing_sign_ins(ctx, needs):
+    """Return (missing device-code sign-ins as (label, command, follow-ups), completed sign-ins)."""
+    pending, done = [], []
+    tenant, subscription, login = azure_sign_in(ctx)
+    reselect = (["az", "account", "set", "--subscription", subscription],) if subscription else ()
+    if login:
+        access = f" with access to subscription {subscription}" if subscription else ""
+        pending.append((f"Azure CLI as the deploying user{access}", login, reselect))
+    else:
+        audiences = token_audiences(ctx, needs)
+        failing = [(label, request) for label, request in audiences
+                   if not access_token(ctx, tenant=tenant, **request)]
+        relogin = ["az", "login", "--use-device-code", "--tenant", tenant]
+        if failing and failing[0] == audiences[0]:
+            # Without an Azure Resource Manager token, the whole Azure CLI sign-in has expired.
+            pending.append(("Azure CLI (expired sign-in)", relogin, reselect))
+        elif failing:
+            pending += [(f"Azure CLI for {label}",
+                         relogin + ["--scope", request.get("scope") or request["resource"] + "/.default"], reselect)
+                        for label, request in failing]
+        else:
+            done.append(f"Azure CLI in tenant {tenant} (tokens for "
+                        + ", ".join(label for label, _ in audiences) + ")")
+    if needs["pac"]:
+        environment, url = needs["pac"]
+        if pac_ready(ctx, url):
+            done.append(f"Power Platform CLI on {url}")
+        else:
+            pending.append((f"Power Platform CLI for environment {environment}",
+                            ["dotnet", "pac", "auth", "create", "--environment", environment, "--deviceCode"], ()))
+    if needs["ms"]:
+        cached = ms_tenant(ctx)
+        if cached is None or (tenant and not same_guid(cached, tenant)):
+            pending.append(("Managed Runtime CLI", ["ms", "auth", "login", "--device-code"], ()))
+        elif tenant:
+            done.append("Managed Runtime CLI")
+    return pending, done
+
+
+def azure_sign_in(ctx):
+    """Return (tenant, subscription, the Azure CLI login command when the deploying user must sign in)."""
+    choices = ctx.state.section("choices")
+    subscription = ctx.args.subscription or choices.get("subscription")
+    expected = ctx.args.tenant or choices.get("tenant")
+    login = ["az", "login", "--use-device-code", *(["--tenant", expected] if expected else [])]
+    result = run(ctx, ["az", "account", "show", "--only-show-errors", "--output", "json",
+                       *(["--subscription", subscription] if subscription else [])])
+    if result.code:
+        # Not signed in, or this sign-in cannot see the chosen subscription.
+        return expected, subscription, login
+    try:
+        account = json.loads(result.stdout)
+    except ValueError:
+        raise Blocked("Azure CLI did not return its account as JSON.") from None
+    if (account.get("user") or {}).get("type") != "user":
+        raise Blocked("Azure CLI is signed in as a service principal; the bundled notebooks need the deploying user.",
+                      f"Run: {quoted(login)}", f"Then rerun deploy.py {ctx.args.command}.")
+    tenant = guid(account.get("tenantId"), "Azure CLI tenant")
+    if expected and not same_guid(tenant, expected):
+        return expected, subscription, login
+    return tenant, subscription, None
+
+
+def token_audiences(ctx, needs):
+    """The Azure CLI token audiences that this run's phases and native tools request."""
+    later = set(ctx.phases) - {"signin", "config"}
+    audiences = [("Azure Resource Manager", {"resource": ARM_API + "/"})]
+    if later:
+        audiences.append(("Microsoft Graph", {"resource": GRAPH_API}))
+    if later - {"preflight"}:
+        audiences.append(("Fabric", {"resource": FABRIC_API}))
+        login_scope = (ctx.state.data.get("consent") or {}).get("login_scope")
+        # Teardown deletes the registration behind this scope, so a resumed `down` must not require it.
+        if login_scope and "destroy" not in ctx.phases:
+            audiences.append(("the Fabric deployment scope", {"scope": login_scope}))
+    if "verify" in ctx.phases:
+        audiences.append(("Azure AI Search", {"resource": SEARCH_RESOURCE}))
+    if needs["pac"]:
+        audiences += [("Dataverse", {"resource": needs["pac"][1]}),
+                      ("Power Apps", {"resource": studio.POWERAPPS_RESOURCE})]
+    return audiences
+
+
+def pac_ready(ctx, url):
+    """True when PAC's active profile targets the environment; a signed-in profile is pointed at it, not re-created."""
+    host = urllib.parse.urlparse(url).netloc
+
+    def active():
+        who = run(ctx, ["dotnet", "pac", "env", "who"])
+        return not who.code and host in who.stdout.lower()
+
+    if active():
+        return True
+    if run(ctx, ["dotnet", "pac", "env", "select", "--environment", url]).code or not active():
+        return False
+    ctx.log(f"Selected {url} for the active PAC profile instead of signing in again.")
+    return True
+
+
 def phase_config(ctx):
     origin, metadata = project_repository(ctx)
     if not (ctx.infra / "terraform.tfvars").exists():
@@ -1041,10 +1243,11 @@ def phase_preflight(ctx):
         notes.append(check_model_quota(ctx, values))
     # Checked on every run: a changed tier or region replaces Search, which state cannot reveal here.
     notes.append(check_search_tier(ctx, subscription, values))
-    ctx.log("Not verified here: administrator-owned Fabric tenant settings ("
+    ctx.log("Not checked up front, because administrator access is assumed: Fabric tenant settings ("
             + ("Git/GitHub sync, " if values["fabric_git_enabled"] else "") + "ontology and "
             "deployment-plan previews, OneLake external access)"
-            + ("." if values["search_sku"] == "serverless" else " and dedicated Search new-service capacity."))
+            + ("" if values["search_sku"] == "serverless" else " and dedicated Search new-service capacity")
+            + ". A refusal names the grant to request.")
     return "; ".join(notes)
 
 
@@ -1070,7 +1273,7 @@ def signed_in_account(ctx):
     if result.code:
         tenant = ctx.args.tenant or ctx.state.section("choices").get("tenant")
         sign_in(ctx, ["az", "login", "--use-device-code", *(["--tenant", tenant] if tenant else [])],
-                "Sign in to Azure CLI as the deploying user (device code; your MFA).")
+                "Azure CLI as the deploying user")
         result = checked(ctx, ["az", "account", "show", "--only-show-errors", "--output", "json"], quiet=True)
     account = json.loads(result.stdout)
     if ctx.args.tenant and not same_guid(account.get("tenantId"), ctx.args.tenant):
@@ -1149,7 +1352,7 @@ def check_search_tier(ctx, subscription, values):
 
 
 def serverless_feature(ctx, subscription):
-    """The serverless tier is gated by an auto-approved subscription preview feature."""
+    """Register the serverless tier's auto-approved subscription preview feature as the assumed subscription owner."""
     url = (f"{ARM_API}/subscriptions/{subscription}/providers/Microsoft.Features/providers/Microsoft.Search"
            "/features/Serverless?api-version=2021-07-01")
 
@@ -1158,33 +1361,41 @@ def serverless_feature(ctx, subscription):
                           quiet=True) or {}
         return (feature.get("properties") or {}).get("state") or "NotRegistered"
 
-    current = state()
     scope = ["--subscription", subscription, "--only-show-errors", "--output", "none"]
-    flag = ctx.args.register_search_serverless
-    if current != "Registered":
-        if not flag:
-            raise Waiting(f"The serverless Search tier needs the subscription's auto-approved Microsoft.Search/Serverless "
-                          f"preview feature (currently {current}).",
-                          f"Run: az feature register --namespace Microsoft.Search --name Serverless --subscription {subscription}",
-                          f"Then: az provider register --namespace Microsoft.Search --wait --subscription {subscription}",
-                          "Or rerun with --register-search-serverless to let the runner do both, or set "
-                          'search_sku = "basic" (about 20 minutes to provision).')
-        if current != "Pending":
-            checked(ctx, ["az", "feature", "register", "--namespace", "Microsoft.Search", "--name", "Serverless", *scope],
-                    "Registering Microsoft.Search/Serverless")
-        for _ in range(18):
-            current = state()
-            if current == "Registered":
-                break
-            ctx.sleep(10)
-        else:
-            raise Waiting("Microsoft.Search/Serverless registration is still pending.", "Rerun deploy.py up in a few minutes.")
-    if not flag:
+    register = ["az", "feature", "register", "--namespace", "Microsoft.Search", "--name", "Serverless", *scope]
+    reregister = ["az", "provider", "register", "--namespace", "Microsoft.Search", "--wait", *scope]
+    owner = (f"A subscription Owner or Contributor runs: {quoted(register)}", f"Then: {quoted(reregister)}",
+             'Or set search_sku = "basic" (about 20 minutes to provision).')
+    receipt = ctx.state.section("preflight")
+    current = state()
+    if current == "Registered" and (receipt.get("search_serverless") == subscription or ctx.args.manual_grants):
         return "Microsoft.Search/Serverless registered"
-    # Re-registering the provider propagates the feature; repeat it on every flagged run so it can resume.
-    checked(ctx, ["az", "provider", "register", "--namespace", "Microsoft.Search", "--wait", *scope],
-            "Re-registering Microsoft.Search")
-    return "Microsoft.Search/Serverless registered and Microsoft.Search re-registered (--register-search-serverless)"
+    if current != "Registered" and ctx.args.manual_grants:
+        raise Waiting(f"The serverless Search tier needs the subscription's auto-approved Microsoft.Search/Serverless "
+                      f"preview feature (currently {current}); --manual-grants leaves its registration to an owner.",
+                      *owner)
+    if current not in ("Registered", "Pending"):
+        ctx.log("Registering the subscription's auto-approved Microsoft.Search/Serverless preview feature that the "
+                "serverless Search tier needs.")
+        try:
+            checked(ctx, register, "Registering Microsoft.Search/Serverless")
+        except Blocked as error:
+            raise Blocked(error.message, *owner) from None
+    for _ in range(18):
+        current = state()
+        if current == "Registered":
+            break
+        ctx.sleep(10)
+    else:
+        raise Waiting("Microsoft.Search/Serverless registration is still pending.", "Rerun deploy.py up in a few minutes.")
+    # Re-registering the provider propagates the feature; the receipt keeps later runs from repeating it.
+    try:
+        checked(ctx, reregister, "Re-registering Microsoft.Search")
+    except Blocked as error:
+        raise Blocked(error.message, *owner[1:]) from None
+    receipt["search_serverless"] = subscription
+    ctx.state.save()
+    return "Microsoft.Search/Serverless registered and Microsoft.Search re-registered"
 
 
 def phase_identity(ctx):
@@ -1208,31 +1419,70 @@ def phase_identity(ctx):
         if risky:
             raise Blocked("The identity bootstrap plan would delete or replace: " + ", ".join(risky))
 
-    converge(ctx, "identity", target=IDENTITY_TARGET, check=only_identity)
+    converge(ctx, "identity", target=IDENTITY_TARGET, check=only_identity,
+             note=None if ctx.args.manual_grants else
+             "the consent phase then grants its declared delegated Fabric scopes tenant-wide as you")
     if not IDENTITY_ADDRESSES <= state_addresses(ctx):
         raise Blocked("The identity apply finished without every registration resource in state.")
-    return "registration prepared; administrator consent is next (not a Fabric-ready state)"
+    return "registration prepared; consent is next (not a Fabric-ready state)"
 
 
 def consent_state(ctx, auth, scopes):
+    """Read the registration's tenant-wide grant as (state, target): granted, missing, partial or unverified."""
     resource = az_json(ctx, ["ad", "sp", "show", "--id", POWER_BI_APP_ID, "--query", "{id:id}"],
                        "Reading the Power BI Service principal", quiet=True)
-    client = guid(auth.get("service_principal_object_id"), "service_principal_object_id")
+    target = {"clientId": guid(auth.get("service_principal_object_id"), "service_principal_object_id"),
+              "resourceId": guid((resource or {}).get("id"), "Power BI Service principal id")}
+    client = target["clientId"]
     token = access_token(ctx, resource=GRAPH_API)
     if not token:
-        return "unverified"
+        return "unverified", target
     response = ctx.http.request("GET", f"{GRAPH_API}/v1.0/servicePrincipals/{client}/oauth2PermissionGrants",
                                 headers={"Authorization": f"Bearer {token}"})
     if response.status in (401, 403):
-        return "unverified"
+        return "unverified", target
     if response.status != 200:
         raise ServiceError("Reading the registration's consent grants", response)
     grants = [grant for grant in response.json(default={}).get("value") or []
-              if grant.get("consentType") == "AllPrincipals" and same_guid(grant.get("resourceId"), resource.get("id"))]
+              if grant.get("consentType") == "AllPrincipals" and same_guid(grant.get("resourceId"), target["resourceId"])]
     if not grants:
-        return "missing"
+        return "missing", target
     missing = sorted(set(scopes) - set(" ".join(grant.get("scope") or "" for grant in grants).split()))
-    return ("partial", missing) if missing else "granted"
+    return ("partial", dict(target, grant=grants[0], missing=missing)) if missing else ("granted", target)
+
+
+def grant_consent(ctx, auth, scopes, state, target):
+    """Grant exactly the declared scopes tenant-wide as the signed-in user, who is assumed to be an administrator."""
+    manual = (f"An Entra administrator (Cloud Application Administrator or Application Administrator) opens "
+              f"{auth.get('api_permissions_url')} and selects Grant admin consent for the {len(scopes)} delegated "
+              "Fabric scopes.")
+    rerun = f"Then rerun deploy.py {ctx.args.command}; the runner verifies the grant before continuing."
+    if ctx.args.manual_grants:
+        raise Waiting(f"Tenant-wide consent for {auth.get('client_id')} is {state}; --manual-grants leaves it to an "
+                      "administrator.", manual, rerun)
+    token = access_token(ctx, resource=GRAPH_API) or ""
+    headers = {"Authorization": f"Bearer {token}"}
+    if state == "missing":
+        ctx.log(f"Granting tenant-wide consent for exactly the {len(scopes)} declared delegated Fabric scopes as you.")
+        response = ctx.http.request("POST", f"{GRAPH_API}/v1.0/oauth2PermissionGrants", headers=headers, body={
+            "clientId": target["clientId"], "consentType": "AllPrincipals", "resourceId": target["resourceId"],
+            "scope": " ".join(scopes)})
+    else:
+        grant = target["grant"]
+        identifier = urllib.parse.quote(str(grant.get("id") or ""), safe="")
+        if not identifier:
+            raise Blocked("The existing tenant-wide grant has no ID to complete.", manual)
+        ctx.log("Adding the missing declared scopes to the tenant-wide grant as you: " + ", ".join(target["missing"]))
+        # Graph replaces the scope list, so keep every scope already granted.
+        scope = " ".join(sorted(set((grant.get("scope") or "").split()) | set(scopes)))
+        response = ctx.http.request("PATCH", f"{GRAPH_API}/v1.0/oauth2PermissionGrants/{identifier}",
+                                    headers=headers, body={"scope": scope})
+    if response.status in (401, 403):
+        raise MissingPermission(ServiceError("Granting tenant-wide consent", response).message
+                                + " This sign-in cannot grant tenant-wide consent.", rerun, grants=[manual])
+    # 409: an identical grant appeared meanwhile; the caller reads it back either way.
+    if response.status not in (200, 201, 204, 409):
+        raise ServiceError("Granting tenant-wide consent", response)
 
 
 def phase_consent(ctx):
@@ -1241,50 +1491,60 @@ def phase_consent(ctx):
     if not same_guid(tenant, ctx.target("tenant_id")):
         raise Blocked("The registration's tenant differs from the signed-in deployment tenant.")
     scopes = sorted(auth.get("delegated_scopes") or [])
-    grant = consent_state(ctx, auth, scopes)
-    if grant == "missing":
-        if not ctx.args.grant_admin_consent:
-            raise Waiting(f"Administrator consent is pending for {auth.get('client_id')}.",
-                          f"An administrator opens {auth.get('api_permissions_url')} and selects Grant admin consent "
-                          f"for the {len(scopes)} delegated Fabric scopes.",
-                          "If you are that administrator, rerun with --grant-admin-consent.")
-        ctx.log(f"Granting tenant-wide consent for exactly {len(scopes)} declared delegated scopes "
-                "as the signed-in administrator (--grant-admin-consent).")
-        result = run(ctx, ["az", "ad", "app", "permission", "grant", "--only-show-errors",
-                           "--id", auth["client_id"], "--api", POWER_BI_APP_ID, "--scope", " ".join(scopes),
-                           "--consent-type", "AllPrincipals", "--output", "none"])
-        if result.code:
-            raise Blocked("Granting admin consent failed; it needs an administrator role such as "
-                          "Cloud Application Administrator.\n" + tail(result.stderr))
-        grant = consent_state(ctx, auth, scopes)
-        if grant != "granted":
-            raise Waiting("Consent was granted but is not visible yet.", "Rerun deploy.py up in a minute.")
-    if isinstance(grant, tuple):
-        raise Blocked("The existing tenant-wide grant lacks: " + ", ".join(grant[1]),
-                      f"An administrator reviews and completes it at {auth.get('api_permissions_url')}.")
-    if grant == "unverified":
+    # Non-secret: lets later runs check the scoped token during the up-front sign-in.
+    receipt = ctx.state.section("consent")
+    receipt.update(tenant_id=tenant, client_id=auth.get("client_id"), login_scope=auth.get("login_scope"),
+                   api_permissions_url=auth.get("api_permissions_url"))
+    ctx.state.save()
+    state, target = consent_state(ctx, auth, scopes)
+    granted_now = state in ("missing", "partial")
+    if granted_now:
+        grant_consent(ctx, auth, scopes, state, target)
+        for attempt in range(6):
+            state, target = consent_state(ctx, auth, scopes)
+            if state == "granted" or attempt == 5:
+                break
+            ctx.sleep(10)
+        if state != "granted":
+            raise Waiting("Consent was granted but is not visible yet.", f"Rerun deploy.py {ctx.args.command} in a minute.")
+        receipt["granted_at"] = utc_now()
+        ctx.state.save()
+    if state == "unverified":
         if not ctx.args.consent_confirmed:
-            raise Waiting("This sign-in cannot read the registration's consent grants, so consent is unverified.",
-                          f"Ask the administrator to confirm consent at {auth.get('api_permissions_url')}.",
-                          "Then rerun with --consent-confirmed.")
+            raise MissingPermission(
+                "This sign-in cannot read the registration's consent grants, so it can neither grant nor verify them.",
+                "Then rerun with --consent-confirmed.",
+                grants=[f"An Entra administrator grants or confirms tenant-wide consent at "
+                        f"{auth.get('api_permissions_url')} for the {len(scopes)} delegated Fabric scopes."])
         ctx.log("Consent confirmed with --consent-confirmed; this sign-in cannot read grants to verify it.")
     subscription = ctx.target("subscription_id")
     login = ["az", "login", "--use-device-code", "--tenant", tenant, "--scope", auth["login_scope"]]
     reselect = ["az", "account", "set", "--subscription", subscription]
     if not access_token(ctx, scope=auth["login_scope"], tenant=tenant):
-        sign_in(ctx, login, "Sign in with the generated deployment scope (device code; your MFA).", after=(reselect,))
+        sign_in(ctx, login, "Azure CLI for the Fabric deployment scope", after=(reselect,))
     paths = ["/v1/workspaces", "/v1/capacities"]
     if git_token_required(ctx):
         paths.append("/v1/connections")
+    # A fresh grant can take minutes to reach Fabric: observe it within the phase instead of stopping.
+    attempts = 10 if granted_now else 1
     for path in paths:
-        response = fabric(ctx, "GET", path)
+        for attempt in range(1, attempts + 1):
+            response = fabric(ctx, "GET", path)
+            if response.status not in (401, 403) or attempt == attempts or ctx.remaining() < 60:
+                break
+            ctx.log(f"Fabric refused {path} (HTTP {response.status}) right after consent; retrying while it propagates.")
+            ctx.tokens.clear()
+            ctx.sleep(30)
         if response.status in (401, 403):
             raise Waiting(f"Fabric refused {path} for the signed-in user (HTTP {response.status}).",
                           f"Run: {quoted(login)}", f"Then: {quoted(reselect)}",
                           "Allow a few minutes for consent to propagate, then rerun deploy.py up.")
         if response.status != 200:
             raise ServiceError(f"Reading {path}", response)
-    return "consent granted; delegated Fabric reads verified (writes are proven by the platform apply)"
+    receipt["verified_at"] = utc_now()
+    ctx.state.save()
+    how = "by you just now" if granted_now else ("confirmed by an administrator" if state == "unverified" else "already")
+    return f"consent granted ({how}); delegated Fabric reads verified (writes are proven by the platform apply)"
 
 
 def phase_platform(ctx):
@@ -2152,8 +2412,12 @@ def power_platform(ctx):
     url = ctx.args.environment_url and https_origin(ctx.args.environment_url, "--environment-url")
     environment, url = choose(ctx, "environment_id", environment), choose(ctx, "environment_url", url)
     if not (environment and url):
-        raise Waiting("Choose the Power Platform environment for the agent and app (the one `ms` uses for your apps).",
-                      "Rerun with --environment-id <guid> --environment-url https://<org>.crm.dynamics.com.")
+        raise Waiting("Choose the Power Platform environment for the agent and app now, so its sign-ins happen "
+                      "before anything is deployed.",
+                      "Find a non-Default environment's ID and Org URL in Power Apps (Settings > Session details) "
+                      "or with `dotnet pac env list`.",
+                      "Rerun with --environment-id <guid> --environment-url https://<org>.crm.dynamics.com, or with "
+                      "--through verify to deploy and verify DEV first.")
     return environment, url
 
 
@@ -2182,13 +2446,10 @@ def phase_agent(ctx):
         raise Blocked("The scenario ontology is not registered; complete the knowledge phase first.")
     receipts = ctx.state.section("agent")
     checked(ctx, ["dotnet", "tool", "restore"], "dotnet tool restore")
-    host = urllib.parse.urlparse(url).netloc
-    who = run(ctx, ["dotnet", "pac", "env", "who"])
-    if who.code or host not in who.stdout.lower():
+    if not pac_ready(ctx, url):
         sign_in(ctx, ["dotnet", "pac", "auth", "create", "--environment", environment, "--deviceCode"],
-                f"Sign in to the Power Platform CLI for environment {environment} (device code).")
-        who = run(ctx, ["dotnet", "pac", "env", "who"])
-        if who.code or host not in who.stdout.lower():
+                f"Power Platform CLI for environment {environment}")
+        if not pac_ready(ctx, url):
             raise Blocked(f"PAC is not using {url}; select that profile with `dotnet pac auth list` / `select`.")
     bot = studio_command(ctx, "find", "--tenant-id", tenant, "--dataverse-url", url, "--agent-schema", schema,
                          "--environment-id", environment)
@@ -2292,14 +2553,19 @@ def set_agent_schema(path, schema):
     return True
 
 
-def ms_signed_in(ctx, tenant):
+def ms_tenant(ctx):
+    """The Managed Runtime CLI's signed-in home tenant, or None."""
     result = run(ctx, ["ms", "auth", "status", "--json"])
     if result.code:
-        return False
+        return None
     try:
-        return same_guid(runtime.cached_tenant(json.loads(result.stdout)), tenant)
+        return runtime.cached_tenant(json.loads(result.stdout))
     except (ValueError, TypeError, runtime.PreflightError):
-        return False
+        return None
+
+
+def ms_signed_in(ctx, tenant):
+    return same_guid(ms_tenant(ctx), tenant)
 
 
 def lockfile_out_of_sync(root):
@@ -2339,7 +2605,7 @@ def phase_app(ctx):
         ctx.state.save()
     tenant = ctx.target("tenant_id")
     if not ms_signed_in(ctx, tenant):
-        sign_in(ctx, ["ms", "auth", "login", "--device-code"], "Sign in to the Managed Runtime CLI (device code).")
+        sign_in(ctx, ["ms", "auth", "login", "--device-code"], "Managed Runtime CLI")
         if not ms_signed_in(ctx, tenant):
             raise Blocked("ms is not signed in to the deployment tenant.")
     config = ctx.root / "ms.config.json"
@@ -2499,7 +2765,9 @@ def teardown_snapshot(ctx):
     elif ctx.state.section("app").get("init_started_at") and not ctx.state.section("destroy").get("snapshot"):
         raise Blocked("App registration may exist but ms.config.json is missing.",
                       "Recover it with ms app list / ms app info before teardown.")
-    native = app or ctx.state.section("agent") or ctx.state.section("app") or environment or url
+    # The environment is chosen before any sign-in, so only agent/app receipts show that runtime items may exist.
+    ran = ctx.state.data.get("phases") or {}
+    native = app or ctx.state.section("agent") or ctx.state.section("app") or "agent" in ran or "app" in ran
     if native and not (environment and url):
         raise Waiting("Teardown needs the agent/app environment ID and Dataverse URL.",
                       "Pass --environment-id <guid> --environment-url https://<org>.crm.dynamics.com.")
@@ -2662,8 +2930,85 @@ def phase_destroy(ctx):
     return f"{result}; managed resources deleted; retained data and shared connections need manual cleanup"
 
 
+def permission_grants(ctx, phase, text):
+    """Name the manual grant behind an API's refusal for lack of permission; empty for any other failure."""
+    subscription = ctx.state.section("target").get("subscription_id") or "the deployment subscription"
+    environment = ctx.state.section("choices").get("environment_id") or "the chosen Power Platform environment"
+    portal = (ctx.state.data.get("consent") or {}).get("api_permissions_url") or "its api_permissions_url"
+    grants = []
+    native = (phase in ("agent", "app") and "GitHub App" not in text and POWER_PLATFORM.search(text)
+              and not PACKAGE_REGISTRY.search(text))
+
+    def grant(line):
+        if line not in grants:
+            grants.append(line)
+
+    # Terraform reports one "Error:" block per failed resource; classify each block on its own.
+    for block in re.split(r"(?m)^[│|\s]*Error: ", text):
+        policy = re.search(r"RequestDisallowedByPolicy|Data Loss Prevention|\bDLP\b", block, re.I)
+        if not (DENIED.search(block) or policy):
+            continue
+        actions = [action.lower() for action in ARM_ACTION.findall(block)]
+        if actions or re.search(r"\b(?:Linked)?AuthorizationFailed\b", block):
+            rbac = [action for action in actions if "/roleassignments/" in action]
+            providers = [action for action in actions if action.endswith("/register/action")]
+            if rbac:
+                grant(f"A subscription Owner assigns you Role Based Access Control Administrator or User Access "
+                      f"Administrator (or Owner) on subscription {subscription}; Terraform creates resource-scoped "
+                      "role assignments.")
+            if providers:
+                grant(f"A subscription Owner or Contributor registers the required resource providers and preview "
+                      f"features in subscription {subscription}, or assigns you Contributor there.")
+            if not actions or len(rbac) + len(providers) < len(actions):
+                grant(f"A subscription Owner assigns you Contributor (or Owner) on subscription {subscription}.")
+        if "RequestDisallowedByPolicy" in block:
+            grant("An Azure Policy administrator exempts this deployment from the denying assignment named in the "
+                  "error, or names the compliant settings to use.")
+        if phase in ("identity", "platform", "knowledge", "destroy") and re.search(
+                r"Authorization_RequestDenied|insufficient privileges to complete the operation", block, re.I):
+            grant("An Entra administrator assigns you Application Developer or Cloud Application Administrator, or "
+                  "allows users to register applications, so you can create and manage the deployment app "
+                  "registration and its service principal.")
+        fabric = phase == "bootstrap" or re.search(r"with fabric_|api\.fabric\.microsoft\.com", block)
+        if (fabric and not actions and phase in ("platform", "bootstrap", "knowledge", "destroy")
+                and "FeatureNotAvailable" not in block):
+            grant(f"An Entra administrator grants the deployment registration's delegated Fabric scopes at {portal}."
+                  if "InsufficientScopes" in block else
+                  "A Fabric administrator enables the tenant settings in getting started for you (create workspaces, "
+                  "deployment pipelines, ontology and deployment-plan items) and lists you in fabric_capacity_admins. "
+                  "Right after consent, a refusal can also be propagation: rerun in a few minutes.")
+        if phase == "config" and not actions:
+            grant("The owner of your Terraform backend grants you read, write and lock access to its state (for "
+                  "azurerm: Storage Blob Data Contributor on the state container).")
+        if native:
+            if re.search(r"licen[cs]e", block, re.I):
+                grant("Your Microsoft 365 administrator assigns you a Copilot Studio license that permits publishing."
+                      if phase == "agent" else "Your administrator gives each app user Power Apps Premium or "
+                      "Managed Application Copilot Credits.")
+            elif policy:
+                grant(f"A Power Platform administrator allows the Microsoft Copilot Studio, Fabric IQ and Foundry IQ "
+                      f"connectors in the data policies of environment {environment}.")
+            else:
+                grant(f"A Power Platform administrator assigns you Environment Maker and the Copilot Studio agent "
+                      f"author security role (see preparation.md) in environment {environment}."
+                      if phase == "agent" else
+                      f"A Power Platform administrator lets you create apps and connections in environment "
+                      f"{environment} (Environment Maker).")
+    return grants
+
+
+def as_missing_permission(ctx, phase, stop):
+    """Report a phase's refusal for lack of permission as the manual grant it needs."""
+    grants = permission_grants(ctx, phase, f"{stop.message}\n{stop.detail}")
+    if not grants:
+        return stop
+    return MissingPermission(f"Missing permission: {stop.message}", *stop.next_steps,
+                             f"After the grant, rerun deploy.py {ctx.args.command}; completed work is not repeated.",
+                             grants=grants)
+
+
 PHASE_FUNCTIONS = {
-    "config": phase_config, "preflight": phase_preflight, "identity": phase_identity,
+    "signin": phase_signin, "config": phase_config, "preflight": phase_preflight, "identity": phase_identity,
     "consent": phase_consent, "platform": phase_platform, "bootstrap": phase_bootstrap,
     "knowledge": phase_knowledge, "verify": phase_verify, "agent": phase_agent, "app": phase_app,
     "destroy": phase_destroy,
@@ -2673,6 +3018,7 @@ PHASE_FUNCTIONS = {
 def run_phases(ctx, phases):
     ctx.state.lock()
     ctx.state.load()
+    ctx.phases = phases
     if ctx.args.command == "up" and ctx.state.section("destroy").get("started_at"):
         raise Blocked("This deployment is being torn down; do not resume up with its old receipts.")
     report = {"result": "done", "phases": {}}
@@ -2688,12 +3034,16 @@ def run_phases(ctx, phases):
                 "This is a runner bug or an unrecognized service response; nothing was retried.")
             if not isinstance(error, Stop):
                 traceback.print_exc(file=sys.stderr)
+            elif isinstance(error, Blocked):
+                stop = as_missing_permission(ctx, phase, error)
             seconds = round(ctx.clock() - began)
             report["phases"][phase] = {"status": stop.result, "detail": stop.message, "seconds": seconds}
             report.update(result=stop.result, phase=phase, message=stop.message, next=stop.next_steps,
                           seconds=round(ctx.clock() - began_run))
             if stop.approval:
                 report["approval"] = stop.approval
+            if isinstance(stop, MissingPermission):
+                report["grants"] = stop.grants
             record_phase(ctx, phase, stop.result, stop.message, seconds)
             return stop.code, report
         seconds = round(ctx.clock() - began)
@@ -2779,7 +3129,9 @@ def parse_arguments(argv):
                        help="approve a saved plan by hash (identity|platform|knowledge|destroy=SHA) or an action "
                             "(agent-create, agent-connections, agent-publish, app-register, runtime-delete, purge-foundry)")
     group.add_argument("--retry-failed", action="store_true", help="resubmit a reviewed failed or unconfirmed operation")
-    group.add_argument("--non-interactive", action="store_true", help="never prompt; stop with exit 3 or 4 instead")
+    group.add_argument("--non-interactive", action="store_true",
+                       help="never prompt: approvals stop with exit 4; device-code sign-ins still run and print their "
+                            "codes to stderr only")
     group.add_argument("--timeout-minutes", type=int, default=30, help="observation window per phase (default 30)")
     group = options.add_argument_group("target (remembered in .artifacts/deploy/state.json)")
     group.add_argument("--subscription", help="Azure subscription ID or name (required on first run)")
@@ -2797,13 +3149,11 @@ def parse_arguments(argv):
     group.add_argument("--capacity-admin", action="append")
     group.add_argument("--github-branch")
     group = deployment.add_argument_group("explicit gate choices")
-    group.add_argument("--grant-admin-consent", action="store_true",
-                       help="you are a tenant administrator: grant consent for exactly the declared delegated scopes")
+    group.add_argument("--manual-grants", action="store_true",
+                       help="you are not an administrator or policy requires one: never grant tenant-wide consent or "
+                            "register subscription preview features yourself; print them for an administrator")
     group.add_argument("--consent-confirmed", action="store_true",
                        help="an administrator confirmed consent and this sign-in cannot read grants to verify it")
-    group.add_argument("--register-search-serverless", action="store_true",
-                       help="register the subscription's auto-approved Microsoft.Search/Serverless preview feature "
-                            "that the default serverless Search tier needs")
     group.add_argument("--bootstrap-fallback", choices=("notebooks",),
                        help="if plan attachment is FeatureNotAvailable, import/sync without it and run Seed then Bind")
     group = deployment.add_argument_group("readiness evidence")
@@ -2835,7 +3185,7 @@ def main(argv=None, **context):
         if args.command == "status":
             code, report = status_report(ctx)
         else:
-            phases = ("destroy",) if args.command == "down" else PHASES[:PHASES.index(args.through) + 1]
+            phases = ("signin", "destroy") if args.command == "down" else PHASES[:PHASES.index(args.through) + 1]
             code, report = run_phases(ctx, phases)
     except Stop as stop:
         code, report = stop.code, {"result": stop.result, "phases": {}, "message": stop.message, "next": stop.next_steps}
