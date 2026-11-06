@@ -2507,7 +2507,9 @@ def wait_agent_version(ctx, url, version):
 
 def invoke_agent(ctx, url, text):
     """One Responses call as the signed-in user. A cold session can answer 424 or 5xx first, so retry briefly."""
-    for attempt in range(1, 7):
+    attempt = 0
+    while True:
+        attempt += 1
         response = foundry(ctx, "POST", url, {"input": text, "stream": False}, timeout=240)
         if response.status == 200:
             body = response.json(default=None)
@@ -3009,10 +3011,10 @@ def teardown_next(snapshot):
                      f"Workspaces ({workspaces}). Retention is not immediate data erasure.")
     steps += [
         "Revoke the Web IQ AppID's keys and remove its portal profile at https://webiq.microsoft.ai/profiles.",
-        "Hosted-agent traces stay in the deleted Application Insights workspace's retention; Foundry keeps no "
-        "conversation after the project is purged.",
-        "Keep Terraform state, tfvars and receipts until cleanup is confirmed. GitHub, backend storage, tenant settings, "
-        "licenses, external source data and service-retained backups/audit records are not deleted.",
+        ("Hosted-agent traces stay in the deleted Application Insights workspace's retention; Foundry keeps no "
+         "conversation after the project is purged."),
+        ("Keep Terraform state, tfvars and receipts until cleanup is confirmed. GitHub, backend storage, tenant "
+         "settings, licenses, external source data and service-retained backups/audit records are not deleted."),
     ]
     return steps
 

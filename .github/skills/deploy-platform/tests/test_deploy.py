@@ -1737,6 +1737,20 @@ class AgentAndAppTests(unittest.TestCase):
         http.add("POST", r"/endpoint/protocols/openai/responses\?api-version=v1$", responses or agent_replies())
         return http
 
+    def test_a_cold_agent_session_is_retried_but_a_refusal_is_not(self):
+        url = RUNTIME_OUTPUTS["hosted_agent"]["responses_url"]
+        for replies, expected_calls, answered in (([reply(424), reply(503), reply(body={"output": []})], 3, True),
+                                                  ([reply(403)], 1, False), ([reply(503)], 6, False)):
+            ctx = self.context()
+            ctx.http = FakeHttp()
+            ctx.http.add("POST", r"/responses\?api-version=v1$", *replies)
+            if answered:
+                self.assertEqual(deploy.invoke_agent(ctx, url, "question"), {"output": []})
+            else:
+                with self.assertRaises(deploy.ServiceError):
+                    deploy.invoke_agent(ctx, url, "question")
+            self.assertEqual(len(ctx.http.posts(r"/responses")), expected_calls)
+
     def test_the_agent_is_published_once_after_approval_and_proved_as_the_user(self):
         ctx = self.context()
         ctx.http = self.agent_http(ctx)
