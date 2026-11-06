@@ -26,6 +26,8 @@ class Failure extends Error {
 // With onProgress the answer streams: each tool appears as it starts and the text as it is written.
 async function ask(auth: Auth, input: string, previousResponseId?: string,
   onProgress?: (progress: StreamProgress) => void) {
+  // Replace any earlier answer at once, before the agent's first event arrives.
+  onProgress?.({ text: '', tools: [] })
   const response = await fetch('/api/responses', {
     method: 'POST',
     headers: { Authorization: `Bearer ${await auth.token()}`, 'Content-Type': 'application/json' },
