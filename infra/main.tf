@@ -18,6 +18,10 @@ locals {
   knowledge_base_name           = "${var.project_name}-knowledge"
   openai_endpoint               = "https://${azapi_resource.foundry.name}.openai.azure.com"
   knowledge_base_mcp_endpoint   = var.knowledge_lakehouse_id == null ? null : "${local.search_endpoint}/knowledgebases/${restful_resource.knowledge_base[0].body.name}/mcp?api-version=${local.search_api_version}"
+  foundry_project_endpoint      = "https://${azapi_resource.foundry.name}.services.ai.azure.com/api/projects/${azapi_resource.foundry_project.name}"
+  # deploy.py publishes these Foundry data-plane releases; Terraform fixes their names and endpoints.
+  hosted_agent_name = "${var.project_name}-assistant"
+  toolbox_name      = "${var.project_name}-tools"
 
   tags = merge(var.tags, {
     project    = var.project_name

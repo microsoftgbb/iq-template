@@ -2,17 +2,19 @@
 """Deterministic deployment and teardown of the DEV platform, agent and app.
 
 `up` runs the documented phases in order with native tools only: Terraform,
-Azure CLI, Fabric/Search/Graph REST, PAC and `ms`. Its first phase completes
-every CLI sign-in the run needs, back to back, before anything is created.
+Azure CLI (including ACR builds) and Fabric/Search/Graph/Foundry/ARM REST. Its
+first phase completes every CLI sign-in the run needs, back to back, before
+anything is created.
 Every phase checks live state first and acts only on what is missing, so a
 rerun resumes instead of duplicating work. Plans and creations need approval.
 
 The signed-in user is assumed to administer every target: the runner grants
 tenant-wide consent and registers required subscription features as that user,
 and names a manual grant only when an API refuses for lack of permission.
-Device-code entry and connector OAuth stay with people.
+Device-code entry and browser sign-in stay with people.
 
-`down` signs in the same way, deletes the app and agent, applies a reviewed full
+`down` signs in the same way, deletes the Container App, hosted agent and
+toolbox, applies a reviewed full
 Terraform destroy plan, and purges the deleted Foundry account. Retained Fabric
 data and shared connections are reported for manual cleanup. Local
 configuration and state stay.
@@ -53,21 +55,26 @@ ROOT = SCRIPTS.parents[3]
 sys.path.insert(0, str(ROOT / ".github" / "skills" / "runtime-integration" / "scripts"))
 sys.path.insert(0, str(SCRIPTS))
 import preflight_runtime as runtime  # noqa: E402
-import studio_agent as studio  # noqa: E402
+import hosted_agent as hosted  # noqa: E402
 
 PHASES = ("signin", "config", "preflight", "identity", "consent", "platform",
           "bootstrap", "knowledge", "verify", "agent", "app")
 OK, USAGE, BLOCKED, WAITING, APPROVAL = 0, 1, 2, 3, 4
 PLAN_PHASES = ("identity", "platform", "knowledge", "destroy")
 DESTRUCTIVE_APPROVALS = ("destroy", "runtime-delete", "purge-foundry")
-APPROVAL_KEYS = PLAN_PHASES + ("agent-create", "agent-connections", "agent-publish", "app-register",
-                             "runtime-delete", "purge-foundry")
+APPROVAL_KEYS = PLAN_PHASES + ("agent-deploy", "app-deploy", "runtime-delete", "purge-foundry")
 
 FABRIC_API = "https://api.fabric.microsoft.com"
 SEARCH_RESOURCE = "https://search.azure.com"
 GRAPH_API = "https://graph.microsoft.com"
 ARM_API = "https://management.azure.com"
 GITHUB_API = "https://api.github.com"
+FOUNDRY_RESOURCE = "https://ai.azure.com"
+CONTAINER_APPS_API = "2025-07-01"
+# The shipped agent and app: build contexts, image repositories and the toolbox labels the checks expect.
+AGENT_SOURCE, AGENT_REPOSITORY = "agents/scenario-assistant", "scenario-assistant"
+APP_SOURCE, APP_REPOSITORY = "app", "web"
+ONTOLOGY_TOOL, KNOWLEDGE_TOOL, STARTER_DOCUMENT = "scenario_ontology", "knowledge_base", "starter.txt"
 POWER_BI_APP_ID = "00000009-0000-0000-c000-000000000000"
 IDENTITY_TARGET = "module.fabric_user_auth"
 IDENTITY_ADDRESSES = frozenset({
@@ -112,7 +119,7 @@ DOCUMENT_QUESTION = ("According to the indexed starter document, what does Git s
 EXPECTED_FACTS = ("Pump B", "North Works")
 # The runner selects the deployment subscription itself after an Azure CLI sign-in.
 SIGN_IN_ENV = {"AZURE_CORE_LOGIN_EXPERIENCE_V2": "off"}
-# An API's refusal for lack of permission, as ARM, Graph, Fabric, Power Platform and the native CLIs report it.
+# An API's refusal for lack of permission, as ARM, Graph, Fabric, Foundry and the native CLIs report it.
 DENIED = re.compile(
     r"\b(?:HTTP|status ?code|status)[ =:]*(?:401|403)\b|\bunexpected status (?:401|403)\b"
     r"|\b(?:Unauthorized|Forbidden|AuthorizationFailed|LinkedAuthorizationFailed|Authorization_RequestDenied"
@@ -121,26 +128,18 @@ DENIED = re.compile(
     r"|(?:does not|doesn't|do not|don't) have (?:the |a |any )?(?:required |valid )?"
     r"(?:permissions?|privileges?|access|authorization|licen[cs]es?)\b", re.I)
 ARM_ACTION = re.compile(r"perform action '([^']+)'", re.I)
-# Agent/app refusals name a Power Platform grant only when Power Platform refused, not a package registry.
-POWER_PLATFORM = re.compile(r"\bpac (?:copilot|auth|env)\b|\bms (?:app|auth|connector)\b|Studio agent step|/api/data/v"
-                            r"|Microsoft\.PowerApps/|\bprv[A-Z]\w*|\.crm\d*\.dynamics\.com|Copilot Studio|Dataverse", re.I)
-PACKAGE_REGISTRY = re.compile(r"\bnpm (?:ERR!|error)|\bNU\d{4}\b|nuget|registry\.npmjs\.org", re.I)
 PAT_STEPS = (
     "Add a Codespaces secret FABRIC_GITHUB_TOKEN for this repository (fine-grained, Contents read/write) "
     "and restart the Codespace, or export TF_VAR_github_token in your own shell with `read -rs`.",
     "Never paste the PAT into chat, files or command arguments.",
 )
 APP_NEXT = (
-    "Before playback, open Power Apps Connections in the app's environment, select New connection -> "
-    "Microsoft Copilot Studio, and sign in as the app user (or verify that user's existing connection is Connected).",
-    "Run `ms app dev` and open the App Player URL it prints.",
-    "Select Check connection. Separately, follow the agent's Studio user-connections link to authorize "
-    "your own Fabric IQ and Foundry IQ connections when prompted, then check again for the fresh challenge. "
-    "Each user must authorize their own connections; registration is not app readiness.",
-    'Ask "Which assets are in Maintenance and at which site?" and expect Pump B at North Works.',
-    "Review and commit app/src/config.ts, ms.config.json, and package.json with package-lock.json (ms app "
-    "init pins its CLI there). Review the generated DEV ontology binding before promotion; commit it "
-    "through Fabric source control when Git synchronization is enabled.",
+    "Open the web app URL above in a browser and sign in with your work account. The runner verified the app "
+    "and agent as you; every other user needs the Foundry User role on the project and their own Fabric access.",
+    'Select Check connection, then ask "Which assets are in Maintenance and at which site?" and expect Pump B at '
+    "North Works from the live ontology.",
+    "Review the generated DEV ontology binding before promotion; commit it through Fabric source control when Git "
+    "synchronization is enabled.",
 )
 
 
@@ -973,8 +972,6 @@ def phase_signin(ctx):
     github_sign_in(ctx)
     origin, _ = project_repository(ctx)  # Refuses the template and its forks before any other sign-in.
     needs = sign_in_needs(ctx)
-    if needs["pac"]:
-        checked(ctx, ["dotnet", "tool", "restore"], "dotnet tool restore")
     # Three rounds of sign-ins, each checked afterwards.
     for attempt in range(4):
         pending, done = missing_sign_ins(ctx, needs)
@@ -1005,17 +1002,13 @@ def github_sign_in(ctx):
 
 
 def sign_in_needs(ctx):
-    """The Power Platform environment PAC must target, and whether `ms` runs, in this run's phases."""
+    """Whether this run's phases call the Foundry data plane (the hosted agent, its toolbox or the app check)."""
     if "destroy" in ctx.phases:
-        choices, data = ctx.state.section("choices"), ctx.state.data
-        environment, url = choices.get("environment_id"), choices.get("environment_url")
-        deleted = data.get("destroy") or {}
-        agent = ((bool(data.get("agent")) or "agent" in (data.get("phases") or {}))
-                 and not deleted.get("runtime_deleted_at"))
-        app = (((ctx.root / "ms.config.json").is_file() or bool((data.get("app") or {}).get("app_id")))
-               and not deleted.get("app_deleted_at"))
-        return {"pac": (environment, url) if agent and environment and url else None, "ms": app}
-    return {"pac": power_platform(ctx) if "agent" in ctx.phases else None, "ms": "app" in ctx.phases}
+        data = ctx.state.data
+        deleted = (data.get("destroy") or {}).get("runtime_deleted_at")
+        published = bool(data.get("agent") or data.get("app")) or bool({"agent", "app"} & set(data.get("phases") or {}))
+        return {"foundry": published and not deleted}
+    return {"foundry": bool({"agent", "app"} & set(ctx.phases))}
 
 
 def missing_sign_ins(ctx, needs):
@@ -1041,19 +1034,6 @@ def missing_sign_ins(ctx, needs):
         else:
             done.append(f"Azure CLI in tenant {tenant} (tokens for "
                         + ", ".join(label for label, _ in audiences) + ")")
-    if needs["pac"]:
-        environment, url = needs["pac"]
-        if pac_ready(ctx, url):
-            done.append(f"Power Platform CLI on {url}")
-        else:
-            pending.append((f"Power Platform CLI for environment {environment}",
-                            ["dotnet", "pac", "auth", "create", "--environment", environment, "--deviceCode"], ()))
-    if needs["ms"]:
-        cached = ms_tenant(ctx)
-        if cached is None or (tenant and not same_guid(cached, tenant)):
-            pending.append(("Managed Runtime CLI", ["ms", "auth", "login", "--device-code"], ()))
-        elif tenant:
-            done.append("Managed Runtime CLI")
     return pending, done
 
 
@@ -1095,26 +1075,9 @@ def token_audiences(ctx, needs):
             audiences.append(("the Fabric deployment scope", {"scope": login_scope}))
     if "verify" in ctx.phases:
         audiences.append(("Azure AI Search", {"resource": SEARCH_RESOURCE}))
-    if needs["pac"]:
-        audiences += [("Dataverse", {"resource": needs["pac"][1]}),
-                      ("Power Apps", {"resource": studio.POWERAPPS_RESOURCE})]
+    if needs["foundry"]:
+        audiences.append(("Microsoft Foundry", {"resource": FOUNDRY_RESOURCE}))
     return audiences
-
-
-def pac_ready(ctx, url):
-    """True when PAC's active profile targets the environment; a signed-in profile is pointed at it, not re-created."""
-    host = urllib.parse.urlparse(url).netloc
-
-    def active():
-        who = run(ctx, ["dotnet", "pac", "env", "who"])
-        return not who.code and host in who.stdout.lower()
-
-    if active():
-        return True
-    if run(ctx, ["dotnet", "pac", "env", "select", "--environment", url]).code or not active():
-        return False
-    ctx.log(f"Selected {url} for the active PAC profile instead of signing in again.")
-    return True
 
 
 def phase_config(ctx):
@@ -1231,6 +1194,11 @@ def phase_preflight(ctx):
         raise Blocked(str(error)) from None
     notes = [f"user {user} in tenant {tenant}, subscription {subscription}"]
     values = variables(ctx)
+    try:
+        runtime.hosted_agent_region(values["location"])
+    except runtime.PreflightError as error:
+        raise Blocked(str(error), "Choose the region explicitly before anything is provisioned.") from None
+    notes.append(f"hosted agents documented in {values['location']}")
     notes.append(check_web_iq(ctx, subscription, values))
     if values["fabric_git_enabled"]:
         check_pat(ctx, values)
@@ -1427,13 +1395,9 @@ def phase_identity(ctx):
     return "registration prepared; consent is next (not a Fabric-ready state)"
 
 
-def consent_state(ctx, auth, scopes):
-    """Read the registration's tenant-wide grant as (state, target): granted, missing, partial or unverified."""
-    resource = az_json(ctx, ["ad", "sp", "show", "--id", POWER_BI_APP_ID, "--query", "{id:id}"],
-                       "Reading the Power BI Service principal", quiet=True)
-    target = {"clientId": guid(auth.get("service_principal_object_id"), "service_principal_object_id"),
-              "resourceId": guid((resource or {}).get("id"), "Power BI Service principal id")}
-    client = target["clientId"]
+def tenant_grant(ctx, client, resource, scopes):
+    """Read a client's tenant-wide grant to one resource as (state, target): granted, missing, partial or unverified."""
+    target = {"clientId": client, "resourceId": resource}
     token = access_token(ctx, resource=GRAPH_API)
     if not token:
         return "unverified", target
@@ -1444,26 +1408,31 @@ def consent_state(ctx, auth, scopes):
     if response.status != 200:
         raise ServiceError("Reading the registration's consent grants", response)
     grants = [grant for grant in response.json(default={}).get("value") or []
-              if grant.get("consentType") == "AllPrincipals" and same_guid(grant.get("resourceId"), target["resourceId"])]
+              if grant.get("consentType") == "AllPrincipals" and same_guid(grant.get("resourceId"), resource)]
     if not grants:
         return "missing", target
     missing = sorted(set(scopes) - set(" ".join(grant.get("scope") or "" for grant in grants).split()))
     return ("partial", dict(target, grant=grants[0], missing=missing)) if missing else ("granted", target)
 
 
-def grant_consent(ctx, auth, scopes, state, target):
+def consent_state(ctx, auth, scopes):
+    """The Fabric deployment registration's tenant-wide grant to the Power BI Service."""
+    resource = az_json(ctx, ["ad", "sp", "show", "--id", POWER_BI_APP_ID, "--query", "{id:id}"],
+                       "Reading the Power BI Service principal", quiet=True)
+    return tenant_grant(ctx, guid(auth.get("service_principal_object_id"), "service_principal_object_id"),
+                        guid((resource or {}).get("id"), "Power BI Service principal id"), scopes)
+
+
+def grant_consent(ctx, client_id, description, scopes, state, target, manual):
     """Grant exactly the declared scopes tenant-wide as the signed-in user, who is assumed to be an administrator."""
-    manual = (f"An Entra administrator (Cloud Application Administrator or Application Administrator) opens "
-              f"{auth.get('api_permissions_url')} and selects Grant admin consent for the {len(scopes)} delegated "
-              "Fabric scopes.")
     rerun = f"Then rerun deploy.py {ctx.args.command}; the runner verifies the grant before continuing."
     if ctx.args.manual_grants:
-        raise Waiting(f"Tenant-wide consent for {auth.get('client_id')} is {state}; --manual-grants leaves it to an "
+        raise Waiting(f"Tenant-wide consent for {client_id} is {state}; --manual-grants leaves it to an "
                       "administrator.", manual, rerun)
     token = access_token(ctx, resource=GRAPH_API) or ""
     headers = {"Authorization": f"Bearer {token}"}
     if state == "missing":
-        ctx.log(f"Granting tenant-wide consent for exactly the {len(scopes)} declared delegated Fabric scopes as you.")
+        ctx.log(f"Granting tenant-wide consent for exactly the declared {description} as you.")
         response = ctx.http.request("POST", f"{GRAPH_API}/v1.0/oauth2PermissionGrants", headers=headers, body={
             "clientId": target["clientId"], "consentType": "AllPrincipals", "resourceId": target["resourceId"],
             "scope": " ".join(scopes)})
@@ -1485,6 +1454,22 @@ def grant_consent(ctx, auth, scopes, state, target):
         raise ServiceError("Granting tenant-wide consent", response)
 
 
+def ensure_consent(ctx, read, grant):
+    """Grant a missing or partial tenant-wide grant, then wait briefly until Graph shows it. Returns (state, granted_now)."""
+    state, target = read()
+    if state not in ("missing", "partial"):
+        return state, False
+    grant(state, target)
+    for attempt in range(6):
+        state, target = read()
+        if state == "granted" or attempt == 5:
+            break
+        ctx.sleep(10)
+    if state != "granted":
+        raise Waiting("Consent was granted but is not visible yet.", f"Rerun deploy.py {ctx.args.command} in a minute.")
+    return state, True
+
+
 def phase_consent(ctx):
     auth = required_outputs(ctx, "fabric_user_auth")[0]
     tenant = guid(auth.get("tenant_id"), "fabric_user_auth tenant")
@@ -1496,17 +1481,14 @@ def phase_consent(ctx):
     receipt.update(tenant_id=tenant, client_id=auth.get("client_id"), login_scope=auth.get("login_scope"),
                    api_permissions_url=auth.get("api_permissions_url"))
     ctx.state.save()
-    state, target = consent_state(ctx, auth, scopes)
-    granted_now = state in ("missing", "partial")
+    manual = (f"An Entra administrator (Cloud Application Administrator or Application Administrator) opens "
+              f"{auth.get('api_permissions_url')} and selects Grant admin consent for the {len(scopes)} delegated "
+              "Fabric scopes.")
+    state, granted_now = ensure_consent(
+        ctx, lambda: consent_state(ctx, auth, scopes),
+        lambda current, target: grant_consent(ctx, auth.get("client_id"), f"{len(scopes)} delegated Fabric scopes",
+                                               scopes, current, target, manual))
     if granted_now:
-        grant_consent(ctx, auth, scopes, state, target)
-        for attempt in range(6):
-            state, target = consent_state(ctx, auth, scopes)
-            if state == "granted" or attempt == 5:
-                break
-            ctx.sleep(10)
-        if state != "granted":
-            raise Waiting("Consent was granted but is not visible yet.", f"Rerun deploy.py {ctx.args.command} in a minute.")
         receipt["granted_at"] = utc_now()
         ctx.state.save()
     if state == "unverified":
@@ -2407,285 +2389,428 @@ def phase_verify(ctx):
             f"{web_iq}")
 
 
-def power_platform(ctx):
-    environment = ctx.args.environment_id and guid(ctx.args.environment_id, "--environment-id")
-    url = ctx.args.environment_url and https_origin(ctx.args.environment_url, "--environment-url")
-    environment, url = choose(ctx, "environment_id", environment), choose(ctx, "environment_url", url)
-    if not (environment and url):
-        raise Waiting("Choose the Power Platform environment for the agent and app now, so its sign-ins happen "
-                      "before anything is deployed.",
-                      "Find a non-Default environment's ID and Org URL in Power Apps (Settings > Session details) "
-                      "or with `dotnet pac env list`.",
-                      "Rerun with --environment-id <guid> --environment-url https://<org>.crm.dynamics.com, or with "
-                      "--through verify to deploy and verify DEV first.")
-    return environment, url
+def project_url(value):
+    """A Foundry project data-plane endpoint; refuses anything else so tokens only reach Foundry."""
+    parsed = urllib.parse.urlparse(str(value or ""))
+    if (parsed.scheme != "https" or not parsed.netloc.lower().endswith(".services.ai.azure.com")
+            or not re.fullmatch(r"/api/projects/[A-Za-z0-9][A-Za-z0-9_.-]*", parsed.path)
+            or parsed.query or parsed.fragment or parsed.username or parsed.password):
+        raise Blocked("The Foundry project endpoint output is not a Foundry project data-plane URL.")
+    return f"https://{parsed.netloc.lower()}{parsed.path}"
 
 
-def studio_command(ctx, *arguments):
-    result = run(ctx, [sys.executable, SCRIPTS / "studio_agent.py", *arguments])
-    if result.code not in (0, 1):
-        raise Blocked((result.stderr or result.stdout).strip() or f"studio_agent.py {arguments[0]} failed.")
-    try:
-        return json.loads(result.stdout)
-    except ValueError:
-        raise Blocked(f"studio_agent.py {arguments[0]} returned no JSON report.") from None
+def foundry(ctx, method, url, body=None, *, timeout=120):
+    """One Foundry data-plane call as the signed-in user; retries throttling, and transient failures of reads."""
+    attempt = 0
+    while True:
+        attempt += 1
+        token = access_token(ctx, resource=FOUNDRY_RESOURCE)
+        if not token:
+            raise Waiting("Azure CLI could not get a Microsoft Foundry token for the signed-in user.",
+                          f"Sign in again with az login, then rerun deploy.py {ctx.args.command}.")
+        try:
+            response = ctx.http.request(method, url, headers={"Authorization": f"Bearer {token}"}, body=body,
+                                        timeout=timeout)
+        except TransportError:
+            if method == "GET" and attempt < 5 and ctx.remaining() > 30:
+                ctx.sleep(10)
+                continue
+            raise
+        if response.status == 429 and attempt < 10:
+            ctx.sleep(retry_after(response, 10))
+            continue
+        if method == "GET" and response.status in (500, 502, 503, 504) and attempt < 5:
+            ctx.sleep(10)
+            continue
+        return response
 
 
-def publish_only(blocker):
-    return "not published" in blocker
+def foundry_json(ctx, method, url, body=None, *, label, missing=False):
+    response = foundry(ctx, method, url, body)
+    if missing and response.status == 404:
+        return None
+    if response.status not in (200, 201):
+        raise ServiceError(label, response)
+    value = response.json(default=None)
+    if not isinstance(value, dict):
+        raise Blocked(f"{label} did not return a JSON object.")
+    return value
+
+
+def released_source(ctx, directory):
+    """The image tag for a clean, committed and published source directory: its Git tree hash."""
+    if git(ctx, "status", "--porcelain", "--untracked-files=all", "--", directory):
+        raise Blocked(f"{directory}/ has uncommitted changes; the runner builds only committed, published source.",
+                      "Commit and push them, then rerun deploy.py up.")
+    branch = variables(ctx)["github_branch_name"]
+    head = git(ctx, "rev-parse", "HEAD")
+    if published_commit(ctx, branch) != head:
+        raise Blocked(f"This checkout ({head[:12]}) is not the published origin/{branch}.",
+                      f"Push or pull {branch} so the deployed images come from the reviewed commit.")
+    return git(ctx, "rev-parse", f"HEAD:{directory}")[:16]
+
+
+def image_present(ctx, registry, repository, tag):
+    result = run(ctx, ["az", "acr", "repository", "show", "--name", registry, "--image", f"{repository}:{tag}",
+                       "--only-show-errors", "--output", "none"])
+    if not result.code:
+        return True
+    text = result.stderr or result.stdout
+    if re.search(r"not found|MANIFEST_UNKNOWN|NAME_UNKNOWN|does not exist", text, re.I):
+        return False
+    raise Blocked(f"Could not read {repository}:{tag} in registry {registry}.\n{tail(text)}", detail=text)
+
+
+def build_image(ctx, registry, repository, tag, directory):
+    """Build one linux/amd64 image in the registry from the committed context; nothing is built locally."""
+    checked(ctx, ["az", "acr", "build", "--registry", registry, "--image", f"{repository}:{tag}",
+                  "--platform", "linux/amd64", "--file", f"{directory}/Dockerfile", directory, "--only-show-errors"],
+            f"Building {repository}:{tag} in {registry}", stream=True)
+    if not image_present(ctx, registry, repository, tag):
+        raise Blocked(f"az acr build finished, but {repository}:{tag} is not in registry {registry}.")
+
+
+def toolbox_state(ctx, url, tools):
+    """(exists, default version, published tools match) for the project toolbox."""
+    toolbox = foundry_json(ctx, "GET", f"{url}?api-version=v1", label="Reading the toolbox", missing=True)
+    default = (toolbox or {}).get("default_version")
+    if toolbox is None or default in (None, ""):
+        return toolbox is not None, None, False
+    version = foundry_json(ctx, "GET", f"{url}/versions/{urllib.parse.quote(str(default), safe='')}?api-version=v1",
+                           label="Reading the toolbox's default version", missing=True)
+    return True, default, bool(version) and hosted.tools_match(version.get("tools"), tools)
+
+
+def wait_agent_version(ctx, url, version):
+    """Observe a created version until it serves; never resubmit the accepted request."""
+    while True:
+        body = foundry_json(ctx, "GET", f"{url}/versions/{urllib.parse.quote(str(version), safe='')}?api-version=v1",
+                            label=f"Reading hosted agent version {version}")
+        status = body.get("status")
+        if status == "active":
+            return body
+        if status in ("failed", "deleting", "deleted"):
+            error = body.get("error") if isinstance(body.get("error"), dict) else {}
+            raise Blocked(f"Hosted agent version {version} is {status}: {error.get('code') or ''} "
+                          f"{str(error.get('message') or '')[:300]}".rstrip(": "),
+                          "Inspect the version, its image and the registry pull access; after fixing the cause, "
+                          "rerun with --retry-failed to create a new version.")
+        if ctx.remaining() < 20:
+            raise Waiting(f"Hosted agent version {version} is still {status or 'provisioning'}.",
+                          "Rerun deploy.py up to keep observing it; nothing is resubmitted.")
+        ctx.sleep(10)
+
+
+def invoke_agent(ctx, url, text):
+    """One Responses call as the signed-in user. A cold session can answer 424 or 5xx first, so retry briefly."""
+    for attempt in range(1, 7):
+        response = foundry(ctx, "POST", url, {"input": text, "stream": False}, timeout=240)
+        if response.status == 200:
+            body = response.json(default=None)
+            if not isinstance(body, dict):
+                raise Blocked("The hosted agent returned a response that is not a JSON object.")
+            return body
+        if response.status not in (408, 424, 500, 502, 503, 504) or attempt == 6 or ctx.remaining() < 60:
+            raise ServiceError("Invoking the hosted agent", response)
+        ctx.log(f"The hosted agent answered HTTP {response.status} (attempt {attempt}); a new session can take a "
+                "moment to start.")
+        ctx.sleep(15)
+
+
+def prove_agent(ctx, url, question, evaluate, name, attempts=2):
+    """Ask once more on a miss: the model can skip a tool; the structured evidence decides, never answer text."""
+    for attempt in range(1, attempts + 1):
+        body = invoke_agent(ctx, url, question)
+        problems, evidence = evaluate(body)
+        if not problems:
+            evidence["response"] = str(save_evidence(ctx, name, body))
+            return evidence
+        ctx.log(f"Agent attempt {attempt} did not prove {name}: {'; '.join(problems)}.")
+    raise Blocked(f"The hosted agent's {name} answer is not verified: {'; '.join(problems)}",
+                  f"Inspect the last response: {save_evidence(ctx, name + '-failed', body)}",
+                  "Check the toolbox connections, your Fabric access and the agent's logs in Application Insights.")
 
 
 def phase_agent(ctx):
-    environment, url = power_platform(ctx)
-    tenant = ctx.target("tenant_id")
-    schema, name, base, workspace, search = required_outputs(
-        ctx, "studio_agent_schema_name", "studio_agent_display_name", "knowledge_base_name",
-        "dev_workspace_id", "search_endpoint")
-    ontology = ((outputs(ctx).get("ontology_knowledge_sources") or {}).get(SAMPLE_REGISTRATION) or {}).get("ontology_id")
-    if not ontology:
-        raise Blocked("The scenario ontology is not registered; complete the knowledge phase first.")
+    agent, registry, deployments, kb_endpoint, kb_connection = required_outputs(
+        ctx, "hosted_agent", "container_registry", "model_deployments", "knowledge_base_mcp_endpoint",
+        "knowledge_base_connection_id")
+    fabric = (outputs(ctx).get("fabric_iq_connections") or {}).get(SAMPLE_REGISTRATION) or {}
+    if not (fabric.get("name") and fabric.get("server_url")):
+        raise Blocked("The scenario's Fabric IQ connection is missing; complete the knowledge phase first.")
+    project = project_url(agent.get("project_endpoint"))
+    name, toolbox_name = agent["name"], agent["toolbox_name"]
+    if agent.get("toolbox_endpoint") != f"{project}/toolboxes/{toolbox_name}/mcp?api-version=v1":
+        raise Blocked("The hosted_agent toolbox endpoint output does not belong to the project.")
+    tag = released_source(ctx, AGENT_SOURCE)
+    image = f"{registry['login_server']}/{AGENT_REPOSITORY}:{tag}"
+    try:
+        definition = hosted.render(ctx.root / AGENT_SOURCE / "hosted-agent.json", {
+            "chat_deployment": deployments.get("chat"),
+            "toolbox_endpoint": agent["toolbox_endpoint"],
+            "fabric_iq_server_url": fabric["server_url"],
+            "fabric_iq_connection": fabric["name"],
+            "knowledge_base_mcp_endpoint": kb_endpoint,
+            "knowledge_base_connection": str(kb_connection).rstrip("/").rsplit("/", 1)[-1],
+        })
+    except hosted.DefinitionError as error:
+        raise Blocked(str(error)) from None
+    desired = hosted.agent_definition(definition["agent"], image)
     receipts = ctx.state.section("agent")
-    checked(ctx, ["dotnet", "tool", "restore"], "dotnet tool restore")
-    if not pac_ready(ctx, url):
-        sign_in(ctx, ["dotnet", "pac", "auth", "create", "--environment", environment, "--deviceCode"],
-                f"Power Platform CLI for environment {environment}")
-        if not pac_ready(ctx, url):
-            raise Blocked(f"PAC is not using {url}; select that profile with `dotnet pac auth list` / `select`.")
-    bot = studio_command(ctx, "find", "--tenant-id", tenant, "--dataverse-url", url, "--agent-schema", schema,
-                         "--environment-id", environment)
-    project = ctx.root / receipts.get("workspace", f".artifacts/studio/{schema}")
-    if bot["status"] == "missing":
-        if (project / ".mcs").is_dir():
-            raise Blocked(f"{project} exists, but {url} has no agent {schema}.",
-                          "Inspect that workspace; remove it only after review, then rerun.")
-        approve(ctx, "agent-create", f"Create and publish Copilot Studio agent {schema} ({name}) in {url}")
-        checked(ctx, ["dotnet", "pac", "copilot", "init", "--name", name, "--publisher-prefix", "iq",
-                      "--schema-name", schema, "--project-dir", project, "--environment", url],
-                "pac copilot init", stream=True)
-    elif not (project / ".mcs").is_dir():
-        clone = ctx.root / ".artifacts" / "studio" / f"{schema}-clone"
-        checked(ctx, ["dotnet", "pac", "copilot", "clone", "--bot", schema, "--output-dir", clone],
-                "pac copilot clone", stream=True)
-        created = [path.parent for path in clone.rglob(".mcs") if path.is_dir()]
-        if len(created) != 1:
-            raise Blocked(f"pac copilot clone did not produce exactly one agent workspace under {clone}.")
-        project = created[0]
-    receipts["workspace"] = str(project.relative_to(ctx.root))
-    ctx.state.save()
-    studio_command(ctx, "render", "--workspace", project, "--agent-schema", schema, "--display-name", name,
-                   "--knowledge-base", base)
-    digest = tree_digest(project)
-    if receipts.get("pushed") != digest:
-        checked(ctx, ["dotnet", "pac", "copilot", "push", "--project-dir", project], "pac copilot push", stream=True)
-        receipts["pushed"] = digest
+    toolbox_url = f"{project}/toolboxes/{urllib.parse.quote(toolbox_name, safe='')}"
+    agent_url = f"{project}/agents/{urllib.parse.quote(name, safe='')}"
+
+    built = image_present(ctx, registry["name"], AGENT_REPOSITORY, tag)
+    toolbox_exists, default, toolbox_ready = toolbox_state(ctx, toolbox_url, definition["toolbox"]["tools"])
+    current = foundry_json(ctx, "GET", f"{agent_url}?api-version=v1", label=f"Reading hosted agent {name}", missing=True)
+    latest = hosted.latest_version(current)
+    failed = (latest or {}).get("status") == "failed"
+    agent_ready = latest is not None and hosted.definition_matches(latest.get("definition"), desired) and not (
+        failed and ctx.args.retry_failed)
+    actions = ([] if built else [f"build image {AGENT_REPOSITORY}:{tag} in {registry['name']}"]) + (
+        [] if toolbox_ready else [f"publish a version of toolbox {toolbox_name}"]) + (
+        [] if agent_ready else [f"create a version of hosted agent {name} running {AGENT_REPOSITORY}:{tag}"])
+    if actions:
+        approve(ctx, "agent-deploy", f"In Foundry project {project}: " + "; ".join(actions))
+    if not built:
+        build_image(ctx, registry["name"], AGENT_REPOSITORY, tag, AGENT_SOURCE)
+    if not toolbox_ready:
+        created = foundry_json(ctx, "POST", f"{toolbox_url}/versions?api-version=v1", definition["toolbox"],
+                               label=f"Creating a version of toolbox {toolbox_name}")
+        version = created.get("version")
+        if version in (None, ""):
+            raise Blocked(f"Toolbox {toolbox_name} accepted a version without returning its number; inspect it.")
+        if toolbox_exists and str(version) != str(default):
+            foundry_json(ctx, "PATCH", f"{toolbox_url}?api-version=v1", {"default_version": version},
+                         label=f"Promoting toolbox {toolbox_name} version {version}")
+        receipts["toolbox"] = {"name": toolbox_name, "version": version, "published_at": utc_now()}
         ctx.state.save()
-    connect = ("connections", "--tenant-id", tenant, "--environment-id", environment, "--fabric-workspace-id",
-               workspace, "--ontology-id", ontology, "--search-endpoint", search)
-    plan = studio_command(ctx, *connect)
-    if any(entry.get("action") == "create" for entry in plan["connections"].values()):
-        approve(ctx, "agent-connections", "Create your Fabric IQ and Foundry IQ connections (you then sign in to each)")
-        plan = studio_command(ctx, *connect, "--apply")
-    if plan.get("status") != "connected":
-        raise Waiting("Your two IQ connections need your own sign-in.",
-                      f"Open {plan.get('sign_in')} and select Fix connection on the Fabric IQ and Foundry IQ connections.",
-                      "Then rerun deploy.py up.")
-    names = {connector: entry["connection"] for connector, entry in plan["connections"].items()}
-    configure = ("configure", "--tenant-id", tenant, "--dataverse-url", url, "--agent-schema", schema,
-                 "--fabric-connection", names[studio.FABRIC_IQ], "--knowledge-connection", names[studio.FOUNDRY_IQ])
-    check = ("check", "--tenant-id", tenant, "--dataverse-url", url, "--agent-schema", schema,
-             "--environment-id", environment)
-    changes = studio_command(ctx, *configure)
-    report = studio_command(ctx, *check)
-    if changes["changes"] or report["status"] != "ready":
-        unexpected = [blocker for blocker in report.get("blockers", []) if not publish_only(blocker)]
-        if unexpected and not changes["changes"]:
-            raise Blocked("The agent is not ready: " + " ".join(unexpected))
-        published = receipts.get("published") or {}
-        if published.get("status") == "failed" and not ctx.args.retry_failed:
-            raise Blocked(f"The publish started at {published.get('at')} failed.",
-                          "Inspect the agent in Copilot Studio, fix the cause, then rerun with --retry-failed.")
-        if changes["changes"] or published.get("digest") != receipts.get("pushed") or ctx.args.retry_failed:
-            approve(ctx, "agent-publish", f"Apply {', '.join(changes['changes']) or 'no setting changes'} "
-                                          f"and publish agent {schema}")
-            if changes["changes"]:
-                studio_command(ctx, *configure, "--apply")
-            # Recorded before invoking: an accepted publish is observed on rerun, never repeated blindly.
-            receipts["published"] = {"digest": receipts.get("pushed"), "at": utc_now(), "status": "started"}
-            ctx.state.save()
-            result = run(ctx, ["dotnet", "pac", "copilot", "publish", "--environment", url, "--bot", changes["bot_id"]],
-                         stream=True)
-            receipts["published"]["status"] = "failed" if result.code else "done"
-            ctx.state.save()
-            if result.code:
-                raise Blocked(f"pac copilot publish failed (exit {result.code}).\n{tail(result.stdout)}",
-                              "Inspect the agent in Copilot Studio, fix the cause, then rerun with --retry-failed.")
+    if agent_ready:
+        version = latest["version"]
+    else:
+        if current is None:
+            created = foundry_json(ctx, "POST", f"{project}/agents?api-version=v1", {"name": name, "definition": desired},
+                                   label=f"Creating hosted agent {name}")
         else:
-            ctx.log(f"Waiting for the publish from {published.get('at')} to synchronize; it is not repeated.")
-        while True:
-            report = studio_command(ctx, *check)
-            if report["status"] == "ready":
-                break
-            unexpected = [blocker for blocker in report.get("blockers", []) if not publish_only(blocker)]
-            if unexpected:
-                raise Blocked("The published agent is not ready: " + " ".join(unexpected))
-            if ctx.remaining() < 20:
-                raise Waiting("The agent is still synchronizing after publishing.",
-                              "Rerun deploy.py up to check again; add --retry-failed only to publish again.")
-            ctx.sleep(20)
-    receipts.update(bot_id=changes["bot_id"], connections=names, ready_at=utc_now())
+            created = foundry_json(ctx, "POST", f"{agent_url}/versions?api-version=v1", {"definition": desired},
+                                   label=f"Creating a version of hosted agent {name}")
+        version = created.get("version") or (hosted.latest_version(created) or {}).get("version")
+        if version in (None, ""):
+            raise Blocked(f"Hosted agent {name} accepted a version without returning its number; inspect it.")
+        # Recorded before polling: an accepted version is observed on rerun, never created twice.
+        receipts["version"] = {"version": version, "image": image, "created_at": utc_now()}
+        ctx.state.save()
+    active = wait_agent_version(ctx, agent_url, version)
+    identity = (active.get("instance_identity") or {}).get("principal_id") or (
+        (current or {}).get("instance_identity") or {}).get("principal_id")
+
+    url = f"{agent_url}/endpoint/protocols/openai/responses?api-version=v1"
+    if url != agent.get("responses_url"):
+        raise Blocked("The hosted_agent responses URL output does not match the agent endpoint.")
+    challenge = f"connection proof {uuid4()}"
+    proof = invoke_agent(ctx, url, challenge)
+    if not hosted.proof_matches(proof, challenge):
+        raise Blocked("The hosted agent did not return this check's fresh challenge: "
+                      + (hosted.failure(proof) or "a different reply"),
+                      f"Inspect it: {save_evidence(ctx, 'agent-proof-failed', proof)}",
+                      "The proof loads the toolbox but calls no model or tool; check the toolbox and agent logs.")
+    facts = tuple(ctx.args.expect or EXPECTED_FACTS)
+    ontology = prove_agent(ctx, url, ctx.args.ontology_question,
+                           lambda body: hosted.ontology_evidence(body, ONTOLOGY_TOOL, facts), "agent-ontology")
+    documents = prove_agent(ctx, url, ctx.args.document_question,
+                            lambda body: hosted.document_evidence(body, KNOWLEDGE_TOOL, STARTER_DOCUMENT),
+                            "agent-documents")
+    receipts.update(name=name, version=dict(receipts.get("version") or {}, version=version, image=image),
+                    identity_principal_id=identity, ready_at=utc_now(), ontology=ontology, documents=documents)
     ctx.state.save()
-    return f"agent {schema} ready: Agent readers, end-user IQ tools, grounding off, published"
+    return (f"hosted agent {name} version {version} ready as you: fresh challenge, live ontology facts through "
+            f"{ONTOLOGY_TOOL} and {STARTER_DOCUMENT} through {KNOWLEDGE_TOOL}")
 
 
-CONFIG_LINE = re.compile(r"^export const STUDIO_AGENT_SCHEMA = '([^'\r\n]*)'", re.M)
+def container_app_id(web, subscription):
+    environment = str(web.get("environment_id") or "")
+    match = re.fullmatch(r"/subscriptions/([^/]+)/resourceGroups/([^/]+)/providers/Microsoft\.App/"
+                         r"managedEnvironments/[^/]+", environment, re.I)
+    if not match or not same_guid(match[1], subscription) or not re.fullmatch(r"[a-z][a-z0-9-]{0,30}[a-z0-9]",
+                                                                               str(web.get("name") or "")):
+        raise Blocked("The web_app output is not a Container Apps target in the deployment subscription.")
+    return f"/subscriptions/{match[1]}/resourceGroups/{match[2]}/providers/Microsoft.App/containerApps/{web['name']}"
 
 
-def set_agent_schema(path, schema):
-    text = path.read_text(encoding="utf-8")
-    match = CONFIG_LINE.search(text)
-    if not match:
-        raise Blocked(f"{path} no longer contains the expected STUDIO_AGENT_SCHEMA line; review it.")
-    if match.group(1) == schema:
+def container_app_body(location, web, registry, agent, image, project_name):
+    settings = {"AGENT_RESPONSES_URL": agent["responses_url"], "AGENT_NAME": agent["name"],
+                "ENTRA_CLIENT_ID": web["client_id"], "ENTRA_TENANT_ID": web["tenant_id"], "AGENT_SCOPE": web["scope"]}
+    probe = {"httpGet": {"path": "/healthz", "port": 8080}, "periodSeconds": 10}
+    return {
+        "location": location,
+        "tags": {"project": project_name, "managed_by": "deploy.py"},
+        "identity": {"type": "UserAssigned", "userAssignedIdentities": {web["identity_id"]: {}}},
+        "properties": {
+            "environmentId": web["environment_id"],
+            "configuration": {
+                "activeRevisionsMode": "Single",
+                "ingress": {"external": True, "targetPort": 8080, "transport": "auto", "allowInsecure": False,
+                            "traffic": [{"latestRevision": True, "weight": 100}]},
+                "registries": [{"server": registry["login_server"], "identity": web["identity_id"]}],
+            },
+            "template": {
+                "containers": [{
+                    "name": "web", "image": image, "resources": {"cpu": 0.5, "memory": "1Gi"},
+                    "env": [{"name": key, "value": value} for key, value in settings.items()],
+                    "probes": [dict(probe, type="Readiness"), dict(probe, type="Liveness")],
+                }],
+                "scale": {"minReplicas": 0, "maxReplicas": 2},
+            },
+        },
+    }
+
+
+def container_app_matches(current, desired):
+    """True when the live app already runs this image with these settings, identity and ingress."""
+    if not isinstance(current, dict):
         return False
-    if match.group(1):
-        raise Blocked(f"app/src/config.ts targets agent {match.group(1)}, not {schema}; review it.")
-    path.write_text(text[:match.start(1)] + schema + text[match.end(1):], encoding="utf-8")
-    return True
+    properties, wanted = current.get("properties") or {}, desired["properties"]
+    containers = (properties.get("template") or {}).get("containers") or []
+    container, target = (containers[0] if len(containers) == 1 else {}), wanted["template"]["containers"][0]
+    env = {item.get("name"): item.get("value") for item in container.get("env") or [] if isinstance(item, dict)}
+    ingress = (properties.get("configuration") or {}).get("ingress") or {}
+    identities = {key.lower() for key in ((current.get("identity") or {}).get("userAssignedIdentities") or {})}
+    return (container.get("image") == target["image"]
+            and env == {item["name"]: item["value"] for item in target["env"]}
+            and ingress.get("external") is True and ingress.get("targetPort") == 8080
+            and {key.lower() for key in desired["identity"]["userAssignedIdentities"]} <= identities)
 
 
-def ms_tenant(ctx):
-    """The Managed Runtime CLI's signed-in home tenant, or None."""
-    result = run(ctx, ["ms", "auth", "status", "--json"])
-    if result.code:
-        return None
+def wait_container_app(ctx, url):
+    """Observe the app until its latest revision is ready; a failed revision stops with its own error."""
+    logs = "Inspect the revision's system and console logs in Log Analytics, fix the cause, then rerun."
+    while True:
+        response = arm(ctx, "GET", url)
+        if response.status != 200:
+            raise ServiceError("Reading the Container App", response)
+        properties = (response.json(default={}) or {}).get("properties") or {}
+        state, latest = properties.get("provisioningState"), properties.get("latestRevisionName")
+        if state == "Succeeded" and latest and properties.get("latestReadyRevisionName") == latest:
+            return properties
+        if state in ("Failed", "Canceled"):
+            raise Blocked(f"The Container App is {state}; its latest revision did not become ready.", logs)
+        if state == "Succeeded" and latest:
+            base, _, query = url.partition("?")
+            revision = arm(ctx, "GET", f"{base}/revisions/{urllib.parse.quote(latest, safe='')}?{query}")
+            if revision.status == 200:
+                details = (revision.json(default={}) or {}).get("properties") or {}
+                if "failed" in f"{details.get('provisioningState')} {details.get('runningState')}".lower():
+                    raise Blocked(f"Container App revision {latest} failed: "
+                                  f"{str(details.get('provisioningError') or details.get('runningStateDetails') or '')[:300]}",
+                                  logs)
+        if ctx.remaining() < 20:
+            raise Waiting(f"The Container App is still {state or 'provisioning'}.",
+                          "Rerun deploy.py up to keep observing it; nothing is resubmitted.")
+        ctx.sleep(10)
+
+
+def check_web_app(ctx, base, web, agent):
+    """Prove the deployed app: health, its sign-in settings and one proxied fresh challenge as you."""
+    for attempt in range(1, 13):
+        try:
+            response = ctx.http.request("GET", f"{base}/healthz", timeout=60)
+        except TransportError:
+            response = Response(599)
+        if response.status == 200:
+            break
+        if attempt == 12 or ctx.remaining() < 30:
+            raise Blocked(f"The web app is not healthy at {base}/healthz (HTTP {response.status}).")
+        ctx.sleep(10)
     try:
-        return runtime.cached_tenant(json.loads(result.stdout))
-    except (ValueError, TypeError, runtime.PreflightError):
-        return None
-
-
-def ms_signed_in(ctx, tenant):
-    return same_guid(ms_tenant(ctx), tenant)
-
-
-def lockfile_out_of_sync(root):
-    """True when package.json declares dependencies the lockfile's root package does not, such as ms app init's pin."""
-    try:
-        manifest = json.loads((root / "package.json").read_text(encoding="utf-8"))
-        lock = json.loads((root / "package-lock.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return False
-    locked = (lock.get("packages") or {}).get("") or {}
-    return any((manifest.get(field) or {}) != (locked.get(field) or {}) for field in ("dependencies", "devDependencies"))
-
-
-def sync_lockfile(ctx):
-    """ms app init pins its own CLI as a devDependency without updating the lockfile, which breaks `npm ci`
-    (also the app's hosted build command). Update the lockfile only: nothing is installed and no script runs."""
-    if not lockfile_out_of_sync(ctx.root):
-        return
-    checked(ctx, ["npm", "install", "--package-lock-only", "--ignore-scripts", "--no-audit", "--no-fund"],
-            "Syncing package-lock.json with package.json", stream=True)
-    if lockfile_out_of_sync(ctx.root):
-        raise Blocked("package-lock.json still differs from package.json after syncing it; review both.")
-    ctx.log("Synced package-lock.json with package.json (ms app init pins its CLI there); review and commit both.")
+        config = ctx.http.request("GET", f"{base}/config.json", timeout=60).json(default={}) or {}
+    except TransportError:
+        config = {}
+    expected = {"clientId": web["client_id"], "tenantId": web["tenant_id"], "scope": web["scope"],
+                "agentName": agent["name"]}
+    if config != expected:
+        raise Blocked("The web app serves different sign-in settings than this deployment.")
+    challenge = f"connection proof {uuid4()}"
+    token = access_token(ctx, resource=FOUNDRY_RESOURCE)
+    if not token:
+        raise Waiting("Azure CLI could not get a Microsoft Foundry token for the signed-in user.",
+                      "Sign in again with az login, then rerun deploy.py up.")
+    for attempt in range(1, 4):
+        try:
+            response = ctx.http.request("POST", f"{base}/api/responses", timeout=240, body={"input": challenge},
+                                        headers={"Authorization": f"Bearer {token}"})
+        except TransportError:
+            response = Response(599)
+        if response.status == 200 or response.status not in (502, 503, 504, 599) or attempt == 3:
+            break
+        ctx.sleep(15)
+    body = response.json(default={})
+    if response.status != 200 or not hosted.proof_matches(body, challenge):
+        raise Blocked(f"The web app did not relay this check's fresh challenge from the agent (HTTP {response.status}"
+                      + (f", {hosted.failure(body)}" if hosted.failure(body) else "") + ").",
+                      f"Inspect it: {save_evidence(ctx, 'app-proof-failed', body)}")
 
 
 def phase_app(ctx):
-    environment, _ = power_platform(ctx)
-    schema, name = required_outputs(ctx, "studio_agent_schema_name", "studio_agent_display_name")
+    web, registry, agent = required_outputs(ctx, "web_app", "container_registry", "hosted_agent")
+    subscription, tenant = ctx.target("subscription_id"), ctx.target("tenant_id")
+    if not same_guid(web.get("tenant_id"), tenant):
+        raise Blocked("The web app registration's tenant differs from the deployment tenant.")
+    base = https_origin(web.get("url"), "web_app url")
+    if not urllib.parse.urlparse(base).netloc.endswith(".azurecontainerapps.io"):
+        raise Blocked("The web_app URL is not a Container Apps address.")
+    app_id = container_app_id(web, subscription)
+    url = f"{ARM_API}{app_id}?api-version={CONTAINER_APPS_API}"
     receipts = ctx.state.section("app")
-    if set_agent_schema(ctx.root / "app" / "src" / "config.ts", schema):
-        ctx.log(f"Set STUDIO_AGENT_SCHEMA to {schema} in app/src/config.ts.")
-    sync_lockfile(ctx)
-    lock = sha256_file(ctx.root / "package-lock.json")
-    if receipts.get("installed") != lock or not (ctx.root / "node_modules").is_dir():
-        checked(ctx, ["npm", "ci"], "npm ci", stream=True)
-        receipts["installed"] = lock
+    scopes = [web["scope"].rsplit("/", 1)[-1]]
+    client, resource = guid(web.get("service_principal_object_id"), "web service principal"), guid(
+        web.get("api_principal_object_id"), "Foundry API service principal")
+    manual = (f"An Entra administrator opens {web.get('api_permissions_url')} and selects Grant admin consent for "
+              "Azure Machine Learning Services user_impersonation (the https://ai.azure.com sign-in scope).")
+    tag = released_source(ctx, APP_SOURCE)
+    image = f"{registry['login_server']}/{APP_REPOSITORY}:{tag}"
+    environment = arm(ctx, "GET", f"{ARM_API}{web['environment_id']}?api-version={CONTAINER_APPS_API}")
+    if environment.status != 200:
+        raise ServiceError("Reading the Container Apps environment", environment)
+    location = (environment.json(default={}) or {}).get("location")
+    desired = container_app_body(location, web, registry, agent, image, variables(ctx)["project_name"])
+
+    state, _ = tenant_grant(ctx, client, resource, scopes)
+    built = image_present(ctx, registry["name"], APP_REPOSITORY, tag)
+    current = arm(ctx, "GET", url)
+    if current.status not in (200, 404):
+        raise ServiceError("Reading the Container App", current)
+    deployed = current.status == 200 and container_app_matches(current.json(default={}), desired)
+    actions = ([] if state in ("granted", "unverified") else
+               [f"grant tenant-wide consent for the web sign-in ({web['client_id']}) to {web['scope']}"]) + (
+        [] if built else [f"build image {APP_REPOSITORY}:{tag} in {registry['name']}"]) + (
+        [] if deployed else [("update" if current.status == 200 else "create") + f" Container App {web['name']} at {base}"])
+    if actions:
+        approve(ctx, "app-deploy", "; ".join(actions))
+    state, _ = ensure_consent(ctx, lambda: tenant_grant(ctx, client, resource, scopes),
+                              lambda current_state, target: grant_consent(
+                                  ctx, web["client_id"], "Foundry sign-in scope for the web app", scopes,
+                                  current_state, target, manual))
+    if state == "unverified":
+        if not ctx.args.consent_confirmed:
+            raise MissingPermission("This sign-in cannot read the web app's consent grants, so it can neither grant "
+                                    "nor verify them.", "Then rerun with --consent-confirmed.", grants=[manual])
+        ctx.log("Web sign-in consent confirmed with --consent-confirmed; this sign-in cannot read grants to verify it.")
+    if not built:
+        build_image(ctx, registry["name"], APP_REPOSITORY, tag, APP_SOURCE)
+    if not deployed:
+        # Recorded before submitting: an accepted update is observed on rerun.
+        receipts["deploy"] = {"image": image, "submitted_at": utc_now()}
         ctx.state.save()
-    tenant = ctx.target("tenant_id")
-    if not ms_signed_in(ctx, tenant):
-        sign_in(ctx, ["ms", "auth", "login", "--device-code"], "Managed Runtime CLI")
-        if not ms_signed_in(ctx, tenant):
-            raise Blocked("ms is not signed in to the deployment tenant.")
-    config = ctx.root / "ms.config.json"
-    native = {"stream": not ctx.interactive, "interactive": ctx.interactive}
-    if not config.exists():
-        if receipts.get("init_started_at") and not ctx.args.retry_failed:
-            raise Blocked(f"An earlier `ms app init` ({receipts['init_started_at']}) may have registered the app, "
-                          "but ms.config.json is missing.",
-                          "Inspect it with `ms app list` / `ms app info` and recover that registration; rerun with "
-                          "--retry-failed only after confirming no app was registered.")
-        approve(ctx, "app-register", f"Register Managed Runtime app '{name}' in environment {environment}, "
-                                     "bound to this GitHub repository")
-        receipts["init_started_at"] = utc_now()
-        ctx.state.save()
-        try:
-            checked(ctx, ["ms", "app", "init", "--display-name", name, "--environment-id", environment,
-                          "--build-path", "app/dist", "--build-command", "npm ci && npm run build"], "ms app init", **native)
-        except Blocked as error:
-            message = error.message.lower()
-            repository_access = "github app" in message and "can't access the bound repository" in message
-            # Interactive CLI output goes directly to the terminal, not the captured error.
-            uncaptured = ctx.interactive and re.fullmatch(r"ms app init failed \(exit \d+\)\.", message)
-            if not repository_access and not uncaptured:
-                raise
-            prefix = "Ask" if repository_access else "If the terminal reported a GitHub App repository-access failure, ask"
-            raise Blocked(
-                error.message, *error.next_steps,
-                f"{prefix} the repository/organization administrator to install or configure the Microsoft Managed Apps "
-                "GitHub App for this repository: https://github.com/marketplace/microsoft-managed-apps . "
-                "Keep the existing registration receipt. Inspect `ms app list` / `ms app info` and recover any "
-                "existing registration; rerun with --retry-failed only after confirming no app was registered.") from None
-        if not config.exists():
-            raise Blocked("ms app init finished without creating ms.config.json; inspect it with `ms app info`.")
-        sync_lockfile(ctx)
-    app_id = app_registration(config, environment)["appId"]
-    if receipts.get("app_id") not in (None, app_id):
-        raise Blocked("ms.config.json targets a different app than the deployment receipt.")
-    receipts["app_id"] = app_id
+        response = arm(ctx, "PUT", url, desired)
+        if response.status not in (200, 201, 202):
+            raise ServiceError("Creating or updating the Container App", response)
+    properties = wait_container_app(ctx, url)
+    check_web_app(ctx, base, web, agent)
+    receipts.update(name=web["name"], url=base, image=image, revision=properties.get("latestReadyRevisionName"),
+                    verified_at=utc_now())
     ctx.state.save()
-    if not studio_reference(config, environment):
-        if receipts.get("data_source_started_at") and not ctx.args.retry_failed:
-            raise Blocked("An earlier `ms app add data-source` did not record the Copilot Studio data source.",
-                          "Inspect ms.config.json and the app's connections; rerun with --retry-failed after review.")
-        approve(ctx, "app-register", "Add the Copilot Studio connector data source to the app")
-        receipts["data_source_started_at"] = utc_now()
-        ctx.state.save()
-        checked(ctx, ["ms", "app", "add", "data-source", "--connector", "shared_microsoftcopilotstudio", "--as", "action"],
-                "ms app add data-source", **native)
-        if not studio_reference(config, environment):
-            raise Blocked("ms app add data-source finished without a Copilot Studio connection reference in ms.config.json.",
-                          "Inspect ms.config.json; rerun with --retry-failed after review.")
-    receipts.setdefault("registered_at", utc_now())
-    ctx.state.save()
-    return ("app registered with the Copilot Studio data source; each user must authorize their own "
-            f"Microsoft Copilot Studio connection at https://make.powerapps.com/environments/{environment}/connections "
-            "before playback, then the agent's IQ connections when prompted. Verify it in the App Player (next steps).")
-
-
-def app_registration(config, environment):
-    try:
-        registration = json.loads(config.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        raise Blocked("ms.config.json is not valid JSON; review it.") from None
-    if not isinstance(registration, dict):
-        raise Blocked("ms.config.json must contain an app registration.")
-    registered = registration.get("environmentId")
-    if not same_guid(registered, environment):
-        raise Blocked(f"ms.config.json is registered to environment {registered}, not {environment}; review it.")
-    app = registration.get("appId")
-    if not isinstance(app, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", app):
-        raise Blocked("ms.config.json has no usable appId; recover the registration.")
-    return registration
-
-
-def studio_reference(config, environment):
-    """Report whether the registered app has the Studio data source."""
-    registration = app_registration(config, environment)
-    references = (registration.get("connectionReferences") or {}).values()
-    return any(str((reference or {}).get("id", "")).endswith("/apis/shared_microsoftcopilotstudio")
-               for reference in references)
+    return (f"web app {base} serves {APP_REPOSITORY}:{tag} and relayed the agent's fresh challenge as you; "
+            "browser sign-in is next (next steps)")
 
 
 def teardown_snapshot(ctx):
@@ -2744,42 +2869,11 @@ def teardown_snapshot(ctx):
         match = re.match(r"/subscriptions/([^/]+)/", resource_id, re.I)
         if match and not same_guid(match[1], subscription):
             raise Blocked("Terraform state contains resources from another subscription.")
-    environment = choose(ctx, "environment_id", guid(ctx.args.environment_id, "--environment-id")
-                         if ctx.args.environment_id else None)
-    url = choose(ctx, "environment_url", https_origin(ctx.args.environment_url, "--environment-url")
-                 if ctx.args.environment_url else None)
-    app = None
-    config = ctx.root / "ms.config.json"
-    if config.exists():
-        registration = app_registration(config, environment)
-        app = registration["appId"]
-        if ctx.state.section("app").get("app_id") not in (None, app):
-            raise Blocked("ms.config.json targets a different app than the deployment receipt.")
-        if registration.get("externalRepoUrl"):
-            try:
-                repository = runtime.remote_repository(registration["externalRepoUrl"])
-            except runtime.PreflightError as error:
-                raise Blocked(str(error)) from None
-            if repository.lower() != origin.lower():
-                raise Blocked("ms.config.json is bound to another repository.")
-    elif ctx.state.section("app").get("init_started_at") and not ctx.state.section("destroy").get("snapshot"):
-        raise Blocked("App registration may exist but ms.config.json is missing.",
-                      "Recover it with ms app list / ms app info before teardown.")
-    # The environment is chosen before any sign-in, so only agent/app receipts show that runtime items may exist.
-    ran = ctx.state.data.get("phases") or {}
-    native = app or ctx.state.section("agent") or ctx.state.section("app") or "agent" in ran or "app" in ran
-    if native and not (environment and url):
-        raise Waiting("Teardown needs the agent/app environment ID and Dataverse URL.",
-                      "Pass --environment-id <guid> --environment-url https://<org>.crm.dynamics.com.")
     receipt = ctx.state.section("destroy")
     snapshot = receipt.get("snapshot")
     if snapshot:
         if snapshot["repository"].lower() != origin.lower() or snapshot["project_name"] != values["project_name"]:
             raise Blocked("The project differs from the saved teardown inventory.")
-        if snapshot.get("environment_id") != environment or snapshot.get("environment_url") != url:
-            raise Blocked("The Power Platform target differs from the saved teardown inventory.")
-        if app and app != snapshot.get("app_id"):
-            raise Blocked("ms.config.json now targets a different app than the teardown inventory.")
         if any(snapshot["resource_ids"].get(address) != identity for address, identity in resource_ids.items()):
             raise Blocked("Terraform resource identities changed since teardown was prepared; review the inventory.")
         return snapshot
@@ -2792,13 +2886,16 @@ def teardown_snapshot(ctx):
         if not match or not isinstance(foundry.get("location"), str) or not foundry["location"]:
             raise Blocked("The Foundry account has no valid purge target in Terraform state.")
         purge = {"name": match[3], "resource_group": match[2], "location": foundry["location"]}
-    schema = recorded_outputs.get("studio_agent_schema_name")
-    if native and not schema:
-        raise Blocked("The agent schema is missing from Terraform outputs; restore its state before teardown.")
+    agent, web = recorded_outputs.get("hosted_agent") or {}, recorded_outputs.get("web_app") or {}
+    published = (ctx.state.section("agent") or ctx.state.section("app")
+                 or {"agent", "app"} & set(ctx.state.data.get("phases") or {}))
+    if published and not (agent.get("name") and web.get("name")):
+        raise Blocked("The hosted agent or web app outputs are missing; restore Terraform state before teardown.")
     snapshot = {
         "repository": origin, "project_name": values["project_name"], "resource_ids": resource_ids,
-        "environment_id": environment, "environment_url": url, "app_id": app,
-        "agent_schema": schema if environment and url else None,
+        "hosted_agent": {"project_endpoint": project_url(agent["project_endpoint"]), "name": agent["name"],
+                         "toolbox_name": agent["toolbox_name"]} if agent.get("name") else None,
+        "container_app": container_app_id(web, subscription) if web.get("name") else None,
         "workspaces": {stage: resources[f"fabric_workspace.{stage}"]["id"] for stage in ("dev", "test")
                        if f"fabric_workspace.{stage}" in resources},
         "foundry": purge,
@@ -2808,55 +2905,57 @@ def teardown_snapshot(ctx):
     return snapshot
 
 
+def runtime_targets(ctx, snapshot):
+    """The runner-published releases that still exist, as (label, read URL, delete URL)."""
+    targets = []
+    if snapshot.get("container_app"):
+        url = f"{ARM_API}{snapshot['container_app']}?api-version={CONTAINER_APPS_API}"
+        targets.append((f"Container App {snapshot['container_app'].rsplit('/', 1)[-1]}", url, url))
+    agent = snapshot.get("hosted_agent") or {}
+    if agent:
+        base = project_url(agent["project_endpoint"])
+        name, toolbox = (urllib.parse.quote(agent[key], safe="") for key in ("name", "toolbox_name"))
+        targets += [(f"hosted agent {agent['name']} and its sessions", f"{base}/agents/{name}?api-version=v1",
+                     f"{base}/agents/{name}?api-version=v1&force=true"),
+                    (f"toolbox {agent['toolbox_name']}", f"{base}/toolboxes/{toolbox}?api-version=v1",
+                     f"{base}/toolboxes/{toolbox}?api-version=v1")]
+    present = []
+    for label, read, delete in targets:
+        call = arm if read.startswith(ARM_API) else foundry
+        response = call(ctx, "GET", read)
+        if response.status == 200:
+            present.append((label, read, delete))
+        elif response.status != 404:
+            raise ServiceError(f"Reading the {label}", response)
+    return present
+
+
 def delete_runtime(ctx, snapshot):
+    """Delete the Container App, hosted agent and toolbox before Terraform removes the hosts they run in."""
     receipt = ctx.state.section("destroy")
-    schema, app = snapshot.get("agent_schema"), snapshot.get("app_id")
-    environment, url = snapshot.get("environment_id"), snapshot.get("environment_url")
-    bot = None
-    if schema:
-        bot = studio_command(ctx, "find", "--tenant-id", ctx.target("tenant_id"), "--dataverse-url", url,
-                             "--agent-schema", schema, "--environment-id", environment)
-        if bot.get("status") not in ("found", "missing"):
-            raise Blocked("Could not determine whether the Studio agent still exists.")
-        if bot["status"] == "found":
-            bot_id = guid(bot.get("bot_id"), "Studio agent ID")
-            expected = receipt.get("bot_id") or ctx.state.section("agent").get("bot_id")
-            if expected and not same_guid(expected, bot_id):
-                raise Blocked("The Studio agent ID differs from the deployment receipt.")
-            receipt["bot_id"] = bot_id
-            ctx.state.save()
-    pending_app = app and receipt.get("app_deleted_at") is None
-    pending_bot = bot and bot["status"] == "found"
+    present = runtime_targets(ctx, snapshot)
     if not ctx.args.allow_delete:
         raise NeedsApproval("Pass --allow-delete to delete the environment and its data.")
-    if pending_app or pending_bot:
-        approve(ctx, "runtime-delete",
-                f"Delete Managed Runtime app {app or '(none)'} and Studio agent {schema or '(none)'} "
-                f"in environment {environment}, including app shares")
+    if present:
+        approve(ctx, "runtime-delete", "Delete " + "; ".join(label for label, *_ in present))
     receipt.setdefault("started_at", utc_now())
     ctx.state.save()
-    if pending_app:
-        if not ms_signed_in(ctx, ctx.target("tenant_id")):
-            raise Waiting("Sign in to ms in the deployment tenant before deleting the app.",
-                          "Run: ms auth login --device-code", "Then rerun deploy.py down.")
-        receipt["app_delete_started_at"] = utc_now()
+    for label, read, delete in present:
+        call = arm if read.startswith(ARM_API) else foundry
+        receipt.setdefault("runtime_delete_started", {})[label] = utc_now()
         ctx.state.save()
-        checked(ctx, ["ms", "app", "delete", "--app", app, "--environment-id", environment,
-                      "--force", "--non-interactive"], "ms app delete", quiet=True)
-        receipt["app_deleted_at"] = utc_now()
-        ctx.state.save()
-    if pending_bot:
-        if receipt.get("agent_delete_started_at") and not ctx.args.retry_failed:
-            raise Waiting("The agent deletion is not yet confirmed.",
-                          "Inspect the agent; use --retry-failed only if the delete must be resubmitted.")
-        receipt["agent_delete_started_at"] = utc_now()
-        ctx.state.save()
-        checked(ctx, ["dotnet", "pac", "copilot", "delete", "--bot", receipt["bot_id"],
-                      "--environment", url, "--confirm"], "pac copilot delete", quiet=True)
-        after = studio_command(ctx, "find", "--tenant-id", ctx.target("tenant_id"), "--dataverse-url", url,
-                               "--agent-schema", schema, "--environment-id", environment)
-        if after.get("status") != "missing":
-            raise Waiting("Studio has not confirmed the agent deletion; rerun deploy.py down to check it.")
+        response = call(ctx, "DELETE", delete)
+        if response.status not in (200, 202, 204, 404):
+            raise ServiceError(f"Deleting the {label}", response)
+        while True:
+            response = call(ctx, "GET", read)
+            if response.status == 404:
+                break
+            if response.status != 200:
+                raise ServiceError(f"Confirming the deleted {label}", response)
+            if ctx.remaining() < 15:
+                raise Waiting(f"The {label} is still being deleted.", "Rerun deploy.py down to keep observing it.")
+            ctx.sleep(10)
     receipt["runtime_deleted_at"] = utc_now()
     ctx.state.save()
 
@@ -2903,14 +3002,10 @@ def teardown_next(snapshot):
         workspaces = ", ".join(f"{stage}: {identity}" for stage, identity in snapshot["workspaces"].items())
         steps.append(f"Fabric tenant admin: permanently delete retained workspaces in OneLake catalog > Govern > "
                      f"Workspaces ({workspaces}). Retention is not immediate data erasure.")
-    if snapshot.get("environment_id"):
-        steps.append(f"Review project-only IQ and Copilot Studio connections and connection references in "
-                     f"https://make.powerapps.com/environments/{snapshot['environment_id']}; reused/user connections "
-                     "are not deleted automatically. Review retained Studio transcripts and solution components.")
-    else:
-        steps.append("Remove any manually created Studio agent/app registrations; no Power Platform target was recorded.")
     steps += [
         "Revoke the Web IQ AppID's keys and remove its portal profile at https://webiq.microsoft.ai/profiles.",
+        "Hosted-agent traces stay in the deleted Application Insights workspace's retention; Foundry keeps no "
+        "conversation after the project is purged.",
         "Keep Terraform state, tfvars and receipts until cleanup is confirmed. GitHub, backend storage, tenant settings, "
         "licenses, external source data and service-retained backups/audit records are not deleted.",
     ]
@@ -2933,11 +3028,10 @@ def phase_destroy(ctx):
 def permission_grants(ctx, phase, text):
     """Name the manual grant behind an API's refusal for lack of permission; empty for any other failure."""
     subscription = ctx.state.section("target").get("subscription_id") or "the deployment subscription"
-    environment = ctx.state.section("choices").get("environment_id") or "the chosen Power Platform environment"
     portal = (ctx.state.data.get("consent") or {}).get("api_permissions_url") or "its api_permissions_url"
     grants = []
-    native = (phase in ("agent", "app") and "GitHub App" not in text and POWER_PLATFORM.search(text)
-              and not PACKAGE_REGISTRY.search(text))
+    foundry_refused = phase in ("agent", "app", "destroy") and re.search(
+        r"hosted agent|toolbox|Foundry|services\.ai\.azure\.com", text, re.I)
 
     def grant(line):
         if line not in grants:
@@ -2980,20 +3074,9 @@ def permission_grants(ctx, phase, text):
         if phase == "config" and not actions:
             grant("The owner of your Terraform backend grants you read, write and lock access to its state (for "
                   "azurerm: Storage Blob Data Contributor on the state container).")
-        if native:
-            if re.search(r"licen[cs]e", block, re.I):
-                grant("Your Microsoft 365 administrator assigns you a Copilot Studio license that permits publishing."
-                      if phase == "agent" else "Your administrator gives each app user Power Apps Premium or "
-                      "Managed Application Copilot Credits.")
-            elif policy:
-                grant(f"A Power Platform administrator allows the Microsoft Copilot Studio, Fabric IQ and Foundry IQ "
-                      f"connectors in the data policies of environment {environment}.")
-            else:
-                grant(f"A Power Platform administrator assigns you Environment Maker and the Copilot Studio agent "
-                      f"author security role (see preparation.md) in environment {environment}."
-                      if phase == "agent" else
-                      f"A Power Platform administrator lets you create apps and connections in environment "
-                      f"{environment} (Environment Maker).")
+        if foundry_refused and not actions and re.search(r"\b(?:401|403)\b|Forbidden|Unauthorized", block):
+            grant("A Foundry project owner assigns you Foundry User (or Foundry Project Manager) on the deployment's "
+                  "Foundry project so you can publish toolboxes and agent versions and invoke the agent.")
     return grants
 
 
@@ -3127,8 +3210,9 @@ def parse_arguments(argv):
                        help="approve plans and creations in this run (never deletions or replacements)")
     group.add_argument("--approve", action="append", default=[], metavar="KEY[=SHA]",
                        help="approve a saved plan by hash (identity|platform|knowledge|destroy=SHA) or an action "
-                            "(agent-create, agent-connections, agent-publish, app-register, runtime-delete, purge-foundry)")
-    group.add_argument("--retry-failed", action="store_true", help="resubmit a reviewed failed or unconfirmed operation")
+                            "(agent-deploy, app-deploy, runtime-delete, purge-foundry)")
+    group.add_argument("--retry-failed", action="store_true",
+                       help="resubmit a reviewed failed or unconfirmed operation, or replace a failed agent version")
     group.add_argument("--non-interactive", action="store_true",
                        help="never prompt: approvals stop with exit 4; device-code sign-ins still run and print their "
                             "codes to stderr only")
@@ -3138,8 +3222,6 @@ def parse_arguments(argv):
     group.add_argument("--tenant", help="expected Entra tenant ID")
     group.add_argument("--local-state", action="store_true", help="accept single-user local Terraform state")
     group.add_argument("--backend-config", help="backend config file, relative to the repository root")
-    group.add_argument("--environment-id", help="Power Platform environment ID for the agent and app")
-    group.add_argument("--environment-url", help="that environment's Dataverse URL, https://<org>.crm.dynamics.com")
     deployment = argparse.ArgumentParser(add_help=False)
     deployment.add_argument("--allow-replace", action="store_true",
                             help="permit an approved up plan that deletes or replaces")
@@ -3153,7 +3235,8 @@ def parse_arguments(argv):
                        help="you are not an administrator or policy requires one: never grant tenant-wide consent or "
                             "register subscription preview features yourself; print them for an administrator")
     group.add_argument("--consent-confirmed", action="store_true",
-                       help="an administrator confirmed consent and this sign-in cannot read grants to verify it")
+                       help="an administrator confirmed consent (Fabric deployment app and web sign-in) and this "
+                            "sign-in cannot read grants to verify it")
     group.add_argument("--bootstrap-fallback", choices=("notebooks",),
                        help="if plan attachment is FeatureNotAvailable, import/sync without it and run Seed then Bind")
     group = deployment.add_argument_group("readiness evidence")

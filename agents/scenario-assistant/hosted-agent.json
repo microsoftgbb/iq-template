@@ -1,0 +1,39 @@
+{
+  "agent": {
+    "description": "Read-only scenario assistant over the live Fabric IQ ontology and the Foundry IQ knowledge base.",
+    "cpu": "0.5",
+    "memory": "1Gi",
+    "protocol_versions": [
+      { "protocol": "responses", "version": "2.0.0" }
+    ],
+    "environment_variables": {
+      "AZURE_AI_MODEL_DEPLOYMENT_NAME": "{{chat_deployment}}",
+      "TOOLBOX_ENDPOINT": "{{toolbox_endpoint}}",
+      "PYTHONNOUSERSITE": "1"
+    }
+  },
+  "toolbox": {
+    "description": "Live scenario facts and governed documents for the scenario assistant.",
+    "tools": [
+      {
+        "type": "fabric_iq_preview",
+        "name": "scenario_ontology",
+        "server_label": "scenario_ontology",
+        "description": "Live scenario facts from the bound Fabric IQ ontology, queried as the signed-in user. Use it for every current entity, status, count or relationship.",
+        "server_url": "{{fabric_iq_server_url}}",
+        "project_connection_id": "{{fabric_iq_connection}}",
+        "require_approval": "never"
+      },
+      {
+        "type": "mcp",
+        "name": "knowledge_base",
+        "server_label": "knowledge_base",
+        "description": "Cited guidance and background documents from the Foundry IQ knowledge base. Never use it for current statuses, counts or relationships.",
+        "server_url": "{{knowledge_base_mcp_endpoint}}",
+        "project_connection_id": "{{knowledge_base_connection}}",
+        "allowed_tools": ["knowledge_base_retrieve"],
+        "require_approval": "never"
+      }
+    ]
+  }
+}

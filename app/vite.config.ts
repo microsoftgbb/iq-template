@@ -1,19 +1,16 @@
-import { defineConfig } from "vite";
-import react from "@vitejs/plugin-react";
-import { managedApps } from "@microsoft/managed-apps-vite-plugin";
-import { fileURLToPath } from "node:url";
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
 
-// https://vite.dev/config/
+// The Container App serves dist/ and proxies /api to the hosted agent (server/server.mjs).
+// For local development, run `npm start` on port 8080 with the same settings and point Vite at it.
 export default defineConfig({
-  root: fileURLToPath(new URL("../", import.meta.url)),
-  publicDir: "app/public",
-  plugins: [react(), managedApps()],
-  build: {
-    outDir: "app/dist",
-    emptyOutDir: true,
-  },
+  plugins: [react()],
   server: {
-    port: 3000,
+    port: 5173,
     strictPort: true,
+    proxy: {
+      '/api': 'http://localhost:8080',
+      '/config.json': 'http://localhost:8080',
+    },
   },
-});
+})

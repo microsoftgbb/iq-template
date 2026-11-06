@@ -1,23 +1,25 @@
 {
-  "name": "app",
+  "name": "scenario-assistant-web",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.1.0",
   "type": "module",
+  "engines": {
+    "node": ">=24.11.0"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "test": "node --test tests/*.test.ts",
-    "preview": "vite preview"
+    "test": "node --test tests/*.test.ts tests/*.test.mjs",
+    "start": "node server/server.mjs"
   },
   "dependencies": {
-    "@microsoft/managed-apps": "^0.5.23",
+    "@azure/msal-browser": "^5.28.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@microsoft/managed-apps-vite-plugin": "^0.4.5",
     "@types/node": "^24.12.3",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",

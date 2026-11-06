@@ -246,6 +246,17 @@ variable "embedding_model" {
   }
 }
 
+variable "container_registry_sku" {
+  description = "Azure Container Registry tier for the hosted-agent and web app images that deploy.py builds."
+  type        = string
+  default     = "Basic"
+
+  validation {
+    condition     = contains(["Basic", "Standard", "Premium"], var.container_registry_sku)
+    error_message = "container_registry_sku must be Basic, Standard or Premium."
+  }
+}
+
 variable "tags" {
   description = "Additional Azure resource tags."
   type        = map(string)

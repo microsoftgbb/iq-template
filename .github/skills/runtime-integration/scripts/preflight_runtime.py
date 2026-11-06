@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check a derived project's native runtime route without provisioning or signing in."""
+"""Check a derived project's hosted-agent and Container Apps route without provisioning or signing in."""
 
 import argparse
 import json
@@ -11,18 +11,23 @@ from urllib.parse import urlparse
 from uuid import UUID
 
 
-CONNECTORS = {
-    "shared_azureagentservice": ("InvokeAgent",),
-    "shared_microsoftcopilotstudio": ("ExecuteCopilotAsyncV2",),
-    "shared_azureaisearchfoundryiq": ("AzureAISearchKBRetrieveMcp",),
-}
+# Regions that documented Foundry hosted agents in November 2026. A missing region is a
+# reason to check the current documentation, not proof that the service is unavailable.
+HOSTED_AGENT_REGIONS = frozenset({
+    "australiaeast", "brazilsouth", "canadacentral", "canadaeast", "centralus", "eastus", "eastus2",
+    "francecentral", "germanywestcentral", "italynorth", "japaneast", "japanwest", "koreacentral",
+    "northcentralus", "norwayeast", "polandcentral", "southafricanorth", "southcentralus", "southindia",
+    "southeastasia", "spaincentral", "swedencentral", "switzerlandnorth", "switzerlandwest", "uaenorth",
+    "uksouth", "ukwest", "westcentralus", "westeurope", "westus", "westus3",
+})
+MINIMUM_AZURE_CLI = (2, 80, 0)
 UNVERIFIED = [
-    "Managed Runtime maker authentication, licensing and hosted app build",
+    "Image builds, toolbox and hosted agent publishing, and Container Apps provisioning",
     "Search new-service regional capacity and model deployment quota",
-    "Non-shared end-user connector connections and downstream authorization",
-    "Foundry or Studio agent invocation and native knowledge retrieval from the app",
+    "Per-user Fabric IQ delegation through the toolbox and knowledge-base retrieval",
+    "Browser sign-in consent, other users' Foundry roles and second-user isolation",
     "Document ingestion, live ontology references and denied-user behavior",
-    "Cross-user isolation and target-local Fabric bindings",
+    "Target-local Fabric bindings",
 ]
 
 
@@ -62,11 +67,6 @@ def json_command(arguments, checkout):
         raise PreflightError(f"{arguments[0]} did not return a JSON object.") from None
     if not isinstance(value, dict):
         raise PreflightError(f"{arguments[0]} did not return a JSON object.")
-    if arguments[0] == "ms" and value.get("success") is not True:
-        raise PreflightError(
-            f"{' '.join(arguments[:3])} reported failure. "
-            "Inspect the native diagnostic in your terminal; no output was treated as success."
-        )
     return value
 
 
@@ -114,59 +114,14 @@ def tool_version(value, label):
     return tuple(int(part) for part in match.groups())
 
 
-def cli_pin(root):
-    source = root / ".devcontainer/features/managed-runtime/install.sh"
-    matches = re.findall(
-        r"^cli_version=(\d+\.\d+\.\d+)$", source.read_text(encoding="utf-8"), re.M
-    )
-    if len(matches) != 1:
-        raise PreflightError("The reviewed Managed Runtime feature must contain one CLI pin.")
-    return matches[0]
-
-
-def cached_tenant(authentication):
-    if authentication.get("signedIn") is not True:
-        raise PreflightError("Complete ms auth login on the selected host before preflight.")
-    account = authentication.get("activeAccount")
-    if not isinstance(account, dict) or not isinstance(account.get("homeAccountId"), str):
-        raise PreflightError("Managed Runtime did not identify its active account.")
-    parts = account["homeAccountId"].split(".")
-    if len(parts) != 2:
-        raise PreflightError("Managed Runtime did not identify its active account's home tenant.")
-    return identifier(parts[1], "Managed Runtime home tenant")
-
-
-def items(value, label):
-    result = value.get("items")
-    if not isinstance(result, list) or any(not isinstance(item, dict) for item in result):
-        raise PreflightError(f"{label} must return a native items array.")
-    return result
-
-
-def connector_check(catalog, actions, name, required):
-    matches = [item for item in items(catalog, "Connector catalog") if item.get("name") == name]
-    if len(matches) != 1:
-        raise PreflightError(f"Expected exactly one {name} connector in the selected environment.")
-    connector = matches[0]
-    if type(connector.get("isBlocked")) is not bool or connector["isBlocked"]:
-        raise PreflightError(f"{name} is blocked or did not report a Boolean governance status.")
-    if connector.get("isTabular") is not False:
-        raise PreflightError(f"{name} did not identify an action connector.")
-    available = items(actions, "Connector action catalog")
-    for operation in required:
-        matches = [item for item in available if item.get("id") == operation]
-        if (
-            len(matches) != 1
-            or matches[0].get("behavior") != "Allow"
-            or matches[0].get("deprecated") is not False
-        ):
-            raise PreflightError(f"{name}/{operation} is missing, blocked, deprecated or ambiguous.")
-    return {"connector": name, "allowed_operations": list(required)}
+def region(value, label):
+    if not isinstance(value, str) or not re.fullmatch(r"[a-z][a-z0-9]+", value):
+        raise PreflightError(f"{label} must be an explicitly chosen Azure region short name.")
+    return value
 
 
 def fabric_quota_check(value, location, sku):
-    if not re.fullmatch(r"[a-z][a-z0-9]+", location):
-        raise PreflightError("fabric-location must be an explicitly chosen Azure region short name.")
+    region(location, "fabric-location")
     if sku not in (
         "F2", "F4", "F8", "F16", "F32", "F64", "F128", "F256",
         "F512", "F1024", "F2048",
@@ -203,6 +158,16 @@ def fabric_quota_check(value, location, sku):
     return {"location": location, "sku": sku, "available_cus": available, "required_cus": required}
 
 
+def hosted_agent_region(location):
+    region(location, "location")
+    if location not in HOSTED_AGENT_REGIONS:
+        raise PreflightError(
+            f"Foundry hosted agents were not documented in {location}. Check the current region list "
+            "in the hosted agents documentation, or choose a listed region; no resources were provisioned."
+        )
+    return location
+
+
 def check_environment(subscription, tenant):
     for key, expected in (
         ("ARM_SUBSCRIPTION_ID", subscription),
@@ -233,12 +198,12 @@ def check_environment(subscription, tenant):
             )
 
 
-def preflight(checkout, repository, subscription, tenant, root, fabric_location, fabric_sku):
+def preflight(checkout, repository, subscription, tenant, location, fabric_location, fabric_sku):
     repository = repository_name(repository)
     subscription = identifier(subscription, "subscription-id")
     tenant = identifier(tenant, "tenant-id")
-    if not re.fullmatch(r"[a-z][a-z0-9]+", fabric_location):
-        raise PreflightError("fabric-location must be an explicitly chosen Azure region short name.")
+    hosted_agent_region(location)
+    region(fabric_location, "fabric-location")
     check_environment(subscription, tenant)
 
     actual = remote_repository(command(["git", "remote", "get-url", "origin"], checkout))
@@ -255,17 +220,11 @@ def preflight(checkout, repository, subscription, tenant, root, fabric_location,
     ):
         raise PreflightError("Use a verified derived repository, not the reusable template.")
 
-    node = tool_version(command(["node", "--version"], checkout), "node")
     git = tool_version(command(["git", "--version"], checkout), "git")
-    if node < (24, 11, 0) or git < (2, 27, 0):
-        raise PreflightError("Use Node >= 24.11.0 and Git >= 2.27.0.")
-    pinned = cli_pin(root)
-    installed = command(["ms", "--version"], checkout).strip()
-    if installed != pinned:
-        raise PreflightError(
-            f"Managed Runtime CLI must match the reviewed template pin ({pinned}); "
-            "do not upgrade automatically."
-        )
+    versions = json_command(["az", "version", "--output", "json"], checkout)
+    azure_cli = tool_version(str(versions.get("azure-cli") or ""), "azure-cli")
+    if git < (2, 27, 0) or azure_cli < MINIMUM_AZURE_CLI:
+        raise PreflightError("Use Git >= 2.27.0 and Azure CLI >= 2.80.0 (ACR builds and hosted agents).")
 
     azure = json_command(
         [
@@ -280,9 +239,6 @@ def preflight(checkout, repository, subscription, tenant, root, fabric_location,
         or azure.get("userType") != "user"
     ):
         raise PreflightError("Azure must use the chosen subscription/tenant and a delegated user.")
-    authentication = json_command(["ms", "auth", "status", "--json"], checkout)
-    if cached_tenant(authentication) != tenant:
-        raise PreflightError("Managed Runtime and Azure identify different home tenants.")
 
     quota = json_command(
         [
@@ -295,22 +251,13 @@ def preflight(checkout, repository, subscription, tenant, root, fabric_location,
     )
     fabric = fabric_quota_check(quota, fabric_location, fabric_sku)
 
-    # Even reads update MSAL's shared cache; run native CLI probes serially.
-    connectors = []
-    for name, operations in CONNECTORS.items():
-        catalog = json_command(["ms", "connector", "list", "--search", name, "--json"], checkout)
-        actions = json_command(
-            ["ms", "connector", "list-actions", "--connector", name, "--json"], checkout
-        )
-        connectors.append(connector_check(catalog, actions, name, operations))
-
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "status": "candidate",
-        "target": {"repository": repository, "subscription_id": subscription, "tenant_id": tenant},
-        "cli_version": installed,
+        "target": {"repository": repository, "subscription_id": subscription, "tenant_id": tenant,
+                   "location": location},
+        "azure_cli_version": ".".join(map(str, azure_cli)),
         "fabric_quota": fabric,
-        "connectors": connectors,
         "fabric_git_token_available": bool(
             os.environ.get("TF_VAR_github_token") or os.environ.get("FABRIC_GITHUB_TOKEN")
         ),
@@ -324,14 +271,14 @@ def main():
     parser.add_argument("--repository", required=True, metavar="OWNER/REPO")
     parser.add_argument("--subscription-id", required=True)
     parser.add_argument("--tenant-id", required=True)
-    parser.add_argument("--fabric-location", required=True)
+    parser.add_argument("--location", required=True, help="the Foundry and resource-group region")
+    parser.add_argument("--fabric-location", help="defaults to --location")
     parser.add_argument("--fabric-capacity-sku", default="F2")
     args = parser.parse_args()
-    root = Path(__file__).resolve().parents[4]
     try:
         result = preflight(
-            args.checkout.resolve(), args.repository, args.subscription_id, args.tenant_id, root,
-            args.fabric_location, args.fabric_capacity_sku,
+            args.checkout.resolve(), args.repository, args.subscription_id, args.tenant_id,
+            args.location, args.fabric_location or args.location, args.fabric_capacity_sku,
         )
     except (OSError, PreflightError) as error:
         parser.exit(1, f"Runtime preflight blocked: {error}\n")
