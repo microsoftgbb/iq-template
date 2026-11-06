@@ -9,7 +9,8 @@
     "environment_variables": {
       "AZURE_AI_MODEL_DEPLOYMENT_NAME": "{{chat_deployment}}",
       "TOOLBOX_ENDPOINT": "{{toolbox_endpoint}}",
-      "PYTHONNOUSERSITE": "1"
+      "PYTHONNOUSERSITE": "1",
+      "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT": "false"
     }
   },
   "toolbox": {
