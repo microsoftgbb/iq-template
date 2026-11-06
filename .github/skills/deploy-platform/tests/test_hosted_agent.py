@@ -154,6 +154,12 @@ class EvidenceTests(unittest.TestCase):
         self.assertIn("the scenario_ontology tool call failed", problems)
         problems, _ = hosted.ontology_evidence({"status": "failed", "error": {"message": "boom"}}, "x", ())
         self.assertIn("boom", problems[0])
+        # Agent Framework turns a tool exception or MCP isError into an "Error:" result; its text is never evidence.
+        errored = json.loads(json.dumps(good))
+        errored["output"][1]["output"] = "Error: Function failed. Exception: Pump B at North Works"
+        problems, _ = hosted.ontology_evidence(errored, "scenario_ontology", ("Pump B", "North Works"))
+        self.assertEqual(problems, ["the scenario_ontology tool call failed",
+                                    "the scenario_ontology tool output lacks Pump B, North Works"])
 
     def test_documents_must_be_returned_by_the_knowledge_tool(self):
         response = {"status": "completed", "output": [
@@ -164,6 +170,10 @@ class EvidenceTests(unittest.TestCase):
         response["output"][1]["output"] = "other.txt"
         self.assertEqual(hosted.document_evidence(response, "knowledge_base", "starter.txt")[0],
                          ["the knowledge_base tool output does not reference starter.txt"])
+        response["output"][1]["output"] = "Error: Function failed. Exception: starter.txt"
+        self.assertEqual(hosted.document_evidence(response, "knowledge_base", "starter.txt")[0],
+                         ["the knowledge_base tool call failed",
+                          "the knowledge_base tool output does not reference starter.txt"])
 
     def test_only_the_exact_fresh_challenge_is_proof(self):
         challenge = "connection proof 12345678-1234-4234-8234-123456789abc"

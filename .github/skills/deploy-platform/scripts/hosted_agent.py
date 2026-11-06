@@ -186,6 +186,12 @@ def proof_matches(response, challenge):
     return failure(response) is None and output_text(response) == PROOF_PREFIX + challenge
 
 
+def _failed(call):
+    """A failed call, including Agent Framework's "Error: ..." result for a tool exception or an MCP isError."""
+    return (bool(call.get("error")) or call.get("status") in ("failed", "incomplete")
+            or call["output"].lstrip().startswith("Error:"))
+
+
 def _calls_for(response, label):
     label = label.lower()
     return [call for call in tool_calls(response)
@@ -198,9 +204,10 @@ def ontology_evidence(response, label, facts):
     calls = _calls_for(response, label)
     if not calls:
         problems.append(f"no {label} tool call")
-    elif any(call.get("error") or call.get("status") in ("failed", "incomplete") for call in calls):
+    elif any(_failed(call) for call in calls):
         problems.append(f"the {label} tool call failed")
-    data = "\n".join(call["output"] for call in calls)
+    # Only successful calls are evidence: a failure's text must never satisfy the readiness gate.
+    data = "\n".join(call["output"] for call in calls if not _failed(call))
     missing = [fact for fact in facts if fact.casefold() not in data.casefold()]
     if calls and missing:
         problems.append(f"the {label} tool output lacks " + ", ".join(missing))
@@ -214,9 +221,10 @@ def document_evidence(response, label, document):
     calls = _calls_for(response, label)
     if not calls:
         problems.append(f"no {label} tool call")
-    elif any(call.get("error") or call.get("status") in ("failed", "incomplete") for call in calls):
+    elif any(_failed(call) for call in calls):
         problems.append(f"the {label} tool call failed")
-    if calls and document.casefold() not in "\n".join(call["output"] for call in calls).casefold():
+    if calls and document.casefold() not in "\n".join(
+            call["output"] for call in calls if not _failed(call)).casefold():
         problems.append(f"the {label} tool output does not reference {document}")
     return problems, {"tool_calls": [call["name"] for call in calls], "document": document,
                       "answer_chars": len(output_text(response))}
