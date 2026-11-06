@@ -62,7 +62,7 @@ resource "azuread_application" "web" {
   prevent_duplicate_names = true
 
   single_page_application {
-    redirect_uris = ["${local.web_app_url}/"]
+    redirect_uris = concat(["${local.web_app_url}/"], var.web_app_local_redirect_uris)
   }
 
   # Declare the delegated permission; deploy.py grants tenant-wide consent as the administrator.
