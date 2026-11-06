@@ -181,6 +181,14 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(hosted.document_evidence(response, "knowledge_base", "starter.txt")[0],
                          ["the knowledge_base tool call failed",
                           "the knowledge_base tool output does not reference starter.txt"])
+        # An inline MCP result marked isError is a failure too, even when its text names the document.
+        inline = {"status": "completed", "output": [
+            {"type": "mcp_call", "name": "knowledge_base_retrieve", "server_label": "knowledge_base",
+             "output": {"isError": True, "content": [{"type": "text", "text": "starter.txt is unavailable"}]}},
+            message("(Source: starter.txt)")]}
+        self.assertEqual(hosted.document_evidence(inline, "knowledge_base", "starter.txt")[0],
+                         ["the knowledge_base tool call failed",
+                          "the knowledge_base tool output does not reference starter.txt"])
 
     def test_only_the_exact_fresh_challenge_is_proof(self):
         challenge = "connection proof 12345678-1234-4234-8234-123456789abc"

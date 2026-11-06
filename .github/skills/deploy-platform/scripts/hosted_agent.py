@@ -187,9 +187,16 @@ def proof_matches(response, challenge):
 
 
 def _failed(call):
-    """A failed call, including Agent Framework's "Error: ..." result for a tool exception or an MCP isError."""
-    return (bool(call.get("error")) or call.get("status") in ("failed", "incomplete")
-            or call["output"].lstrip().startswith("Error:"))
+    """A failed call: an error or failed status, Agent Framework's "Error: ..." result for a tool exception,
+    or an inline MCP result marked isError."""
+    output = call["output"]
+    if call.get("error") or call.get("status") in ("failed", "incomplete") or output.lstrip().startswith("Error:"):
+        return True
+    try:
+        result = json.loads(output)
+    except ValueError:
+        return False
+    return isinstance(result, dict) and result.get("isError") is True
 
 
 def _calls_for(response, label):
