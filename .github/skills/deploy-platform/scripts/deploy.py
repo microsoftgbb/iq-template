@@ -1985,29 +1985,49 @@ def bootstrap_native(ctx, workspace, expected, receipts):
                       "Inspect DEV and rerun; the accepted import will not be resubmitted.")
 
 
-ANNOTATION = re.compile(r"(?m)^[ \t]*annotation[ \t]+(ONT_[A-Za-z]+)[ \t]*=[ \t]*(.*?)[ \t]*\r?$")
+PARTITION_SOURCE = {"mode": "directLake", "schemaName": "dbo", "expressionSource": "ScenarioLakehouse"}
+PINNED = re.compile(r"\t\tannotation[ \t]+ONT_PinnedAtUtc[ \t]*=[ \t]*\S")
+ONELAKE_SOURCE = re.compile(r'Source\s*=\s*AzureStorage\.DataLake\(\s*"https://onelake\.dfs\.fabric\.microsoft\.com/'
+                            r'([0-9a-fA-F-]{36})/([0-9a-fA-F-]{36})"\s*,\s*\[\s*HierarchicalNavigation\s*=\s*true\s*\]\s*\)')
+
+
+def partition_pinned(text):
+    """Whether the canonical partition itself keeps BindScenario's pin marker, not the table or a column."""
+    lines = text.splitlines()
+    starts = [index for index, line in enumerate(lines) if line.startswith("\tpartition ")]
+    block = lines[starts[0] + 1:] if len(starts) == 1 else []
+    end = next((index for index, line in enumerate(block) if line.strip() and not line.startswith("\t\t")), len(block))
+    return any(PINNED.match(line) for line in block[:end])
 
 
 def binding_problems(parts, workspace, lakehouse):
-    """Check the sample's target-local binding pins, not Git-normalized placeholders."""
+    """Check the sample's target-local partitions, OneLake source and pin marker, not Git-normalized placeholders.
+
+    getDefinition elides the ONT_* source pins that BindScenario writes except ONT_PinnedAtUtc, which marks them.
+    """
     problems = []
     for table in SAMPLE_TABLES:
         text = parts.get(f"tables/{table}.tmdl")
         if text is None:
             problems.append(f"tables/{table}.tmdl is missing")
             continue
-        if not re.search(r"(?m)^[ \t]+partition[ \t]", text):
+        partitions = re.findall(r"(?m)^[ \t]+partition[ \t]+([^\r\n]+)", text)
+        if not partitions:
             problems.append(f"{table} has no partition yet")
             continue
-        pins = dict(ANNOTATION.findall(text))
-        if not same_guid(pins.get("ONT_WorkspaceId"), workspace):
-            problems.append(f"{table} is not pinned to the DEV workspace")
-        if not same_guid(pins.get("ONT_ItemId"), lakehouse):
-            problems.append(f"{table} is not pinned to the DEV lakehouse")
-        if pins.get("ONT_ItemKind") != "Lakehouse":
-            problems.append(f"{table} source kind is not Lakehouse")
-    root = f"https://onelake.dfs.fabric.microsoft.com/{workspace}/{lakehouse}"
-    if root not in (parts.get("expressions.tmdl") or "").lower():
+        fields = dict(PARTITION_SOURCE, entityName=table)
+        if (len(partitions) != 1 or partitions[0].strip() not in (f"{table} = entity", f"'{table}' = entity")
+                or any([value.strip().strip("'") for value in re.findall(rf"(?m)^[ \t]+{field}:[ \t]+([^\r\n]+)", text)]
+                       != [wanted] for field, wanted in fields.items())):
+            problems.append(f"{table} does not read dbo.{table} through ScenarioLakehouse")
+        elif not partition_pinned(text):
+            problems.append(f"{table} has no source pins yet")
+    # Match BindScenario's whole expression, so the DEV URL in a comment or unused step does not count.
+    lines = [line.strip() for line in (parts.get("expressions.tmdl") or "").splitlines() if line.strip()]
+    source = ONELAKE_SOURCE.fullmatch(lines[2]) if len(lines) == 6 else None
+    if (not source or not same_guid(source[1], workspace) or not same_guid(source[2], lakehouse)
+            or lines[0] not in ("expression ScenarioLakehouse =", "expression 'ScenarioLakehouse' =")
+            or lines[1] != "let" or lines[3:5] != ["in", "Source"] or not lines[5].startswith("lineageTag:")):
         problems.append("expressions.tmdl does not read the DEV lakehouse")
     return problems
 
