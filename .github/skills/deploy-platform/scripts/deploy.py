@@ -2647,6 +2647,7 @@ def container_app_body(location, web, registry, agent, image, project_name):
         "identity": {"type": "UserAssigned", "userAssignedIdentities": {web["identity_id"]: {}}},
         "properties": {
             "environmentId": web["environment_id"],
+            "workloadProfileName": "Consumption",
             "configuration": {
                 "activeRevisionsMode": "Single",
                 "ingress": {"external": True, "targetPort": 8080, "transport": "auto", "allowInsecure": False,
