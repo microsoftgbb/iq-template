@@ -9,13 +9,11 @@ their respective products; they are not branding for this template.
 MICROSOFT PRODUCT ICONS
 ----------------------
 
-The diagrams use Microsoft Azure, Microsoft Fabric, Microsoft Power Platform
-and Microsoft Entra architecture icons. Their original sources and applicable
-usage conditions are:
+The diagrams use Microsoft Azure, Microsoft Fabric and Microsoft Entra
+architecture icons. Their original sources and applicable usage conditions are:
 
 https://learn.microsoft.com/azure/architecture/icons/
 https://learn.microsoft.com/fabric/fundamentals/icons
-https://learn.microsoft.com/power-platform/guidance/icons
 https://learn.microsoft.com/entra/architecture/architecture-icons
 
 Microsoft permits the use of these icons in architectural diagrams, training

@@ -10,9 +10,10 @@ This uses the native [`fabricOntology` knowledge source (preview)](https://learn
 
 One-way arrows show indexed content flowing toward the knowledge base; paired
 arrowheads show live request/response interactions, not data replication.
-The shipped Studio agent reads live facts through **native Fabric IQ** instead
-of this Search source, as the [runtime diagram](runtime-integration.md#runtime-at-a-glance)
-shows. Registering the source does not remove its end-user token requirement.
+The shipped hosted agent reads live facts through **native Fabric IQ** as the
+signed-in user instead of this Search source, as the
+[runtime diagram](runtime-integration.md#runtime-at-a-glance) shows.
+Registering the source does not remove its end-user token requirement.
 
 [Editable Excalidraw source](diagrams/knowledge-retrieval.excalidraw) | [All diagrams](diagrams/README.md) | [Icon sources](diagram-authoring.md#official-icon-sources)
 
@@ -111,7 +112,7 @@ Content-Type: application/json
 
 Tokens are placeholders, **not configuration values to store in tfvars or source control**. Acquire the user's token in your application's approved sign-in/OBO flow, not from a chat prompt. Forward it per request, protect logs, and refuse an ontology query if the required identity is missing.
 
-For a consuming Foundry agent, keep the knowledge-base MCP connection and add this per-request header to its MCP tool using [structured inputs or supported OAuth identity passthrough](https://learn.microsoft.com/azure/foundry/agents/how-to/foundry-iq-connect#optional-enforce-permissions-with-per-request-headers). Creating the managed-identity connection alone does not complete ontology authentication. The shipped [Studio agent](runtime-integration.md#studio-iq-tools) avoids this header: it reads live facts through the Fabric IQ ontology tool and documents through the Foundry IQ tool, each with the user's own connection.
+For a consuming Foundry agent, keep the knowledge-base MCP connection and add this per-request header to its MCP tool using [structured inputs or supported OAuth identity passthrough](https://learn.microsoft.com/azure/foundry/agents/how-to/foundry-iq-connect#optional-enforce-permissions-with-per-request-headers). Creating the managed-identity connection alone does not complete ontology authentication. The shipped [hosted agent](runtime-integration.md#toolbox-tools) does not send this header: it reads live facts through the Fabric IQ ontology tool as the signed-in user, and calls the knowledge base with the project's managed identity only for documents.
 
 For an untouched seed, the example question should identify **Pump B at North Works**. Inspect the retrieval response for an `activity` entry and `references` of type `fabricOntology`, with the expected workspace and ontology IDs. A correct-sounding answer from `starter.txt` alone is **not** proof of ontology integration. Include a user without Fabric access in your derived project's authorization checks and surface denied/failed sources rather than silently substituting the document snapshot.
 

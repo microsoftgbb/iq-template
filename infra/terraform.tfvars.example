@@ -23,12 +23,16 @@ web_iq_terms_accepted = false
 # project_name: 3-16 lowercase letters/digits/single hyphens; start with a letter.
 # Capacity admins: user UPNs or service-principal object IDs.
 # Select the new repository's published default branch, not a local agent worktree branch.
-# Defaults: F2 capacity, serverless (preview) Search; native bootstrap imports workspace/.
+# Defaults: F2 capacity, serverless (preview) Search, Basic container registry
+# (container_registry_sku) for the agent and app images; native bootstrap imports workspace/.
+# For a local web app loop (Vite on port 5173), also register its sign-in address:
+# web_app_local_redirect_uris = ["http://localhost:5173/"]
 # Serverless needs a region that offers it and the subscription's auto-approved
 # Microsoft.Search/Serverless feature. For an SLA-backed dedicated tier, set:
 # search_sku = "basic"
 # Check Fabric CU quota (and dedicated Search capacity) before applying.
 # location is the common region and always remains the Foundry/resource-group region.
+# It must offer Foundry hosted agents; the runner checks this before provisioning.
 # Only after explicitly approving cross-region costs/data handling, optionally set:
 # fabric_location = "<approved-fabric-region>"
 # search_location = "<approved-search-region>"
@@ -47,7 +51,8 @@ web_iq_terms_accepted = false
 # }
 # Ontology queries require delegated user authentication at runtime, not a saved token.
 # Registered ontologies also receive native Foundry Fabric IQ UserEntraToken connections.
-# fabric_iq_connections outputs their IDs/endpoints; this does not create a consuming
-# agent/app or prove its OBO flow. Search fabricOntology calls still need the user header.
+# fabric_iq_connections outputs their IDs/endpoints; the hosted agent's Fabric IQ tool uses
+# the scenario one. Registration does not publish the agent or prove its on-behalf-of flow.
+# Search fabricOntology calls still need the user header.
 # Only with fabric_git_enabled = true: supply FABRIC_GITHUB_TOKEN as a Codespaces
 # secret or TF_VAR_github_token in your shell. Never add a PAT to this file.

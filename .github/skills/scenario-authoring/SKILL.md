@@ -1,6 +1,6 @@
 ---
 name: scenario-authoring
-description: Add or adapt a domain workflow using the template's fixed Fabric, knowledge, agent and Managed Runtime artifact contract. Use for a new PoC scenario, ontology/seed work package, governed documents, agent instructions or explicit IQ opt-ins. Do not redesign the platform, agent route or app shell.
+description: Add or adapt a domain workflow using the template's fixed Fabric, knowledge, hosted agent and web app artifact contract. Use for a new PoC scenario, ontology/seed work package, governed documents, agent instructions or explicit IQ opt-ins. Do not redesign the platform, agent route or app shell.
 ---
 
 # Author a scenario without redesigning the shell
@@ -37,10 +37,12 @@ do not turn the sample binder into unrestricted text substitution.
 4. Reuse existing Search sources/base lifecycle and register bound physical
    DEV items through the same approved knowledge stage. Do not create duplicate
    resources from a product plugin.
-5. Adapt the shipped agent's instructions and tool descriptions in
-   `agents/scenario-assistant/`, keeping both tools in `Invoker` mode. Add
-   scenario views in `app/` on the shell's Studio service and failure states;
-   preserve source authority and per-user isolation.
+5. Adapt the shipped agent's `instructions.md` and the tool descriptions in
+   `hosted-agent.json`, keeping the proof middleware, both tools' server labels,
+   project connections and `require_approval: never`. Add scenario views in
+   `app/src/` on the shell's proxy, connection check and failure states;
+   preserve source authority and per-user isolation, and keep the proxy limited
+   to the agent endpoint.
 6. Put independent expected outcomes and negative/source/authorization cases
    in `scenario/evals/`. A static fixture is not a live model/retrieval proof.
 
@@ -55,11 +57,12 @@ requires the chosen derived target, reviewed revision, one host/state, exact
 plan approvals and the native runtime identity. Never execute a notebook or
 deployment test as template maintenance.
 
-Prove the native agent/app route before saying the scenario shell is ready.
-An allowed catalog, healthy connection record, green build or SDK-only smoke
-is insufficient. Native OBO/decryption, denied-source and safety-service errors
-remain blockers; never switch identities, expose tokens or recreate a partially
-registered app to get a plausible answer.
+Prove the hosted agent and web app route before saying the scenario shell is
+ready. A healthy container, a published version, a green build or a
+correct-sounding answer is insufficient. Authorization, denied-source and
+safety-service errors remain blockers; never switch identities, expose tokens,
+widen roles or recreate a partially deployed agent or app to get a plausible
+answer.
 
 Use product skills from `docs/copilot-tooling.md` for opted-in capabilities, but
 retain repository ownership/approval rules. Unsupported capabilities stop for
