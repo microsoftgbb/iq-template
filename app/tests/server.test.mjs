@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
-import { createServer } from 'node:http'
+import { createServer, request } from 'node:http'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
@@ -147,5 +147,42 @@ test('static files, runtime configuration and health are served with security he
     assert.equal((await fetch(`${app.base}/%E0%A4%A`)).status, 404)
   } finally {
     await app.close()
+  }
+})
+
+const authorization = ['Bearer', 'user-token'].join(' ')
+
+test('a malformed request target is refused without stopping the server', async () => {
+  const app = await start(async () => json(200, {}))
+  try {
+    const { hostname, port } = new URL(app.base)
+    const status = await new Promise((resolve, reject) => {
+      const probe = request({ hostname, port, path: '//', method: 'GET' }, (answer) => {
+        answer.resume()
+        resolve(answer.statusCode)
+      })
+      probe.on('error', reject)
+      probe.end()
+    })
+    assert.equal(status, 400)
+    assert.equal(await (await fetch(`${app.base}/healthz`)).text(), 'ok')
+  } finally {
+    await app.close()
+  }
+})
+
+test('an answer that stalls or drops after its headers is a gateway error', async () => {
+  for (const [error, status] of [[new DOMException('timed out', 'TimeoutError'), 504], [new TypeError('terminated'), 502]]) {
+    const app = await start(async () => new Response(new ReadableStream({ start(controller) { controller.error(error) } })))
+    try {
+      const response = await fetch(`${app.base}/api/responses`, {
+        method: 'POST', headers: { Authorization: authorization, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ input: 'hi' }),
+      })
+      assert.equal(response.status, status)
+      assert.ok((await response.json()).error.message)
+    } finally {
+      await app.close()
+    }
   }
 })

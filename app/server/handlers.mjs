@@ -121,6 +121,7 @@ async function proxy(request, response, options) {
   if (!match) throw new ClientError(401, 'Sign in first; the agent is called with your own token.')
   const body = upstreamBody(await readJson(request))
   let upstream
+  let text
   try {
     upstream = await options.fetch(options.settings.responsesUrl, {
       method: 'POST',
@@ -129,11 +130,14 @@ async function proxy(request, response, options) {
       redirect: 'error',
       signal: AbortSignal.timeout(options.settings.timeoutMs),
     })
+    // The timeout also covers the body, so a stalled or dropped answer is a gateway error, not a server failure.
+    text = await upstream.text()
   } catch (error) {
     const timedOut = error?.name === 'TimeoutError'
-    throw new ClientError(timedOut ? 504 : 502, timedOut ? 'The agent did not answer in time.' : 'The agent endpoint is unreachable.')
+    const reason = timedOut ? 'The agent did not answer in time.'
+      : upstream ? 'The agent connection failed while answering.' : 'The agent endpoint is unreachable.'
+    throw new ClientError(timedOut ? 504 : 502, reason)
   }
-  const text = await upstream.text()
   let parsed
   try {
     parsed = text ? JSON.parse(text) : {}
@@ -166,12 +170,23 @@ async function serveStatic(request, response, root) {
   })
 }
 
+function routeOf(target) {
+  try {
+    return new URL(target, 'http://localhost').pathname
+  } catch {
+    return null
+  }
+}
+
 export function createHandler(options) {
   return async (request, response) => {
     const started = Date.now()
-    const route = new URL(request.url, 'http://localhost').pathname
+    // A malformed target such as // must become a 400, never an unhandled rejection that stops the server.
+    const route = routeOf(request.url)
     try {
-      if (route === '/healthz' && request.method === 'GET') {
+      if (route === null) {
+        throw new ClientError(400, 'The request target is not valid.')
+      } else if (route === '/healthz' && request.method === 'GET') {
         send(response, 200, 'ok')
       } else if (route === '/config.json' && request.method === 'GET') {
         send(response, 200, options.settings.config)
