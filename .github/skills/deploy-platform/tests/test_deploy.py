@@ -169,7 +169,8 @@ def tmdl(bound, workspace=WORKSPACE):
     if bound:
         parts.append(part("expressions.tmdl", "expression ScenarioLakehouse =\n\t\tlet\n\t\t\tSource = "
                           f'AzureStorage.DataLake("https://onelake.dfs.fabric.microsoft.com/{workspace}/{LAKEHOUSE}", '
-                          "[HierarchicalNavigation=true])\n\t\tin\n\t\t\tSource\n"))
+                          "[HierarchicalNavigation=true])\n\t\tin\n\t\t\tSource\n"
+                          "\tlineageTag: afcdf5a6-abb9-4722-81d6-c540ac4b4433\n\n"))
     return {"definition": {"parts": parts}}
 
 
@@ -816,6 +817,19 @@ class BootstrapTests(unittest.TestCase):
         unpinned = parts(tmdl(True))
         unpinned["tables/demo_sites.tmdl"] = re.sub(r"(?m)^.*ONT_PinnedAtUtc.*\n", "", unpinned["tables/demo_sites.tmdl"])
         self.assertEqual(deploy.binding_problems(unpinned, WORKSPACE, LAKEHOUSE), ["demo_sites has no source pins yet"])
+        root = f"https://onelake.dfs.fabric.microsoft.com/{WORKSPACE}/{LAKEHOUSE}"
+        source = f'Source = AzureStorage.DataLake("{root}", [HierarchicalNavigation=true])'
+        self.assertIn(source, parts(tmdl(True))["expressions.tmdl"])
+        # The DEV URL counts only as the complete URL of the returned Source step.
+        for decoy in (f'Source = Sql.Database("sql.example", "Scenario") // {root}',
+                      f'Unused = AzureStorage.DataLake("{root}", [HierarchicalNavigation=true]),\n'
+                      '\t\t\tSource = Sql.Database("sql.example", "Scenario")',
+                      source.replace(root, f"{root}/Files")):
+            with self.subTest(decoy=decoy):
+                misrouted = parts(tmdl(True))
+                misrouted["expressions.tmdl"] = misrouted["expressions.tmdl"].replace(source, decoy)
+                self.assertEqual(deploy.binding_problems(misrouted, WORKSPACE, LAKEHOUSE),
+                                 ["expressions.tmdl does not read the DEV lakehouse"])
 
 
 class NativeBootstrapTests(unittest.TestCase):
