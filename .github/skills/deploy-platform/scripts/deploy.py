@@ -1969,9 +1969,18 @@ def bootstrap_native(ctx, workspace, expected, receipts):
 
 
 PARTITION_SOURCE = {"mode": "directLake", "schemaName": "dbo", "expressionSource": "ScenarioLakehouse"}
-PINNED = re.compile(r"(?m)^[ \t]+annotation[ \t]+ONT_PinnedAtUtc[ \t]*=[ \t]*\S")
+PINNED = re.compile(r"\t\tannotation[ \t]+ONT_PinnedAtUtc[ \t]*=[ \t]*\S")
 ONELAKE_SOURCE = re.compile(r'Source\s*=\s*AzureStorage\.DataLake\(\s*"https://onelake\.dfs\.fabric\.microsoft\.com/'
                             r'([0-9a-fA-F-]{36})/([0-9a-fA-F-]{36})"\s*,\s*\[\s*HierarchicalNavigation\s*=\s*true\s*\]\s*\)')
+
+
+def partition_pinned(text):
+    """Whether the canonical partition itself keeps BindScenario's pin marker, not the table or a column."""
+    lines = text.splitlines()
+    starts = [index for index, line in enumerate(lines) if line.startswith("\tpartition ")]
+    block = lines[starts[0] + 1:] if len(starts) == 1 else []
+    end = next((index for index, line in enumerate(block) if line.strip() and not line.startswith("\t\t")), len(block))
+    return any(PINNED.match(line) for line in block[:end])
 
 
 def binding_problems(parts, workspace, lakehouse):
@@ -1994,7 +2003,7 @@ def binding_problems(parts, workspace, lakehouse):
                 or any([value.strip().strip("'") for value in re.findall(rf"(?m)^[ \t]+{field}:[ \t]+([^\r\n]+)", text)]
                        != [wanted] for field, wanted in fields.items())):
             problems.append(f"{table} does not read dbo.{table} through ScenarioLakehouse")
-        elif not PINNED.search(text):
+        elif not partition_pinned(text):
             problems.append(f"{table} has no source pins yet")
     # Match BindScenario's whole expression, so the DEV URL in a comment or unused step does not count.
     lines = [line.strip() for line in (parts.get("expressions.tmdl") or "").splitlines() if line.strip()]
