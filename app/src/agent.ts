@@ -60,7 +60,7 @@ export function failureMessage(status: number, body: unknown): string {
   const detail = errorText(body)
   const reasons: Record<number, string> = {
     401: 'The agent did not accept your sign-in. Sign out and sign in again.',
-    403: 'You are not allowed to use this agent. Ask for the Foundry User role on the project.',
+    403: 'You are not allowed to use this agent. Ask for the Foundry Agent Consumer role on the project.',
     404: 'The agent is not deployed at the configured endpoint.',
     408: 'The agent did not answer in time. Ask again; a cold ontology query can be slow.',
     429: 'The agent is busy. Wait a moment and ask again.',

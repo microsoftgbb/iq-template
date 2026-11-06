@@ -135,7 +135,8 @@ PAT_STEPS = (
 )
 APP_NEXT = (
     "Open the web app URL above in a browser and sign in with your work account. The runner verified the app "
-    "and agent as you; every other user needs the Foundry User role on the project and their own Fabric access.",
+    "and agent as you; every other user needs Foundry Agent Consumer (or Foundry User) on the project or agent, "
+    "and their own Fabric access.",
     'Select Check connection, then ask "Which assets are in Maintenance and at which site?" and expect Pump B at '
     "North Works from the live ontology.",
     "Review the generated DEV ontology binding before promotion; commit it through Fabric source control when Git "

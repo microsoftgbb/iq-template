@@ -1930,7 +1930,7 @@ class AgentAndAppTests(unittest.TestCase):
 
     def test_the_final_report_tells_the_user_how_to_try_the_app(self):
         steps = " ".join(deploy.APP_NEXT)
-        for fragment in ("sign in", "Check connection", "Pump B", "Foundry User"):
+        for fragment in ("sign in", "Check connection", "Pump B", "Foundry Agent Consumer"):
             self.assertIn(fragment, steps)
 
 

@@ -50,7 +50,7 @@ test('a consent request is surfaced instead of being treated as an answer', () =
 })
 
 test('HTTP failures map to actionable messages that keep the service detail', () => {
-  assert.match(failureMessage(403, { error: { message: 'denied' } }), /Foundry User role.*\(denied\)/)
+  assert.match(failureMessage(403, { error: { message: 'denied' } }), /Foundry Agent Consumer role.*\(denied\)/)
   assert.match(failureMessage(401, undefined), /sign in again/)
   assert.match(failureMessage(502, {}), /failed to answer/)
   assert.match(failureMessage(418, {}), /HTTP 418/)
