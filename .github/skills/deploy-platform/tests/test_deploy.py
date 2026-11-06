@@ -155,10 +155,10 @@ def tmdl(bound, workspace=WORKSPACE):
     for table in deploy.SAMPLE_TABLES:
         text = f"table {table}\n"
         if bound:
-            text += (f"\tpartition {table} = entity\n\t\tmode: directLake\n\n"
-                     f"\t\tannotation ONT_WorkspaceId = {workspace}\n\n"
-                     f"\t\tannotation ONT_ItemId = {LAKEHOUSE}\n\n"
-                     "\t\tannotation ONT_ItemKind = Lakehouse\n")
+            # The live shape: getDefinition keeps the partition and pin timestamp but elides the source pins.
+            text += (f"\tpartition {table} = entity\n\t\tmode: directLake\n\t\tsource\n"
+                     f"\t\t\tentityName: {table}\n\t\t\tschemaName: dbo\n\t\t\texpressionSource: ScenarioLakehouse\n\n"
+                     "\t\tannotation ONT_PinnedAtUtc = 2026-01-01T00:00:00.000Z\n")
         parts.append(part(f"tables/{table}.tmdl", text))
     if bound:
         parts.append(part("expressions.tmdl", "expression ScenarioLakehouse =\n\t\tlet\n\t\t\tSource = "
@@ -789,7 +789,7 @@ class BootstrapTests(unittest.TestCase):
         with self.assertRaisesRegex(deploy.Blocked, "CommitToGit"):
             deploy.phase_bootstrap(bootstrap_context(self, root, http))
 
-    def test_binding_checks_target_local_pins_not_placeholders(self):
+    def test_binding_checks_target_local_source_not_placeholders(self):
         decode = deploy.base64.b64decode
 
         def parts(definition):
@@ -798,7 +798,12 @@ class BootstrapTests(unittest.TestCase):
         self.assertEqual(deploy.binding_problems(parts(tmdl(True)), WORKSPACE, LAKEHOUSE), [])
         self.assertIn("demo_sites has no partition yet", deploy.binding_problems(parts(tmdl(False)), WORKSPACE, LAKEHOUSE))
         placeholder = deploy.binding_problems(parts(tmdl(True, "00000000-0000-0000-0000-000000000000")), WORKSPACE, LAKEHOUSE)
-        self.assertIn("demo_assets is not pinned to the DEV workspace", placeholder)
+        self.assertEqual(placeholder, ["expressions.tmdl does not read the DEV lakehouse"])
+        rerouted = parts(tmdl(True))
+        rerouted["tables/demo_assets.tmdl"] = rerouted["tables/demo_assets.tmdl"].replace(
+            "expressionSource: ScenarioLakehouse", "expressionSource: DatabaseQuery")
+        self.assertEqual(deploy.binding_problems(rerouted, WORKSPACE, LAKEHOUSE),
+                         ["demo_assets does not read dbo.demo_assets through ScenarioLakehouse"])
 
 
 class NativeBootstrapTests(unittest.TestCase):

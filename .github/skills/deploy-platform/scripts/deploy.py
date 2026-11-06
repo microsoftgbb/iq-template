@@ -1967,29 +1967,32 @@ def bootstrap_native(ctx, workspace, expected, receipts):
                       "Inspect DEV and rerun; the accepted import will not be resubmitted.")
 
 
-ANNOTATION = re.compile(r"(?m)^[ \t]*annotation[ \t]+(ONT_[A-Za-z]+)[ \t]*=[ \t]*(.*?)[ \t]*\r?$")
+PARTITION_SOURCE = {"mode": "directLake", "schemaName": "dbo", "expressionSource": "ScenarioLakehouse"}
 
 
 def binding_problems(parts, workspace, lakehouse):
-    """Check the sample's target-local binding pins, not Git-normalized placeholders."""
+    """Check the sample's target-local partitions and OneLake source, not Git-normalized placeholders.
+
+    getDefinition elides the ONT_* source pins that BindScenario writes, so they are not evidence either way.
+    """
     problems = []
     for table in SAMPLE_TABLES:
         text = parts.get(f"tables/{table}.tmdl")
         if text is None:
             problems.append(f"tables/{table}.tmdl is missing")
             continue
-        if not re.search(r"(?m)^[ \t]+partition[ \t]", text):
+        partitions = re.findall(r"(?m)^[ \t]+partition[ \t]+([^\r\n]+)", text)
+        if not partitions:
             problems.append(f"{table} has no partition yet")
             continue
-        pins = dict(ANNOTATION.findall(text))
-        if not same_guid(pins.get("ONT_WorkspaceId"), workspace):
-            problems.append(f"{table} is not pinned to the DEV workspace")
-        if not same_guid(pins.get("ONT_ItemId"), lakehouse):
-            problems.append(f"{table} is not pinned to the DEV lakehouse")
-        if pins.get("ONT_ItemKind") != "Lakehouse":
-            problems.append(f"{table} source kind is not Lakehouse")
+        fields = dict(PARTITION_SOURCE, entityName=table)
+        if (len(partitions) != 1 or partitions[0].strip() not in (f"{table} = entity", f"'{table}' = entity")
+                or any([value.strip().strip("'") for value in re.findall(rf"(?m)^[ \t]+{field}:[ \t]+([^\r\n]+)", text)]
+                       != [wanted] for field, wanted in fields.items())):
+            problems.append(f"{table} does not read dbo.{table} through ScenarioLakehouse")
+    expression = parts.get("expressions.tmdl") or ""
     root = f"https://onelake.dfs.fabric.microsoft.com/{workspace}/{lakehouse}"
-    if root not in (parts.get("expressions.tmdl") or "").lower():
+    if not re.match(r"\s*expression[ \t]+'?ScenarioLakehouse'?[ \t]*=", expression) or root not in expression.lower():
         problems.append("expressions.tmdl does not read the DEV lakehouse")
     return problems
 
