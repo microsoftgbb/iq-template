@@ -89,19 +89,22 @@ six-character suffix once per deployment.
 | Component | Owner | Contract |
 | --- | --- | --- |
 | Container registry `cr<project_name without hyphens><suffix>` | Terraform, [`infra/agent.tf`](../infra/agent.tf) | Holds the `scenario-assistant` and `web` images. The admin user is disabled and `container_registry_sku` defaults to `Basic`. The project's managed identity and the web app's identity can only pull. |
-| Log Analytics `log-<prefix>`, Application Insights `appi-<prefix>` | Terraform | Container App logs, and hosted-agent traces exported through the project's `app-insights` connection. |
+| Log Analytics `log-<prefix>`, Application Insights `appi-<prefix>` | Terraform | Container App logs and the end-to-end traces of the web app, Agent Service and the hosted agent; see [observability](#observability). |
 | Project connections `container-registry` and `app-insights` | Terraform | Agent Service pulls images with the project's managed identity and exports traces. The Application Insights connection string is sent write-only and never stored in state. |
 | Toolbox `<project_name>-tools` | Runner | A version with the two tools in [`hosted-agent.json`](../agents/scenario-assistant/hosted-agent.json), made the default. |
 | Hosted agent `<project_name>-assistant` | Runner | Versions of the `scenario-assistant` image with 0.5 CPU, 1 GiB and the Responses protocol 2.0.0. The agent has its own Microsoft Entra agent identity. |
 | Container Apps environment `cae-<prefix>` | Terraform, [`infra/app.tf`](../infra/app.tf) | Consumption workload profile; logs go to the Log Analytics workspace. |
 | Web identity `id-<prefix>-web` | Terraform | User-assigned identity with `AcrPull` on the registry and nothing else. |
 | Sign-in registration `<project_name>-web` | Terraform | Single-tenant public single-page client. Its redirect URI is the app's URL, plus any opt-in `web_app_local_redirect_uris`; its only API permission is the delegated Foundry scope `https://ai.azure.com/user_impersonation`, and it has no secret or certificate. |
-| Container App `ca-<prefix>-web` | Runner | The `web` image with external HTTPS ingress to port 8080, health probes on `/healthz`, 0 to 2 replicas and the five settings below. |
+| Container App `ca-<prefix>-web` | Runner | The `web` image with external HTTPS ingress to port 8080, health probes on `/healthz`, 0 to 2 replicas and the seven settings below. |
 
 The Container App's settings come only from Terraform outputs:
 `AGENT_RESPONSES_URL` and `AGENT_NAME` from `hosted_agent`, and
-`ENTRA_CLIENT_ID`, `ENTRA_TENANT_ID` and `AGENT_SCOPE` from `web_app`. None is
-a secret. The runner builds each image with `az acr build` from the published
+`ENTRA_CLIENT_ID`, `ENTRA_TENANT_ID` and `AGENT_SCOPE` from `web_app`, and
+`APPLICATIONINSIGHTS_CONNECTION_STRING` from the sensitive
+`application_insights_connection_string` output, with `OTEL_SERVICE_NAME`
+set to `<project_name>-web`. None is a secret: the connection string
+identifies the Application Insights resource and is not a credential. The runner builds each image with `az acr build` from the published
 commit and tags it with the first 16 characters of its directory's Git tree
 hash, so unchanged source is never rebuilt or redeployed.
 
@@ -116,7 +119,8 @@ hash, so unchanged source is never rebuilt or redeployed.
    token and the narrowed body `{input, stream: false, previous_response_id?}`
    to the one configured `AGENT_RESPONSES_URL`, refuses redirects and waits up
    to `AGENT_TIMEOUT_SECONDS` (220 by default). It logs only the method, route,
-   status and duration, never headers, tokens or questions. Its Content
+   status and duration, never headers, tokens or questions, and traces the
+   request and the agent call the same way (see [observability](#observability)). Its Content
    Security Policy allows connections only to the app itself and Microsoft
    Entra sign-in.
 3. **Authorize and isolate.** Foundry authorizes the token on the agent
@@ -131,7 +135,7 @@ hash, so unchanged source is never rebuilt or redeployed.
    deployment through `FoundryChatClient` and loads the project toolbox
    through `FoundryToolbox`. Foundry injects `FOUNDRY_PROJECT_ENDPOINT`; the
    runner sets `AZURE_AI_MODEL_DEPLOYMENT_NAME` and `TOOLBOX_ENDPOINT` from
-   `hosted-agent.json`.
+   `hosted-agent.json`, which also keeps message content out of traces.
 
 ### Toolbox tools
 
@@ -251,6 +255,9 @@ For a development loop against a deployed agent, start the app server with the
 Container App's settings, then Vite in a second terminal. Vite serves the app
 on port 5173 and proxies `/api` and `/config.json` to the server on port 8080:
 
+`npm start` preloads [`server/telemetry.mjs`](../app/server/telemetry.mjs);
+without `APPLICATIONINSIGHTS_CONNECTION_STRING` it loads and exports nothing.
+
 ```sh
 cd app
 hosted="$(terraform -chdir=../infra output -json hosted_agent)"
@@ -289,6 +296,50 @@ The reply is `AGENT_PROOF|` followed by the challenge. Agent changes are
 published the same way as app changes: commit and push, then rerun `up`; the
 runner creates a new agent version and proves it.
 
+## Observability
+
+Every component sends telemetry to the deployment's Application Insights
+resource, `appi-<prefix>`, and a question asked through the app is one
+end-to-end operation from the browser request to each tool call:
+
+| Component (`cloud_RoleName`) | What it records | Configured by |
+| --- | --- | --- |
+| Web app (`<project_name>-web`) | Each browser request except `/healthz` probes, named by route (`POST /api/responses`), and each call to the agent as an HTTP dependency that sends W3C trace context. Never headers, tokens or bodies. | [`app/server/telemetry.mjs`](../app/server/telemetry.mjs) with the Microsoft OpenTelemetry Distro, preloaded with `node --import`; the runner sets the connection string and `OTEL_SERVICE_NAME`. |
+| Agent Service (`agentsv2`) | The `invoke_agent` request with Foundry's latency breakdown (`hosted_agent.latency.*`), and each toolbox `tools/list` and `tools/call`. | Foundry, without configuration. |
+| Hosted agent (`<project_name>-assistant`) | `invoke_agent`, `chat` and `execute_tool` spans with token usage, the MCP and toolbox calls, and the agent's logs. | The agent server's OpenTelemetry distro, through the connection string Foundry injects from the project's `app-insights` connection. |
+
+**Message content stays out by default.** The agent server records prompts,
+tool results and answers on its spans unless
+`OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` is `false`, which
+[`hosted-agent.json`](../agents/scenario-assistant/hosted-agent.json) sets.
+Those values were fetched with each user's own access, and anyone who can
+read the telemetry would otherwise see them. To debug in DEV only, set it to
+`true`, publish, reproduce, then set it back and publish again. Spans still
+carry `user.id`, the caller's object ID. The agent also skips the OpenAI
+Agents SDK instrumentation that the platform's Agent 365 tracing would load,
+which otherwise logs an exception on every container start.
+
+Reading traces needs **Log Analytics Reader** on `appi-<prefix>`, or
+**Privileged Monitoring Data Reader** when its tables are protected; grant it
+only to operators. Open them in the Foundry portal under **Agents** >
+**Traces**, or in Application Insights under **Transaction search** and
+**Application map**. This query lists the slowest recent questions with
+their agent and tool spans:
+
+```kusto
+let slowest = requests
+    | where timestamp > ago(1h) and cloud_RoleName endswith "-web" and name == "POST /api/responses"
+    | top 5 by duration desc
+    | project operation_Id;
+union requests, dependencies
+| where operation_Id in (slowest)
+| project timestamp, operation_Id, cloud_RoleName, name, duration, success
+| order by operation_Id asc, timestamp asc
+```
+
+Application Insights bills ingestion per GB; content-free spans keep each
+question's telemetry small.
+
 ## Troubleshooting
 
 Treat authentication, authorization and tool failures as blockers, not empty
@@ -303,7 +354,7 @@ agent or app to hide a failure.
 | HTTP 401 | No token, an expired token or a token for another audience. | Sign out and in again. |
 | HTTP 403 | The user lacks agent-endpoint access. The app's message names Foundry Agent Consumer, the least-privilege role. | An operator assigns a role from the [access model](#access-model); allow a few minutes. |
 | HTTP 404 | No agent at the configured endpoint. | Run the `agent` phase, and compare the `hosted_agent` output's `responses_url` with the Container App's `AGENT_RESPONSES_URL`. |
-| HTTP 424 or 5xx on a first question | A new session is starting. | Ask again. For persistent errors, inspect the agent's traces in Application Insights. |
+| HTTP 424 or 5xx on a first question | A new session is starting. | Ask again. For persistent errors, follow the question's operation in Application Insights; see [observability](#observability). |
 | HTTP 502 | The agent endpoint was unreachable, or the connection dropped while the agent answered. | Ask again. If it persists, check the agent's traces in Application Insights and the Container App's logs. |
 | HTTP 504 after about 220 seconds | The agent did not answer within `AGENT_TIMEOUT_SECONDS`. | Ask again. A cold live ontology query can be slow on small capacities; do not add retry loops or another backend. |
 | The answer says the ontology is unavailable | The user lacks Fabric access, the ontology is unbound, or Fabric IQ needs the user's consent. | Grant Fabric access, check the [binding](ontology-knowledge.md#review-the-generated-binding), or open the consent link the app shows and ask again. |

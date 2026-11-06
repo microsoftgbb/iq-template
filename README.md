@@ -22,6 +22,7 @@ Set `fabric_git_enabled = true` to opt into Fabric GitHub synchronization.
 - **Web IQ:** global G3 account; portal AppID/key setup is manual.
 - **Hosted agent:** the scenario assistant's image, a project toolbox with its Fabric IQ and Foundry IQ tools, and a published agent version.
 - **Web app:** the browser app and its proxy, running in Azure Container Apps at a public HTTPS URL.
+- **Tracing:** one Application Insights operation per question, from the web app through Agent Service to each tool call, with message content off by default.
 
 ## What is where
 

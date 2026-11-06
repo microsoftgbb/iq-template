@@ -58,7 +58,7 @@ first.
 The app is a standalone npm project with its own `package-lock.json`. From
 `app/`, `npm ci`, `npm run lint`, `npm run build` and `npm test` check it, as CI
 does. `npm run dev` serves the browser app with Vite on port **5173** and
-proxies `/api` and `/config.json` to `npm start`, the app's dependency-free Node
+proxies `/api` and `/config.json` to `npm start`, the app's Node
 server on port **8080**. [Local development](runtime-integration.md#local-development)
 lists the server's settings and the sign-in redirect boundary. The container
 forwards both ports; keep Codespaces ports private. When the browser is on

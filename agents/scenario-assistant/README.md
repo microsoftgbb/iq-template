@@ -10,9 +10,9 @@ its knowledge-base tool retrieves documents with the project's managed identity.
 
 | File | Purpose |
 | --- | --- |
-| `main.py` | The agent: `FoundryChatClient` on the project's `chat` deployment, `FoundryToolbox` for the project toolbox, and `ResponsesHostServer` serving the Responses protocol on port 8088. Its middleware answers `connection proof <uuid>` with `AGENT_PROOF|connection proof <uuid>` without calling the model or a tool. |
+| `main.py` | The agent: `FoundryChatClient` on the project's `chat` deployment, `FoundryToolbox` for the project toolbox, and `ResponsesHostServer` serving the Responses protocol on port 8088. Its middleware answers `connection proof <uuid>` with `AGENT_PROOF|connection proof <uuid>` without calling the model or a tool. It skips the unused OpenAI Agents SDK trace instrumentation. |
 | `instructions.md` | Source routing: current facts only from Fabric IQ, guidance only from the knowledge base, inline source names and unavailable-source behavior. |
-| `hosted-agent.json` | Deployment definition: size (0.5 CPU, 1 GiB), the Responses protocol, environment variables and the toolbox's two tools, `scenario_ontology` and `knowledge_base`. |
+| `hosted-agent.json` | Deployment definition: size (0.5 CPU, 1 GiB), the Responses protocol, environment variables, including `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=false`, and the toolbox's two tools, `scenario_ontology` and `knowledge_base`. |
 | `requirements.in`, `requirements.txt` | Direct dependencies and their hash-pinned closure. Regenerate `requirements.txt` with the command in `requirements.in`. |
 | `Dockerfile`, `.dockerignore` | The `python:3.13-slim` image, installed with `--require-hashes` from an allow-listed build context. |
 
@@ -23,6 +23,11 @@ Fabric IQ connection and the knowledge-base MCP endpoint and connection. It
 never writes the rendered definition to the repository. Foundry injects
 `FOUNDRY_PROJECT_ENDPOINT`; `FOUNDRY_*` and `AGENT_*` settings are reserved for
 the platform.
+
+The agent's spans and logs go to the project's Application Insights through
+the connection string Foundry injects; see
+[observability](../../docs/runtime-integration.md#observability). Keep message
+content capture off outside a deliberate DEV debugging session.
 
 Change the instructions and tool descriptions for a new scenario. Keep the
 proof middleware, both tools' server labels and connections, and
