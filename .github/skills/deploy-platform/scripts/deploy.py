@@ -1155,6 +1155,15 @@ def phase_preflight(ctx):
     version = json.loads(checked(ctx, ["terraform", "version", "-json"], "terraform version").stdout)["terraform_version"]
     if not (1, 11) <= tuple(int(part) for part in version.split(".")[:2]) < (2, 0):
         raise Blocked(f"Terraform {version} is outside the supported >= 1.11, < 2.0 range.")
+    reported = az_json(ctx, ["version"], "Reading the Azure CLI version") or {}
+    try:
+        azure_cli = runtime.tool_version(str(reported.get("azure-cli") or ""), "azure-cli")
+    except runtime.PreflightError as error:
+        raise Blocked(str(error)) from None
+    if azure_cli < runtime.MINIMUM_AZURE_CLI:
+        minimum = ".".join(map(str, runtime.MINIMUM_AZURE_CLI))
+        raise Blocked(f"Azure CLI {'.'.join(map(str, azure_cli))} is older than {minimum}, which ACR builds and "
+                      "hosted agents need.", "Run az upgrade, or use the repository's devcontainer.")
     account = signed_in_account(ctx)
     if (account.get("user") or {}).get("type") != "user":
         raise Blocked("Sign in to Azure CLI as a delegated user; a service principal cannot run the bundled notebooks.")

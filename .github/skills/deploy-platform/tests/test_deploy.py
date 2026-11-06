@@ -307,9 +307,11 @@ class PlanTests(unittest.TestCase):
         shell = FakeShell([
             TOKEN_RULE,
             (command("terraform", "version"), deploy.Result(0, json.dumps({"terraform_version": "1.16.5"}))),
+            (command("az", "version"), lambda args, options: deploy.Result(0, json.dumps({"azure-cli": cli[0]}))),
             (command("az", "account", "show"), deploy.Result(0, json.dumps(account))),
             (command("az", "ad", "sp", "show"), deploy.Result(0, '{"id": "shared-service"}')),
         ])
+        cli = ["2.90.0"]
         ctx = make_context(self, make_root(self), shell, subscription=subscription)
         ctx.environ = {}
         ctx.cache["variables"].update(search_sku="serverless", location="centralus")
@@ -326,6 +328,11 @@ class PlanTests(unittest.TestCase):
             # A region without documented hosted agents stops before anything is provisioned.
             ctx.cache["variables"]["location"] = "westus2"
             with self.assertRaisesRegex(deploy.Blocked, "not documented in westus2"):
+                deploy.phase_preflight(ctx)
+            # So does an Azure CLI too old for ACR builds and hosted agents.
+            ctx.cache["variables"]["location"] = "centralus"
+            cli[0] = "2.79.1"
+            with self.assertRaisesRegex(deploy.Blocked, "Azure CLI 2.79.1 is older than 2.80.0"):
                 deploy.phase_preflight(ctx)
 
     def test_the_identity_bootstrap_plan_must_stay_inside_its_module(self):

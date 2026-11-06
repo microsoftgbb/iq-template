@@ -95,7 +95,7 @@ Without `infra/terraform.tfvars`, also pass `--project-name`, `--location` and `
 | Phase | What it does | Stops for |
 | --- | --- | --- |
 | `signin` | Checks GitHub CLI and refuses the template; signs in to Azure CLI and any token audience that needs a fresh sign-in, including Microsoft Foundry for the agent and app | Your device codes; `gh auth login` in your own terminal |
-| `config`, `preflight` | Repository, branch and tfvars checks; Azure user and subscription; provider overrides; a `location` with documented hosted agents; Fabric CU and model quota; Search tier; registers the serverless Search feature as you; PAT access only for opt-in Git | Missing inputs, region support or quota; a refused registration; PAT only for opt-in Git |
+| `config`, `preflight` | Repository, branch and tfvars checks; Terraform and Azure CLI 2.80+ versions; Azure user and subscription; provider overrides; a `location` with documented hosted agents; Fabric CU and model quota; Search tier; registers the serverless Search feature as you; PAT access only for opt-in Git | Missing inputs, region support or quota; a refused registration; PAT only for opt-in Git |
 | `identity` | Saved plan targeted only at `module.fabric_user_auth`, then apply | Plan approval |
 | `consent` | Grants tenant-wide consent for exactly the declared scopes as you when it is missing or partial, then checks the scoped token and Fabric reads, giving a fresh grant a few minutes to propagate | An administrator only if Entra refuses your grant |
 | `platform` | Saved untargeted plan, then apply; enables the serverless Search identity that Terraform cannot set and verifies it, because the preview answers HTTP 500 | Plan approval |
