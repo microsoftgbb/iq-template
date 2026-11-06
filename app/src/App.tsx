@@ -113,6 +113,19 @@ function App() {
     })
   }
 
+  // Sign-in and sign-out leave the page; report a failure that happens before the redirect starts.
+  async function redirect(action: (session: Auth) => Promise<void>, failure: string) {
+    if (!auth) return
+    setPending(true)
+    try {
+      await action(auth)
+    } catch (error) {
+      setResult({ tone: 'error', title: error instanceof Error ? error.message : failure })
+    } finally {
+      setPending(false)
+    }
+  }
+
   function restart() {
     setPreviousResponseId(undefined)
     setResult({ tone: 'ready', title: 'New conversation.' })
@@ -131,8 +144,10 @@ function App() {
         </p>
         <div className="actions">
           {signedIn
-            ? <button type="button" disabled={pending} onClick={() => void auth?.signOut()}>Sign out {auth?.user}</button>
-            : <button className="primary" type="button" disabled={!auth} onClick={() => void auth?.signIn()}>Sign in</button>}
+            ? <button type="button" disabled={pending}
+                onClick={() => void redirect((session) => session.signOut(), 'Sign-out failed.')}>Sign out {auth?.user}</button>
+            : <button className="primary" type="button" disabled={pending || !auth}
+                onClick={() => void redirect((session) => session.signIn(), 'Sign-in failed.')}>Sign in</button>}
         </div>
       </header>
       <form className="panel" onSubmit={submit}>
