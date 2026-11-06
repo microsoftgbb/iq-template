@@ -184,6 +184,33 @@ def tool_calls(response):
     return calls
 
 
+def sse_events(text):
+    """JSON data of server-sent events in order; comments such as keep-alives and non-JSON data are skipped."""
+    events = []
+    for block in re.split(r"\r?\n\r?\n", text):
+        data = "\n".join(line[5:].removeprefix(" ") for line in block.splitlines() if line.startswith("data:"))
+        if data and data != "[DONE]":
+            try:
+                events.append(json.loads(data))
+            except ValueError:
+                continue
+    return events
+
+
+def streamed_response(text):
+    """The final response of a streamed Responses call (completed, failed or incomplete), a failure for an
+    `error` event, or None when the stream ended without one."""
+    for event in sse_events(text):
+        if not isinstance(event, dict):
+            continue
+        if (event.get("type") in ("response.completed", "response.failed", "response.incomplete")
+                and isinstance(event.get("response"), dict)):
+            return event["response"]
+        if event.get("type") == "error":
+            return {"status": "failed", "error": {"message": str(event.get("message") or "The stream failed.")}}
+    return None
+
+
 def proof_matches(response, challenge):
     return failure(response) is None and output_text(response) == PROOF_PREFIX + challenge
 

@@ -1858,7 +1858,7 @@ class AgentAndAppTests(unittest.TestCase):
         with self.assertRaisesRegex(deploy.Blocked, "fresh challenge"):
             deploy.phase_agent(ctx)
 
-    def app_http(self, *, granted=False, deployed=False, state="Succeeded", config=None, proof=True):
+    def app_http(self, *, granted=False, deployed=False, state="Succeeded", config=None, proof=True, streaming=True):
         http = FakeHttp()
         grant = {"consentType": "AllPrincipals", "resourceId": API_PRINCIPAL, "scope": "user_impersonation", "id": "g1"}
         grants = [reply(body={"value": [grant]})] if granted else [reply(body={"value": []}), reply(body={"value": []}),
@@ -1881,8 +1881,13 @@ class AgentAndAppTests(unittest.TestCase):
             "agentName": "demo-assistant"}))
 
         def relay(url, body):
-            text = deploy.hosted.PROOF_PREFIX + (body["input"] if proof else "connection proof older")
-            return reply(body=completed(text=text))
+            final = completed(text=deploy.hosted.PROOF_PREFIX + (body["input"] if proof else "connection proof older"))
+            if not (body.get("stream") and streaming):
+                return reply(body=final)
+            events = [{"type": "response.created", "response": dict(final, status="in_progress", output=[])},
+                      {"type": "response.completed", "response": final}]
+            stream = ": keep-alive\n\n" + "".join(f"event: {event['type']}\ndata: {json.dumps(event)}\n\n" for event in events)
+            return deploy.Response(200, {"Content-Type": "text/event-stream"}, stream.encode())
 
         http.add("POST", re.escape(WEB_URL) + "/api/responses$", relay)
         return http
@@ -1919,6 +1924,10 @@ class AgentAndAppTests(unittest.TestCase):
         self.assertEqual(body["properties"]["configuration"]["registries"],
                          [{"server": "crdemo.azurecr.io", "identity": IDENTITY_ID}])
         self.assertEqual(ctx.state.section("app")["revision"], "r2")
+        # The readiness check relays one JSON and one streamed challenge, each fresh.
+        relayed = [body for _, url, body, _ in ctx.http.calls if url == WEB_URL + "/api/responses"]
+        self.assertEqual([bool(body.get("stream")) for body in relayed], [False, True])
+        self.assertNotEqual(relayed[0]["input"], relayed[1]["input"])
 
     def test_an_up_to_date_app_is_only_verified(self):
         ctx = self.context(built=True)
@@ -1931,7 +1940,8 @@ class AgentAndAppTests(unittest.TestCase):
     def test_failed_revisions_foreign_settings_and_wrong_relays_are_not_readiness(self):
         for options, pattern in (({"state": "Failed"}, "Container App is Failed"),
                                  ({"config": {"clientId": "other"}}, "different sign-in settings"),
-                                 ({"proof": False}, "did not relay this check's fresh challenge")):
+                                 ({"proof": False}, "did not relay this check's fresh challenge"),
+                                 ({"streaming": False}, "did not stream this check's fresh challenge.*not an event stream")):
             with self.subTest(options=options):
                 ctx = self.context(built=True)
                 ctx.http = self.app_http(granted=True, deployed=True, **options)

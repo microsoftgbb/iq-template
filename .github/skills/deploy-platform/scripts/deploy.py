@@ -2760,6 +2760,22 @@ def check_web_app(ctx, base, web, agent):
         raise Blocked(f"The web app did not relay this check's fresh challenge from the agent (HTTP {response.status}"
                       + (f", {hosted.failure(body)}" if hosted.failure(body) else "") + ").",
                       f"Inspect it: {save_evidence(ctx, 'app-proof-failed', body)}")
+    # The app streams answers, so prove a streamed challenge also relays through the proxy and ingress.
+    challenge = f"connection proof {uuid4()}"
+    try:
+        response = ctx.http.request("POST", f"{base}/api/responses", timeout=240,
+                                    body={"input": challenge, "stream": True},
+                                    headers={"Authorization": "Bearer " + token, "Accept": "text/event-stream"})
+    except TransportError:
+        response = Response(599)
+    streamed = response.headers.get("content-type", "").startswith("text/event-stream")
+    final = hosted.streamed_response(response.body.decode("utf-8", "replace")) if streamed else None
+    if response.status != 200 or not final or not hosted.proof_matches(final, challenge):
+        raise Blocked(f"The web app did not stream this check's fresh challenge from the agent (HTTP {response.status}"
+                      + ("" if streamed else ", not an event stream")
+                      + (f", {hosted.failure(final)}" if final and hosted.failure(final) else "") + ").",
+                      f"Inspect it: {save_evidence(ctx, 'app-stream-failed', final or response.json(default={}))}",
+                      "Check that nothing between the browser and the app buffers or rewrites server-sent events.")
 
 
 def phase_app(ctx):
@@ -2826,8 +2842,8 @@ def phase_app(ctx):
     receipts.update(name=web["name"], url=base, image=image, revision=properties.get("latestReadyRevisionName"),
                     verified_at=utc_now())
     ctx.state.save()
-    return (f"web app {base} serves {APP_REPOSITORY}:{tag} and relayed the agent's fresh challenge as you; "
-            "browser sign-in is next (next steps)")
+    return (f"web app {base} serves {APP_REPOSITORY}:{tag} and relayed the agent's fresh challenge as you, "
+            "both as JSON and streamed; browser sign-in is next (next steps)")
 
 
 def teardown_snapshot(ctx):

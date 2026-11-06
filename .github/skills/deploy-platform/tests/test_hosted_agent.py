@@ -196,6 +196,17 @@ class EvidenceTests(unittest.TestCase):
                          ["the knowledge_base tool call failed",
                           "the knowledge_base tool output does not reference starter.txt"])
 
+    def test_a_streamed_response_ends_with_its_final_response_or_an_error(self):
+        final = {"status": "completed", "output": [message("done")]}
+        stream = (": keep-alive\n\nevent: response.created\ndata: {\"type\": \"response.created\"}\n\n"
+                  f"event: response.completed\ndata: {json.dumps({'type': 'response.completed', 'response': final})}\n\n"
+                  "data: [DONE]\n\n")
+        self.assertEqual([event["type"] for event in hosted.sse_events(stream)], ["response.created", "response.completed"])
+        self.assertEqual(hosted.streamed_response(stream), final)
+        failed = hosted.streamed_response('event: error\ndata: {"type": "error", "message": "timed out"}\n\n')
+        self.assertEqual(hosted.failure(failed), "status failed: timed out")
+        self.assertIsNone(hosted.streamed_response("event: response.created\ndata: {}\n\n"))
+
     def test_only_the_exact_fresh_challenge_is_proof(self):
         challenge = "connection proof 12345678-1234-4234-8234-123456789abc"
         self.assertTrue(hosted.proof_matches({"status": "completed", "output": [message(hosted.PROOF_PREFIX + challenge)]},
