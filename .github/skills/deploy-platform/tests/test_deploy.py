@@ -817,6 +817,9 @@ class BootstrapTests(unittest.TestCase):
         unpinned = parts(tmdl(True))
         unpinned["tables/demo_sites.tmdl"] = re.sub(r"(?m)^.*ONT_PinnedAtUtc.*\n", "", unpinned["tables/demo_sites.tmdl"])
         self.assertEqual(deploy.binding_problems(unpinned, WORKSPACE, LAKEHOUSE), ["demo_sites has no source pins yet"])
+        # A table-level marker does not pin the partition.
+        unpinned["tables/demo_sites.tmdl"] += "\tannotation ONT_PinnedAtUtc = 2026-01-01T00:00:00.000Z\n"
+        self.assertEqual(deploy.binding_problems(unpinned, WORKSPACE, LAKEHOUSE), ["demo_sites has no source pins yet"])
         root = f"https://onelake.dfs.fabric.microsoft.com/{WORKSPACE}/{LAKEHOUSE}"
         source = f'Source = AzureStorage.DataLake("{root}", [HierarchicalNavigation=true])'
         self.assertIn(source, parts(tmdl(True))["expressions.tmdl"])

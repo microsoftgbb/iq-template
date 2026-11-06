@@ -225,12 +225,21 @@ def bind_partition_annotations(text, values):
     return "".join(lines[:start]) + body + "".join(lines[end:])
 
 
+def partition_pinned(text):
+    # Like bind_partition_annotations, read only the partition's own annotations, not the table's or a column's.
+    lines = text.splitlines()
+    starts = [index for index, line in enumerate(lines) if line.startswith("\tpartition ")]
+    block = lines[starts[0] + 1:] if len(starts) == 1 else []
+    end = next(
+        (index for index, line in enumerate(block) if line.strip() and not line.startswith("\t\t")),
+        len(block),
+    )
+    return any(re.match(r"\t\tannotation[ \t]+ONT_PinnedAtUtc[ \t]*=[ \t]*\S", line) for line in block[:end])
+
+
 def pinned(parts):
     # getDefinition keeps only the pin timestamp, so it marks a definition this binder has already pinned.
-    return all(
-        re.search(r"(?m)^[ \t]+annotation[ \t]+ONT_PinnedAtUtc[ \t]*=[ \t]*\S", part_text(parts, f"tables/{name}.tmdl"))
-        for name in table_names
-    )
+    return all(partition_pinned(part_text(parts, f"tables/{name}.tmdl")) for name in table_names)
 
 
 def bound_definition(original, lakehouse, target_workspace_name, pin_sources=True):
