@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { once } from 'node:events'
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { createServer, request } from 'node:http'
 import { tmpdir } from 'node:os'
@@ -13,7 +14,7 @@ const env = {
   AGENT_NAME: 'demo-assistant',
 }
 
-async function start(fetchImpl) {
+async function start(fetchImpl, logs = []) {
   const base = await mkdtemp(path.join(tmpdir(), 'app-'))
   const root = path.join(base, 'dist')
   await mkdir(path.join(root, 'assets'), { recursive: true })
@@ -22,7 +23,7 @@ async function start(fetchImpl) {
   await writeFile(path.join(base, 'outside.txt'), 'secret')
   const calls = []
   const server = createServer(createHandler({
-    settings: settings(env), root, log: () => {},
+    settings: settings(env), root, log: (line) => logs.push(JSON.parse(line)),
     fetch: async (url, init) => {
       calls.push({ url, init })
       return fetchImpl(url, init)
@@ -51,6 +52,8 @@ test('the request body is narrowed to the question and conversation continuation
   assert.deepEqual(upstreamBody({ input: ' hi ' }), { input: 'hi', stream: false })
   assert.deepEqual(upstreamBody({ input: 'hi', previous_response_id: 'caresp_1' }),
     { input: 'hi', stream: false, previous_response_id: 'caresp_1' })
+  assert.deepEqual(upstreamBody({ input: 'hi', stream: true }), { input: 'hi', stream: true })
+  assert.throws(() => upstreamBody({ input: 'hi', stream: 'yes' }), (error) => error.status === 400)
   for (const value of [null, [], {}, { input: '' }, { input: 'x'.repeat(MAX_INPUT_CHARS + 1) }, { input: 'hi', model: 'x' },
     { input: 'hi', previous_response_id: '../x' }, { input: 'hi', tools: [] }]) {
     assert.throws(() => upstreamBody(value), (error) => error.status === 400)
@@ -190,4 +193,124 @@ test('an answer that stalls or drops after its headers is a gateway error', asyn
 test('request telemetry is named by a low-cardinality route', () => {
   assert.deepEqual(['/api/responses', '/config.json', '/healthz', '/assets/app-abc.js', '/', '/some/route', null].map(routeName),
     ['/api/responses', '/config.json', '/healthz', '/assets/*', '/*', '/*', 'invalid'])
+})
+
+const encoder = new TextEncoder()
+const sseResponse = (start) => new Response(new ReadableStream({ start }), { headers: { 'Content-Type': 'text/event-stream' } })
+const streamed = (app, signal) => fetch(`${app.base}/api/responses`, {
+  method: 'POST', signal,
+  headers: { Authorization: authorization, 'Content-Type': 'application/json' },
+  body: JSON.stringify({ input: 'hi', stream: true }),
+})
+
+test('streamed answers are relayed unchanged as server-sent events', async () => {
+  const events = 'event: response.created\ndata: {"type":"response.created"}\n\n: keep-alive\n\n'
+    + 'event: response.completed\ndata: {"type":"response.completed"}\n\n'
+  const app = await start(async () => sseResponse((controller) => {
+    controller.enqueue(encoder.encode(events.slice(0, 40)))
+    controller.enqueue(encoder.encode(events.slice(40)))
+    controller.close()
+  }))
+  try {
+    const response = await streamed(app)
+    assert.equal(response.status, 200)
+    assert.match(response.headers.get('content-type'), /^text\/event-stream/)
+    assert.match(response.headers.get('content-security-policy'), /default-src 'self'/)
+    assert.equal(await response.text(), events)
+    const [{ init }] = app.calls
+    assert.equal(init.headers.Accept, 'text/event-stream')
+    assert.deepEqual(JSON.parse(init.body), { input: 'hi', stream: true })
+  } finally {
+    await app.close()
+  }
+  // An agent error before streaming starts keeps its status and JSON body.
+  const refused = await start(async () => json(403, { error: { message: 'denied' } }))
+  try {
+    const response = await streamed(refused)
+    assert.equal(response.status, 403)
+    assert.equal((await response.json()).error.message, 'denied')
+  } finally {
+    await refused.close()
+  }
+})
+
+test('a stream that fails after it started ends with an error event', async () => {
+  // The first read delivers an event; the next one fails, as a timed-out connection does.
+  let reads = 0
+  const app = await start(async () => new Response(new ReadableStream({
+    pull(controller) {
+      reads += 1
+      if (reads === 1) controller.enqueue(encoder.encode('data: {"type":"response.created"}\n\n'))
+      else controller.error(new DOMException('timed out', 'TimeoutError'))
+    },
+  }), { headers: { 'Content-Type': 'text/event-stream' } }))
+  try {
+    const response = await streamed(app)
+    assert.equal(response.status, 200)
+    assert.equal(await response.text(), 'data: {"type":"response.created"}\n\n'
+      + 'event: error\ndata: {"type":"error","message":"The agent did not answer in time."}\n\n')
+  } finally {
+    await app.close()
+  }
+})
+
+test('the agent call stops when the browser leaves mid-answer', async () => {
+  let upstreamSignal
+  const app = await start(async (url, init) => {
+    upstreamSignal = init.signal
+    return sseResponse((controller) => controller.enqueue(encoder.encode('data: {"type":"response.created"}\n\n')))
+  })
+  try {
+    const browser = new AbortController()
+    const response = await streamed(app, browser.signal)
+    const reader = response.body.getReader()
+    await reader.read()
+    browser.abort()
+    for (let attempt = 0; attempt < 50 && !upstreamSignal.aborted; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    }
+    assert.equal(upstreamSignal.aborted, true)
+  } finally {
+    await app.close()
+  }
+})
+
+test('a browser that stops reading and leaves still ends the relay and the agent call', async () => {
+  // The browser never reads, so the relay waits for it to drain; leaving must end that wait too.
+  let pulls = 0
+  let upstreamSignal
+  const logs = []
+  const app = await start(async (url, init) => {
+    upstreamSignal = init.signal
+    return new Response(new ReadableStream({
+      pull(controller) {
+        pulls += 1
+        controller.enqueue(encoder.encode(`: ${'x'.repeat(65536)}\n\n`))
+      },
+    }), { headers: { 'Content-Type': 'text/event-stream' } })
+  }, logs)
+  try {
+    const browser = request(`${app.base}/api/responses`, {
+      method: 'POST',
+      headers: { Authorization: authorization, 'Content-Type': 'application/json' },
+    })
+    browser.on('error', () => {})
+    browser.end(JSON.stringify({ input: 'hi', stream: true }))
+    const [response] = await once(browser, 'response')
+    response.pause()
+    let settled = -1
+    for (let attempt = 0; attempt < 200 && pulls !== settled; attempt += 1) {
+      settled = pulls
+      await new Promise((resolve) => setTimeout(resolve, 25))
+    }
+    assert.equal(pulls, settled, 'the relay should wait for the browser to read')
+    browser.destroy()
+    for (let attempt = 0; attempt < 100 && !logs.length; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    }
+    assert.equal(upstreamSignal.aborted, true)
+    assert.deepEqual(logs.map(({ route, status }) => ({ route, status })), [{ route: '/api/responses', status: 200 }])
+  } finally {
+    await app.close()
+  }
 })

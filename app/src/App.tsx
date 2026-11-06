@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react'
-import { agentTurn, failureMessage, proofMatches, redact, type ToolCall } from './agent.ts'
+import { agentTurn, failureMessage, proofMatches, readStream, redact, type StreamProgress, type ToolCall } from './agent.ts'
 import { createAuth, type Auth } from './auth.ts'
 import { loadConfig, type AppConfig } from './config.ts'
 import './App.css'
@@ -23,12 +23,26 @@ class Failure extends Error {
   }
 }
 
-async function ask(auth: Auth, input: string, previousResponseId?: string) {
+// With onProgress the answer streams: each tool appears as it starts and the text as it is written.
+async function ask(auth: Auth, input: string, previousResponseId?: string,
+  onProgress?: (progress: StreamProgress) => void) {
   const response = await fetch('/api/responses', {
     method: 'POST',
     headers: { Authorization: `Bearer ${await auth.token()}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ input, ...(previousResponseId ? { previous_response_id: previousResponseId } : {}) }),
+    body: JSON.stringify({
+      input,
+      ...(previousResponseId ? { previous_response_id: previousResponseId } : {}),
+      ...(onProgress ? { stream: true } : {}),
+    }),
   })
+  if (onProgress && response.ok && response.body
+    && response.headers.get('content-type')?.startsWith('text/event-stream')) {
+    try {
+      return await readStream(response.body, onProgress)
+    } catch (error) {
+      throw new Failure(error instanceof Error ? error.message : 'The agent stream failed.')
+    }
+  }
   const body: unknown = await response.json().catch(() => undefined)
   if (!response.ok) throw new Failure(failureMessage(response.status, body), body)
   try {
@@ -86,10 +100,16 @@ function App() {
     setPending(false)
   }
 
+  function showProgress(progress: StreamProgress) {
+    setResult(progress.text
+      ? { tone: 'answer', title: 'Answer', lines: [progress.text], tools: progress.tools }
+      : { tone: 'ready', title: 'The agent is working…', tools: progress.tools })
+  }
+
   function submit(event: FormEvent) {
     event.preventDefault()
     void run(async (session) => {
-      const turn = await ask(session, question.trim(), previousResponseId)
+      const turn = await ask(session, question.trim(), previousResponseId, showProgress)
       setPreviousResponseId(turn.responseId)
       if (turn.consentLink) {
         return {
@@ -106,7 +126,8 @@ function App() {
   function check() {
     void run(async (session) => {
       const challenge = `connection proof ${crypto.randomUUID()}`
-      const turn = await ask(session, challenge)
+      const turn = await ask(session, challenge, undefined,
+        () => setResult({ tone: 'ready', title: 'Checking the agent connection…' }))
       return proofMatches(turn, challenge)
         ? { tone: 'ready', title: 'Connected: the hosted agent returned this check\'s fresh challenge as you.' }
         : { tone: 'warning', title: 'The agent answered, but not with the fresh challenge.', lines: [turn.text] }
@@ -177,7 +198,8 @@ function App() {
         {result.lines?.map((line, index) => <p key={index} className="answer">{line}</p>)}
         {result.link && <a href={result.link} target="_blank" rel="noreferrer">{result.link}</a>}
         {result.tools?.length
-          ? <p className="meta">Tools used: {result.tools.map((tool) => tool.name).join(', ')}</p>
+          ? <p className="meta">Tools used: {result.tools
+            .map((tool) => tool.status === 'running' ? `${tool.name} (running…)` : tool.name).join(', ')}</p>
           : null}
         {result.detail && <pre>{result.detail}</pre>}
         {result.elapsed !== undefined && <p className="meta">{result.elapsed.toFixed(1)} s</p>}

@@ -1,5 +1,6 @@
 // The Container App's server: static SPA, runtime configuration and a transport-only proxy that
 // forwards the signed-in user's own Foundry token to the one configured hosted-agent endpoint.
+import { once } from 'node:events'
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { trace } from '@opentelemetry/api'
@@ -72,13 +73,16 @@ export function upstreamBody(value) {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw new ClientError(400, 'Send a JSON object with an input question.')
   }
-  const unknown = Object.keys(value).filter((key) => key !== 'input' && key !== 'previous_response_id')
+  const unknown = Object.keys(value).filter((key) => !['input', 'previous_response_id', 'stream'].includes(key))
   if (unknown.length) throw new ClientError(400, `Unsupported fields: ${unknown.join(', ')}.`)
   const input = typeof value.input === 'string' ? value.input.trim() : ''
   if (!input || input.length > MAX_INPUT_CHARS) {
     throw new ClientError(400, `The question must be 1-${MAX_INPUT_CHARS} characters.`)
   }
-  const body = { input, stream: false }
+  if (value.stream !== undefined && typeof value.stream !== 'boolean') {
+    throw new ClientError(400, 'stream must be true or false.')
+  }
+  const body = { input, stream: value.stream === true }
   if (value.previous_response_id !== undefined) {
     if (typeof value.previous_response_id !== 'string' || !RESPONSE_ID.test(value.previous_response_id)) {
       throw new ClientError(400, 'previous_response_id is malformed.')
@@ -117,27 +121,61 @@ function send(response, status, body, headers = {}) {
   response.end(payload)
 }
 
+function gatewayReason(error, upstream) {
+  if (error?.name === 'TimeoutError') return 'The agent did not answer in time.'
+  return upstream ? 'The agent connection failed while answering.' : 'The agent endpoint is unreachable.'
+}
+
+// Relay the agent's server-sent events unchanged, as they arrive. The status is already sent once streaming starts,
+// so a later failure ends the stream with a Responses `error` event instead of an HTTP error.
+async function relayEvents(upstream, response, signal) {
+  response.writeHead(200, {
+    ...SECURITY_HEADERS,
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-store',
+    'X-Accel-Buffering': 'no',
+  })
+  response.flushHeaders()
+  try {
+    for await (const chunk of upstream.body) {
+      // A browser that stops reading and leaves never drains, so the wait also ends on timeout or departure.
+      if (!response.write(chunk)) await once(response, 'drain', { signal })
+    }
+  } catch (error) {
+    if (!response.destroyed) {
+      const message = gatewayReason(error, upstream)
+      response.write(`event: error\ndata: ${JSON.stringify({ type: 'error', message })}\n\n`)
+    }
+  }
+  response.end()
+}
+
 async function proxy(request, response, options) {
   const match = BEARER.exec(request.headers.authorization || '')
   if (!match) throw new ClientError(401, 'Sign in first; the agent is called with your own token.')
   const body = upstreamBody(await readJson(request))
+  // Stop the agent call when it times out or the browser leaves before the answer ends.
+  const abandoned = new AbortController()
+  response.once('close', () => abandoned.abort())
+  const signal = AbortSignal.any([AbortSignal.timeout(options.settings.timeoutMs), abandoned.signal])
   let upstream
   let text
   try {
     upstream = await options.fetch(options.settings.responsesUrl, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${match[1]}`, 'Content-Type': 'application/json', Accept: 'application/json' },
+      headers: { Authorization: `Bearer ${match[1]}`, 'Content-Type': 'application/json', Accept: body.stream ? 'text/event-stream' : 'application/json' },
       body: JSON.stringify(body),
       redirect: 'error',
-      signal: AbortSignal.timeout(options.settings.timeoutMs),
+      signal,
     })
+    if (body.stream && upstream.ok && /^text\/event-stream\b/i.test(upstream.headers.get('content-type') || '')) {
+      await relayEvents(upstream, response, signal)
+      return
+    }
     // The timeout also covers the body, so a stalled or dropped answer is a gateway error, not a server failure.
     text = await upstream.text()
   } catch (error) {
-    const timedOut = error?.name === 'TimeoutError'
-    const reason = timedOut ? 'The agent did not answer in time.'
-      : upstream ? 'The agent connection failed while answering.' : 'The agent endpoint is unreachable.'
-    throw new ClientError(timedOut ? 504 : 502, reason)
+    throw new ClientError(error?.name === 'TimeoutError' ? 504 : 502, gatewayReason(error, upstream))
   }
   let parsed
   try {

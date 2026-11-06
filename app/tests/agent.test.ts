@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { agentTurn, failureMessage, proofMatches, redact, PROOF_PREFIX } from '../src/agent.ts'
+import {
+  agentTurn, failureMessage, proofMatches, readStream, redact, sseEvents, PROOF_PREFIX, type StreamProgress,
+} from '../src/agent.ts'
 import { parseConfig } from '../src/config.ts'
 
 const challenge = 'connection proof 12345678-1234-4234-8234-123456789abc'
@@ -73,4 +75,69 @@ test('runtime configuration is validated before sign-in', () => {
     assert.throws(() => parseConfig({ ...valid, ...change }))
   }
   assert.throws(() => parseConfig([]))
+})
+
+// The live event order: two parallel tool calls, keep-alives while they run, their outputs, then the text.
+function streamOf(chunks: string[]) {
+  const bytes = new TextEncoder()
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(bytes.encode(chunk))
+      controller.close()
+    },
+  })
+}
+
+function sse(event: Record<string, unknown>) {
+  return `event: ${String(event.type)}\ndata: ${JSON.stringify(event)}\n\n`
+}
+
+const ontologyCall = { type: 'function_call', name: 'scenario_ontology___ask_ontology', call_id: 'c1', status: 'in_progress' }
+const documentCall = { type: 'function_call', name: 'knowledge_base___knowledge_base_retrieve', call_id: 'c2', status: 'in_progress' }
+const answer = 'Pump B is at North Works (Source: ontology).'
+const liveEvents = [
+  sse({ type: 'response.created', response: { id: 'caresp_1', status: 'in_progress', output: [] } }),
+  sse({ type: 'response.output_item.added', output_index: 0, item: ontologyCall }),
+  sse({ type: 'response.output_item.added', output_index: 1, item: documentCall }),
+  ': keep-alive\n\n',
+  sse({ type: 'response.output_item.done', output_index: 2, item: { type: 'function_call_output', call_id: 'c1', output: 'Pump B' } }),
+  sse({ type: 'response.output_item.done', output_index: 3, item: { type: 'function_call_output', call_id: 'c2', output: 'starter.txt' } }),
+  sse({ type: 'response.output_text.delta', output_index: 4, delta: 'Pump B is at ' }),
+  sse({ type: 'response.output_text.delta', output_index: 4, delta: 'North Works (Source: ontology).' }),
+  sse({ type: 'response.completed', response: response([{ ...ontologyCall, status: 'completed' },
+    { ...documentCall, status: 'completed' }, message(answer)]) }),
+]
+
+test('server-sent events are parsed across chunk boundaries and keep-alives are skipped', () => {
+  const first = sseEvents('event: a\ndata: {"type":"a"}\n\n: keep-alive\n\ndata: {"type":')
+  assert.deepEqual(first.events, [{ type: 'a' }])
+  const second = sseEvents(`${first.rest}"b",\ndata: "x":1}\n\ndata: [DONE]\n\n`)
+  assert.deepEqual(second, { events: [{ type: 'b', x: 1 }], rest: '' })
+})
+
+test('a streamed answer reports running tools and growing text, then returns the validated turn', async () => {
+  // Network chunks: the first event is split mid-way, and the last text arrives with the final response.
+  const head = liveEvents.slice(0, 4).join('')
+  const chunks = [head.slice(0, 150), head.slice(150), liveEvents.slice(4, 6).join(''), liveEvents[6],
+    liveEvents[7] + liveEvents[8]]
+  const seen: StreamProgress[] = []
+  const turn = await readStream(streamOf(chunks), (progress) => seen.push(progress))
+  assert.deepEqual(turn, {
+    responseId: 'caresp_1',
+    text: answer,
+    tools: [{ name: ontologyCall.name, status: 'completed' }, { name: documentCall.name, status: 'completed' }],
+  })
+  assert.ok(seen.some((progress) => progress.tools.some((tool) => tool.status === 'running') && !progress.text))
+  assert.ok(seen.some((progress) => progress.tools.every((tool) => tool.status === 'done') && !progress.text))
+  assert.ok(seen.some((progress) => progress.text === 'Pump B is at '))
+  assert.ok(seen.every((progress, index) => index === 0 || progress.text.startsWith(seen[index - 1].text)))
+})
+
+test('stream failures, failed responses and early ends are explicit errors', async () => {
+  await assert.rejects(readStream(streamOf([liveEvents[0], sse({ type: 'error', message: 'The agent did not answer in time.' })]),
+    () => {}), /did not answer in time/)
+  await assert.rejects(readStream(streamOf([sse({ type: 'response.failed',
+    response: { id: 'caresp_1', status: 'failed', error: { message: 'tool unavailable' }, output: [] } })]), () => {}),
+  /failed: tool unavailable/)
+  await assert.rejects(readStream(streamOf(liveEvents.slice(0, 6)), () => {}), /stopped before the agent finished/)
 })

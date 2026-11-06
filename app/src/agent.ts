@@ -52,6 +52,93 @@ export function agentTurn(value: unknown): AgentTurn {
   return { responseId: value.id, text, tools, ...(consentLink ? { consentLink } : {}) }
 }
 
+// Progress while an answer streams: the text so far and each tool call as it starts and returns.
+export interface StreamProgress {
+  text: string
+  tools: ToolCall[]
+}
+
+type StreamStep = { done: false } | { done: true, turn: AgentTurn }
+
+// Server-sent event data in arrival order. Comments such as keep-alives are skipped, and the
+// incomplete tail stays in `rest` until the next chunk arrives.
+export function sseEvents(buffer: string): { events: unknown[], rest: string } {
+  const blocks = buffer.split(/\r?\n\r?\n/)
+  const rest = blocks.pop() ?? ''
+  const events: unknown[] = []
+  for (const block of blocks) {
+    const data = block.split(/\r?\n/)
+      .filter((line) => line.startsWith('data:'))
+      .map((line) => line.slice(5).replace(/^ /, ''))
+      .join('\n')
+    if (!data || data === '[DONE]') continue
+    try {
+      events.push(JSON.parse(data))
+    } catch {
+      // A malformed event is ignored; only the final response decides the answer.
+    }
+  }
+  return { events, rest }
+}
+
+// Apply one Responses streaming event. The final response is still validated by agentTurn.
+export function applyEvent(progress: StreamProgress & { calls: Record<string, number> }, event: unknown): StreamStep {
+  if (!record(event) || typeof event.type !== 'string') return { done: false }
+  const item = record(event.item) ? event.item : undefined
+  switch (event.type) {
+    case 'response.output_text.delta':
+      if (typeof event.delta === 'string') progress.text += event.delta
+      break
+    case 'response.output_item.added':
+      if (item && typeof item.type === 'string' && item.type.endsWith('_call') && typeof item.name === 'string') {
+        if (typeof item.call_id === 'string') progress.calls[item.call_id] = progress.tools.length
+        progress.tools.push({ name: item.name, status: 'running' })
+      }
+      break
+    case 'response.output_item.done':
+      if (item?.type === 'function_call_output' && typeof item.call_id === 'string' && item.call_id in progress.calls) {
+        progress.tools[progress.calls[item.call_id]].status = 'done'
+      } else if (item && typeof item.type === 'string' && item.type.endsWith('_call') && item.type !== 'function_call') {
+        const index = progress.tools.findIndex((tool) => tool.name === item.name && tool.status === 'running')
+        if (index >= 0) progress.tools[index].status = typeof item.status === 'string' ? item.status : 'done'
+      }
+      break
+    case 'response.completed':
+    case 'response.failed':
+    case 'response.incomplete':
+      return { done: true, turn: agentTurn(event.response) }
+    case 'error':
+      throw new Error(errorText(event) ?? 'The agent stream failed.')
+  }
+  return { done: false }
+}
+
+// Read a streamed answer, reporting progress as events arrive, and return the validated final turn.
+export async function readStream(body: ReadableStream<Uint8Array>,
+  onProgress: (progress: StreamProgress) => void): Promise<AgentTurn> {
+  const reader = body.getReader()
+  const decoder = new TextDecoder()
+  const progress = { text: '', tools: [] as ToolCall[], calls: {} as Record<string, number> }
+  let buffer = ''
+  try {
+    for (;;) {
+      const { value, done } = await reader.read()
+      buffer += done ? `${decoder.decode()}\n\n` : decoder.decode(value, { stream: true })
+      const { events, rest } = sseEvents(buffer)
+      buffer = rest
+      for (const event of events) {
+        const step = applyEvent(progress, event)
+        if (step.done) return step.turn
+      }
+      if (done) break
+      onProgress({ text: progress.text, tools: progress.tools.map((tool) => ({ ...tool })) })
+    }
+  } finally {
+    void reader.cancel().catch(() => {})
+  }
+  throw new Error('The answer stopped before the agent finished. Ask again.')
+}
+
 export function proofMatches(turn: AgentTurn, challenge: string): boolean {
   return turn.text === PROOF_PREFIX + challenge
 }
