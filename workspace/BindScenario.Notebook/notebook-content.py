@@ -225,6 +225,14 @@ def bind_partition_annotations(text, values):
     return "".join(lines[:start]) + body + "".join(lines[end:])
 
 
+def pinned(parts):
+    # getDefinition keeps only the pin timestamp, so it marks a definition this binder has already pinned.
+    return all(
+        re.search(r"(?m)^[ \t]+annotation[ \t]+ONT_PinnedAtUtc[ \t]*=[ \t]*\S", part_text(parts, f"tables/{name}.tmdl"))
+        for name in table_names
+    )
+
+
 def bound_definition(original, lakehouse, target_workspace_name, pin_sources=True):
     target_workspace_id = str(UUID(lakehouse["workspaceId"]))
     lakehouse_id = str(UUID(lakehouse["id"]))
@@ -362,7 +370,10 @@ while True:
     wait_for_poll(5)
 
 sql_id = str(UUID(sql_endpoint["id"]))
-already_bound = bound_definition(original, lakehouse, workspace_name, pin_sources=False) == original
+already_bound = (
+    pinned(original)
+    and bound_definition(original, lakehouse, workspace_name, pin_sources=False) == original
+)
 updated = bound_definition(original, lakehouse, workspace_name)
 
 sync = fabric_operation(
@@ -398,7 +409,7 @@ if not already_bound:
         has_result=False,
     )
     verified = get_definition(ontology_id)
-    if bound_definition(verified, lakehouse, workspace_name, pin_sources=False) != verified:
+    if not pinned(verified) or bound_definition(verified, lakehouse, workspace_name, pin_sources=False) != verified:
         raise RuntimeError("The ontology update completed without the expected target binding.")
     print("Bound ScenarioOntology. Review and commit the generated DEV definition in Git.")
 else:

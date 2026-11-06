@@ -1986,12 +1986,13 @@ def bootstrap_native(ctx, workspace, expected, receipts):
 
 
 PARTITION_SOURCE = {"mode": "directLake", "schemaName": "dbo", "expressionSource": "ScenarioLakehouse"}
+PINNED = re.compile(r"(?m)^[ \t]+annotation[ \t]+ONT_PinnedAtUtc[ \t]*=[ \t]*\S")
 
 
 def binding_problems(parts, workspace, lakehouse):
-    """Check the sample's target-local partitions and OneLake source, not Git-normalized placeholders.
+    """Check the sample's target-local partitions, OneLake source and pin marker, not Git-normalized placeholders.
 
-    getDefinition elides the ONT_* source pins that BindScenario writes, so they are not evidence either way.
+    getDefinition elides the ONT_* source pins that BindScenario writes except ONT_PinnedAtUtc, which marks them.
     """
     problems = []
     for table in SAMPLE_TABLES:
@@ -2008,6 +2009,8 @@ def binding_problems(parts, workspace, lakehouse):
                 or any([value.strip().strip("'") for value in re.findall(rf"(?m)^[ \t]+{field}:[ \t]+([^\r\n]+)", text)]
                        != [wanted] for field, wanted in fields.items())):
             problems.append(f"{table} does not read dbo.{table} through ScenarioLakehouse")
+        elif not PINNED.search(text):
+            problems.append(f"{table} has no source pins yet")
     expression = parts.get("expressions.tmdl") or ""
     root = f"https://onelake.dfs.fabric.microsoft.com/{workspace}/{lakehouse}"
     if not re.match(r"\s*expression[ \t]+'?ScenarioLakehouse'?[ \t]*=", expression) or root not in expression.lower():

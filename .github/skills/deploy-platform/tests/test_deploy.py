@@ -813,6 +813,9 @@ class BootstrapTests(unittest.TestCase):
             "expressionSource: ScenarioLakehouse", "expressionSource: DatabaseQuery")
         self.assertEqual(deploy.binding_problems(rerouted, WORKSPACE, LAKEHOUSE),
                          ["demo_assets does not read dbo.demo_assets through ScenarioLakehouse"])
+        unpinned = parts(tmdl(True))
+        unpinned["tables/demo_sites.tmdl"] = re.sub(r"(?m)^.*ONT_PinnedAtUtc.*\n", "", unpinned["tables/demo_sites.tmdl"])
+        self.assertEqual(deploy.binding_problems(unpinned, WORKSPACE, LAKEHOUSE), ["demo_sites has no source pins yet"])
 
 
 class NativeBootstrapTests(unittest.TestCase):
