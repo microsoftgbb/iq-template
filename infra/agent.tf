@@ -50,7 +50,7 @@ resource "azapi_resource" "registry_connection" {
       category      = "ContainerRegistry"
       authType      = "ManagedIdentity"
       target        = azurerm_container_registry.main.login_server
-      isSharedToAll = true
+      isSharedToAll = false
       credentials = {
         clientId   = azapi_resource.foundry_project.identity[0].principal_id
         resourceId = azurerm_container_registry.main.id
@@ -75,7 +75,7 @@ resource "azapi_resource" "app_insights_connection" {
       category      = "AppInsights"
       authType      = "ApiKey"
       target        = azurerm_application_insights.main.id
-      isSharedToAll = true
+      isSharedToAll = false
       metadata = {
         ApiType    = "Azure"
         ResourceId = azurerm_application_insights.main.id
