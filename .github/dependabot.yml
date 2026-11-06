@@ -8,6 +8,10 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    ignore:
+      # Keep Node's type definitions on the runtime's release line (node:24-alpine).
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
     groups:
       minor-and-patch:
         update-types:
@@ -27,6 +31,13 @@ updates:
       - /app
     schedule:
       interval: weekly
+    ignore:
+      # Runtime lines change deliberately: Node stays on its 24 LTS line, and the hashed
+      # requirements.txt holds Python 3.13 wheels.
+      - dependency-name: node
+        update-types: ["version-update:semver-major"]
+      - dependency-name: python
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
 
   - package-ecosystem: github-actions
     directory: /
