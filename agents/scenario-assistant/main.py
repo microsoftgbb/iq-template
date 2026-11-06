@@ -6,6 +6,7 @@ The toolbox receives the platform call-id, so Fabric IQ queries run as the calli
 """
 
 import asyncio
+from functools import partial
 import os
 from pathlib import Path
 import re
@@ -14,6 +15,7 @@ from agent_framework import (Agent, AgentContext, AgentMiddleware, AgentResponse
                              Content, Message, ResponseStream)
 from agent_framework.foundry import FoundryChatClient
 from agent_framework_foundry_hosting import FoundryToolbox, ResponsesHostServer
+from azure.ai.agentserver.core import configure_observability
 from azure.identity import DefaultAzureCredential
 
 PROOF_PREFIX = "AGENT_PROOF|"
@@ -68,7 +70,10 @@ def create_agent(credential):
 
 
 async def main():
-    await ResponsesHostServer(create_agent(DefaultAzureCredential())).run_async()
+    # The runtime exports traces to the project's Application Insights. The platform's Agent 365 tracing would
+    # also load OpenAI Agents SDK instrumentation, which this agent doesn't use; skipping it avoids a startup error.
+    observability = partial(configure_observability, instrumentation_options={"openai_agents": {"enabled": False}})
+    await ResponsesHostServer(create_agent(DefaultAzureCredential()), configure_observability=observability).run_async()
 
 
 if __name__ == "__main__":

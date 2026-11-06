@@ -222,6 +222,7 @@ azure-ai-agentserver-core==2.3.0 \
     --hash=sha256:929daed75087729f892969390f6fd4beff5e71ff6fdaaf832194da66fee460a3 \
     --hash=sha256:ecdedb62fc7048396ebb7b90502affbe55829799bc52b867c3dbb5f17bdfba6f
     # via
+    #   -r requirements.in
     #   agent-framework-foundry-hosting
     #   azure-ai-agentserver-invocations
     #   azure-ai-agentserver-responses

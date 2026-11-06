@@ -3,4 +3,5 @@
 #     --generate-hashes --no-header --index-url https://pypi.org/simple -o requirements.txt
 agent-framework-foundry==1.16.0
 agent-framework-foundry-hosting==1.0.0b261030
+azure-ai-agentserver-core==2.3.0
 azure-identity==1.27.0
