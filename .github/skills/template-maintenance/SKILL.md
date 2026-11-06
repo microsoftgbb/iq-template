@@ -19,20 +19,21 @@ Read `AGENTS.md` and inspect the current diff before editing. Preserve unrelated
 | Workspace definitions or notebooks | The `fabric-workspace` skill and its linked guides |
 | Developer tools or initialization | `.devcontainer/`, the `initialize-project` skill and `docs/development.md` |
 | Guided deployment | The `deploy-platform` skill, its runner (`scripts/deploy.py`), its native-request reference and `cicd/README.md` |
-| Studio agent or its helper | `agents/scenario-assistant/`, `.github/skills/deploy-platform/scripts/studio_agent.py`, `docs/runtime-integration.md` |
-| App shell | `app/`, root `package.json`/`index.html`, `generated/`, `docs/runtime-integration.md` |
+| Hosted agent or its release | `agents/scenario-assistant/`, `infra/agent.tf`, the runner's `agent` phase and `scripts/hosted_agent.py`, `docs/runtime-integration.md` |
+| Web app or its hosting | `app/` (browser app, `server/`, `Dockerfile`), `infra/app.tf`, the runner's `app` phase, `docs/runtime-integration.md` |
 
 Preserve the non-obvious infrastructure constraints:
 
 - Create capacity before looking up its Fabric GUID; workspaces cannot use its Azure resource ID.
 - Keep the user-auth module in the platform's state. Its one-time targeted bootstrap is the only targeting exception; never run it during maintenance. Keep delegated scopes and pre-authorized clients separate from administrator-owned consent, and retain Fabric's dependency on the registration for safe teardown. Read shared Microsoft service principals rather than managing their lifecycle.
 - Default to native Fabric item import without a PAT; keep GitHub synchronization opt-in with `fabric_git_enabled`. Both paths attach the reviewed plan outside Terraform. Preserve logical IDs, per-item result checks, resumable receipts, empty TEST and administrator-owned tenant settings.
-- Require Web IQ terms acceptance and public-search verification. Do not add an enable/disable switch or skip missing account evidence. The pinned AzAPI provider lacks its embedded schema; retain the resource-scoped validation exception, not a provider-wide bypass. Portal AppID linking and a public-only API probe do not prove native Studio/app integration; use `preparation.md` for the manual gates.
+- Require Web IQ terms acceptance and public-search verification. Do not add an enable/disable switch or skip missing account evidence. The pinned AzAPI provider lacks its embedded schema; retain the resource-scoped validation exception, not a provider-wide bypass. Portal AppID linking and a public-only API probe do not prove agent/app integration; use `preparation.md` for the manual gates.
 - Use `Microsoft.CognitiveServices/accounts` projects, not ML hubs. Keep model versions/SKUs/quota configurable.
 - Manage Search sources/bases through data-plane `restful_resource`, not unsupported ARM types. Retain CRUD and drift detection, source rebuild triggers, and knowledge-base-before-source deletion ordering. The OneLake source owns its generated search assets.
 - Create a serverless Search service without a managed identity: its preview ends in `Failed` when one is requested and answers HTTP 500 to identity writes and to any change once an identity exists. Keep the runner's verified identity step, `ignore_changes = [identity]`, the identity grants gated until it exists (including `search_identity_ready` for the staged replacement plan), and replacement rather than update for serverless setting or tag changes. Read the admin key through the ephemeral action, never into state.
 - Look up Git-owned items rather than creating duplicate lakehouses/notebooks in Terraform. Keep DEV-only Search permissions and conditional knowledge resources when the lakehouse ID is null.
 - Keep deployment-pipeline replacement semantics visible when changing stages. Do not hide drift or paper over unsupported provider behavior.
+- Keep the agent and app hosting in Terraform and their releases (images, toolbox, agent versions, Container App) in the runner. Keep the registry's admin user disabled; the project and web identities get only `AcrPull`. Keep the web registration a secretless single-page client whose only API permission is the delegated `https://ai.azure.com/user_impersonation` scope, consented by the runner. Match observed service behavior so plans stay clean: Foundry stores project connections with `isSharedToAll = false`; azurerm 5.x accepts the Container Apps environment's workspace only with `logs_destination = "log-analytics"`; and the service gives every Container Apps environment a `Consumption` workload profile, which Terraform declares and the Container App targets.
 
 ## Run static checks only
 
@@ -54,38 +55,44 @@ For the knowledge configuration helper, verify the two-field change, repeatabili
 
 For the runtime preflight helper, run its standard-library tests with mocked native commands:
 `python3 -B -m unittest discover -s .github/skills/runtime-integration/tests`.
-Check exact native `items` envelopes, denied/deprecated actions, target/tenant
-mismatches, template refusal, CLI pins and credential-output redaction. Do not run
+Check template refusal, target/tenant mismatches, provider credential overrides,
+the hosted-agent region list, the Git and Azure CLI minimums, Fabric quota
+parsing and credential-output redaction. Do not run
 the helper's live probes as a template-maintenance check; those require a chosen
 derived checkout and explicit permission.
 
-For the deployment runner and Studio agent helper, run their standard-library tests:
+For the deployment runner and its hosted agent helper (`scripts/hosted_agent.py`), run their standard-library tests:
 `python3 -B -m unittest discover -s .github/skills/deploy-platform/tests`.
 They use mocked native commands and HTTP. They cover saved-plan approval by hash,
 identity-target and destructive-change guards, PAT-free native import and its
 identity/partial-result/resume guards, opt-in Git sync refusals, the explicit
 plan-attachment fallback, notebook resume without duplicates, binding and
 retrieval evidence, up-front sign-in, admin-first consent and feature
-registration, permission refusals mapped to grants, the agent/app gates, and
-render the shipped agent into a temporary workspace. Teardown tests must cover exact destroy-plan
+registration, permission refusals mapped to grants, the agent and app release
+gates, rendering and validation of the shipped `hosted-agent.json`, Responses
+evidence parsing and the Container App definition. Teardown tests must cover exact destroy-plan
 approval, native deletion ordering, target isolation, partial failure/resume and
-retention reporting without cloud calls. Do not run the runner's `up` or `down` command or the helper's
-`connections`, `configure`, `check` or `find` subcommands as a template check;
-the runner refuses the template and its forks anyway. When changing a phase, keep it
+retention reporting without cloud calls. Do not run the runner's `up` or `down`
+command as a template check; the runner refuses the template and its forks anyway. When changing a phase, keep it
 check-then-act, resumable and gated: persist a receipt before polling any
 accepted mutation, and update `docs/development.md`.
 
-For the app, run `npm ci`, `npm run lint`, `npm run build` and `npm test` from the
-repository root. Do not regenerate `generated/` or run `ms app init`/`dev` as a
-template check; they need a chosen environment.
+For the app, run `npm ci`, `npm run lint`, `npm run build` and `npm test` from
+`app/`. For the hosted agent, CI parses `main.py` with every other tracked Python
+file; after changing `requirements.in`, regenerate the hash-pinned
+`requirements.txt` with the command it documents. Do not build or push images,
+install the agent's packages or start the app against a deployed agent as a
+template check; those need a chosen target.
 
 [CI](../../workflows/ci.yml) runs the Terraform, Python, app and shell syntax checks on
 every pull request with a read-only token and no secrets or cloud access. Contributions
 arrive from forks, so keep it that way: never add `pull_request_target`, secrets or write
 permissions. Keep its commands in step with this section and its Terraform version with the
 devcontainer.
-`package-lock.json` must resolve from `https://registry.npmjs.org/`; CI rejects private
-mirror URLs, and `CONTRIBUTING.md` shows how to normalize them.
+`app/package-lock.json` must resolve from `https://registry.npmjs.org/`; CI rejects private
+mirror URLs, and `CONTRIBUTING.md` shows how to normalize them. Dependabot proposes npm
+updates for `app/`, pip updates for the agent and Docker base-image updates for both;
+review them like any dependency change.
 
 For devcontainer changes, validate the configuration against the Dev Container schema and inspect feature options against their published definitions. If Docker is available, build/start an isolated checkout without local credentials/state, run `.devcontainer/check-tools.sh`, then stop/remove only that test container. A container check must not sign in, initialize Terraform, seed or deploy.
 
@@ -94,7 +101,7 @@ name, payload and MCP declarations. Keep Python >= 3.12 for Foundry IQ. Verify
 the Azure MCP overlay's expected upstream shape and both telemetry launchers;
 do not silently leave `@latest` behind when claiming a pinned runtime. Installation
 and startup checks must not launch MCP servers, accept terms or query work data.
-Check all six required plugin registrations; do not infer a dedicated MCP server
+Check all five required plugin registrations; do not infer a dedicated MCP server
 from a skill-only package or duplicate plugin-owned servers in personal/project
 MCP configuration.
 
@@ -102,7 +109,7 @@ MCP configuration.
 
 Keep always-applicable rules in `AGENTS.md`, task procedures in `.github/skills/<name>/SKILL.md`, and explanations in the canonical docs. Use skill metadata with a clear trigger; do not require developers to install the same skill globally or duplicate root instructions in App settings.
 
-Keep base-image, Terraform and Copilot pins compatible with their documented requirements. Install the official Copilot release with mandatory checksum verification during image build; keep startup free of installs and cloud operations. The local Managed Runtime feature must run after Node, install its CLI/plugin for the remote user, and verify the official GCM package checksum. Preserve Node >= 24.11.0, Git >= 2.27.0, native build/libsecret support and headless in-memory Git credential caching; do not replace it with plaintext storage. Check plugin registration without invoking an app skill or signing in. Keep React/Vite/SDK dependencies in the `app` workspace manifest and the root lockfile, not in global tools. Keep the .NET 10 feature and the pinned Power Platform CLI tool manifest; startup restores that tool but never signs in to it. Do not add Fabric CLI, fabric-cicd, local Spark or Azure deployment wrappers just to validate the template.
+Keep base-image, Terraform and Copilot pins compatible with their documented requirements. Install the official Copilot release with mandatory checksum verification during image build; keep startup free of installs and cloud operations. Preserve Node >= 24.11.0 and Git >= 2.27.0. Check plugin registration without invoking an app skill or signing in. Keep the web app's React, Vite and MSAL dependencies in `app/package.json` and `app/package-lock.json`, and the agent's in its hash-pinned requirements, not in global tools or the devcontainer. The images build in Azure Container Registry, so the devcontainer needs no container engine. Do not add Fabric CLI, fabric-cicd, local Spark or Azure deployment wrappers just to validate the template.
 
 Keep Codespaces SSH private and managed through `gh codespace ssh`; do not publish its port, set passwords or disable host verification. App-driven deployment must route both commands and file changes to the same remote checkout/state.
 

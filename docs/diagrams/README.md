@@ -11,15 +11,15 @@ beside each image.
 
 ### Platform architecture
 
-[![Platform overview showing authoring, Fabric, Azure resources and the Studio agent/Managed Runtime experience, with separate document and live-fact routes.](platform-architecture.svg)](platform-architecture.svg)
+[![Platform overview showing authoring, Fabric, Azure resources and the Foundry hosted agent and Container Apps web app, with separate document and live-fact routes.](platform-architecture.svg)](platform-architecture.svg)
 
 ### Deployment flow
 
-[![Ten stages from a derived repository through verified DEV readiness to the Studio agent and Managed Runtime app, with explicit approvals.](deployment-flow.svg)](deployment-flow.svg)
+[![Ten stages from a derived repository through verified DEV readiness to the Foundry hosted agent and Container Apps web app, with explicit approvals.](deployment-flow.svg)](deployment-flow.svg)
 
 ### Agent runtime
 
-[![The generated app connector invokes a published Studio agent; its Fabric IQ and Foundry IQ tools use the signed-in user's own connections.](agent-runtime.svg)](agent-runtime.svg)
+[![The Container Apps web app forwards the signed-in user's token to the Foundry hosted agent; its Fabric IQ tool runs as that user and its knowledge-base tool uses the project's managed identity.](agent-runtime.svg)](agent-runtime.svg)
 
 ### Knowledge retrieval
 

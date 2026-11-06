@@ -11,5 +11,5 @@
 - [ ] CI passes.
 - [ ] No credentials, tfvars, `.env` files, state, saved plans, logs, or tenant, subscription or physical Fabric IDs.
 - [ ] No live `plan`, `apply`, `destroy`, deployment or notebook run was used as a test.
-- [ ] `.platform` logical IDs and lineage tags are unchanged, and `generated/` was regenerated rather than edited.
+- [ ] `.platform` logical IDs and lineage tags are unchanged.
 - [ ] README, getting started and `infra/terraform.tfvars.example` reflect any input or behavior change.

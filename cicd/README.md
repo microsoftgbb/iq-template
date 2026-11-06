@@ -12,7 +12,7 @@ There is no fabric-cicd dependency or `fab deploy` configuration. The [determini
 
 ## Ownership and included items
 
-Terraform owns the project-specific user-auth registration, capacity, workspaces, permissions, the optional GitHub credentials connection, the DEV/TEST deployment pipeline, Foundry, Search and Web IQ. An administrator owns consent; shared Microsoft enterprise applications are read-only lookups, not Terraform-owned assets. The repository owns workspace item definitions, deployed by native import or opt-in Git sync. The seeder inserts only missing demo keys and initial starter content. Do not also manage these item definitions with Terraform.
+Terraform owns the project-specific user-auth registration, capacity, workspaces, permissions, the optional GitHub credentials connection, the DEV/TEST deployment pipeline, Foundry, Search, Web IQ and the agent and app hosting. An administrator owns consent; shared Microsoft enterprise applications are read-only lookups, not Terraform-owned assets. The repository owns workspace item definitions, deployed by native import or opt-in Git sync. The seeder inserts only missing demo keys and initial starter content. Do not also manage these item definitions with Terraform.
 
 | Git item | Purpose |
 | --- | --- |
@@ -126,6 +126,8 @@ Terraform creates a native deployment pipeline with DEV and TEST assigned. Find 
 PROD should normally use ingestion from approved production sources, not synthetic fixtures. The bundled plan fails its seeder action outside `*-dev`/`*-test`. Define a separate production release plan that omits/replaces the demo action but retains the necessary target binding, or explicitly authorize demo seeding for a deliberate demo environment. The binding notebook itself does not insert demo data. Version and review both plans with the same release; don't silently weaken the default guard.
 
 For automation, use Fabric's [Deploy Stage Content API with a deployment plan](https://learn.microsoft.com/fabric/cicd/deployment-plan/deployment-plan-automation#deploy-content-between-pipeline-stages): add `beta=true` and `options.deploymentPlan` with the plan's physical `itemId` and `referenceType: "ByItemId"`. Retain the normal source/target stage fields and selected items, and poll the operation. This is different from Git's logical-ID reference.
+
+Fabric pipelines promote Fabric items only. The hosted agent, its toolbox and the web app serve DEV: their Fabric IQ connection targets the DEV ontology. A TEST or PROD agent needs its own Foundry project, connections to that stage's bound ontology and knowledge base, and a release designed in the derived project.
 
 The pinned Terraform provider treats changes to the pipeline's `stages` as replacement. Review the plan when extending it for PROD; don't change Terraform-owned stage assignments only in the portal and expect Terraform to preserve that drift.
 

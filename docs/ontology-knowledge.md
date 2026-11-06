@@ -10,9 +10,10 @@ This uses the native [`fabricOntology` knowledge source (preview)](https://learn
 
 One-way arrows show indexed content flowing toward the knowledge base; paired
 arrowheads show live request/response interactions, not data replication.
-The shipped Studio agent reads live facts through **native Fabric IQ** instead
-of this Search source, as the [runtime diagram](runtime-integration.md#runtime-at-a-glance)
-shows. Registering the source does not remove its end-user token requirement.
+The shipped hosted agent reads live facts through **native Fabric IQ** as the
+signed-in user instead of this Search source, as the
+[runtime diagram](runtime-integration.md#runtime-at-a-glance) shows.
+Registering the source does not remove its end-user token requirement.
 
 [Editable Excalidraw source](diagrams/knowledge-retrieval.excalidraw) | [All diagrams](diagrams/README.md) | [Icon sources](diagram-authoring.md#official-icon-sources)
 
@@ -31,9 +32,9 @@ The [`Bootstrap` plan](../workspace/Bootstrap.DeploymentPlan/plan.yml) runs this
 1. Deploy `Scenario`, then deploy and execute `SeedScenario` to insert missing synthetic rows and `Files/starter.txt`.
 2. Deploy `ScenarioOntology` with its entities, properties and relationship.
 3. Deploy and execute `BindScenario`. It resolves both items in the **current workspace**, refreshes SQL metadata for only `dbo.demo_sites` and `dbo.demo_assets`, and checks both per-table results.
-4. The binder adds the sample's Direct Lake partitions and `ScenarioLakehouse` expression, using `AzureStorage.DataLake` with the current workspace/lakehouse GUID-based OneLake URL in an M `let ... in ...` block. It also pins Fabric's `ONT_*` partition annotations, then reads back the definition and prints the lakehouse/ontology GUIDs.
+4. The binder adds the sample's Direct Lake partitions and `ScenarioLakehouse` expression, using `AzureStorage.DataLake` with the current workspace/lakehouse GUID-based OneLake URL in an M `let ... in ...` block. It also pins Fabric's `ONT_*` partition annotations, then reads back the definition, checks its partitions and OneLake expression, and prints the lakehouse/ontology GUIDs.
 
-The native binding needs both the OneLake expression and the partition's Fabric source identity. `ONT_ItemId` is the physical **lakehouse** GUID and `ONT_ItemKind` is `Lakehouse`; `ONT_SqlDatabase` is the lakehouse's **display name**, not its SQL endpoint GUID. The SQL endpoint GUID is used only for scoped metadata refresh. The binder refreshes these pins for each target and preserves their timestamp on an unchanged rerun. A SQL-only expression without the pins can pass definition validation while the UI reports that the source's Fabric item kind cannot be identified.
+The native binding needs both the OneLake expression and the partition's Fabric source identity. `ONT_ItemId` is the physical **lakehouse** GUID and `ONT_ItemKind` is `Lakehouse`; `ONT_SqlDatabase` is the lakehouse's **display name**, not its SQL endpoint GUID. The SQL endpoint GUID is used only for scoped metadata refresh. The binder writes these pins when it binds a target. Live `getDefinition` now elides the source pins (it returns only `ONT_PinnedAtUtc`), so the binder and the runner verify a read-back through its partitions, OneLake expression and that retained `ONT_PinnedAtUtc` marker. A rerun that finds all three leaves the definition unchanged, and a definition without the marker is pinned again. A SQL-only expression without the pins can pass definition validation while the UI reports that the source's Fabric item kind cannot be identified.
 
 Fabric Git normalizes `ONT_WorkspaceId` to a zero GUID, `ONT_ItemId` to the lakehouse's logical ID, and `ONT_WorkspaceName` to a placeholder. These are Git representations, not runtime source values. Rebind each target and inspect its live definition and data-backed query; do not treat the exported placeholders or an unchanged OneLake expression as proof of target readiness.
 
@@ -111,7 +112,7 @@ Content-Type: application/json
 
 Tokens are placeholders, **not configuration values to store in tfvars or source control**. Acquire the user's token in your application's approved sign-in/OBO flow, not from a chat prompt. Forward it per request, protect logs, and refuse an ontology query if the required identity is missing.
 
-For a consuming Foundry agent, keep the knowledge-base MCP connection and add this per-request header to its MCP tool using [structured inputs or supported OAuth identity passthrough](https://learn.microsoft.com/azure/foundry/agents/how-to/foundry-iq-connect#optional-enforce-permissions-with-per-request-headers). Creating the managed-identity connection alone does not complete ontology authentication. The shipped [Studio agent](runtime-integration.md#studio-iq-tools) avoids this header: it reads live facts through the Fabric IQ ontology tool and documents through the Foundry IQ tool, each with the user's own connection.
+For a consuming Foundry agent, keep the knowledge-base MCP connection and add this per-request header to its MCP tool using [structured inputs or supported OAuth identity passthrough](https://learn.microsoft.com/azure/foundry/agents/how-to/foundry-iq-connect#optional-enforce-permissions-with-per-request-headers). Creating the managed-identity connection alone does not complete ontology authentication. The shipped [hosted agent](runtime-integration.md#toolbox-tools) does not send this header: it reads live facts through the Fabric IQ ontology tool as the signed-in user, and calls the knowledge base with the project's managed identity only for documents.
 
 For an untouched seed, the example question should identify **Pump B at North Works**. Inspect the retrieval response for an `activity` entry and `references` of type `fabricOntology`, with the expected workspace and ontology IDs. A correct-sounding answer from `starter.txt` alone is **not** proof of ontology integration. Include a user without Fabric access in your derived project's authorization checks and surface denied/failed sources rather than silently substituting the document snapshot.
 

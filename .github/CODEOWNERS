@@ -5,17 +5,15 @@
 /AGENTS.md            @microsoftgbb/iq-gbb
 /.github/             @microsoftgbb/iq-gbb
 
-# Toolchain that runs during dev container builds and tool restore.
+# Toolchain that runs during dev container builds.
 /.devcontainer/       @microsoftgbb/iq-gbb
-/.config/             @microsoftgbb/iq-gbb
 
-# Infrastructure, Fabric items, the Studio agent and generated connector code.
+# Infrastructure, Fabric items, the hosted agent and its pinned requirements.
 /infra/               @microsoftgbb/iq-gbb
 /workspace/           @microsoftgbb/iq-gbb
 /agents/              @microsoftgbb/iq-gbb
-/generated/           @microsoftgbb/iq-gbb
 
-# Dependency manifests and the lockfile.
-/package.json         @microsoftgbb/iq-gbb
-/package-lock.json    @microsoftgbb/iq-gbb
-/app/package.json     @microsoftgbb/iq-gbb
+# The web app's dependency manifest, lockfile and container image.
+/app/package.json       @microsoftgbb/iq-gbb
+/app/package-lock.json  @microsoftgbb/iq-gbb
+/app/Dockerfile         @microsoftgbb/iq-gbb

@@ -12,20 +12,16 @@ deploy, change tenant policy, access work data or replace Terraform ownership.
 | [microsoft/work-iq](https://github.com/microsoft/work-iq) | `workiq@work-iq` | Work IQ skill and the hosted Work IQ MCP server. |
 | [microsoft/work-iq](https://github.com/microsoft/work-iq) | `microsoft-365-agents-toolkit@work-iq` | Declarative-agent development, UI widgets and evaluation skills. Toolkit installation is an explicit task, not container startup. |
 | [microsoft/skills-for-fabric](https://github.com/microsoft/skills-for-fabric) | `fabric-skills@fabric-collection` | Fabric/Fabric IQ skills and agents, plus hosted Fabric IQ, semantic-model authoring and SQL-endpoint MCP declarations. |
-| [microsoft/Managed-Apps](https://github.com/microsoft/Managed-Apps) | `microsoft-managed-apps@Managed-Apps` | Managed Runtime app skills/architect and the global `ms` CLI. This bundle does not declare an MCP server. |
 
 ## Installation and pins
 
 Installation happens during image build, not login or post-create. The
 [IQ plugin feature](../.devcontainer/features/iq-plugins/install.sh) owns the
-Azure, Work IQ and Fabric repository commit pins and Azure MCP version. The
-[Managed Runtime feature](../.devcontainer/features/managed-runtime/install.sh)
-owns its CLI/plugin and Git Credential Manager pins. The repository's
-[.NET tool manifest](../.config/dotnet-tools.json) pins the Power Platform CLI
-(`dotnet pac`) that creates and publishes the Copilot Studio agent; the
-post-create command restores it without signing in. Local marketplace
-checkouts use explicit Git commit fetches: a Copilot marketplace `#ref` shortcut
-does not reliably accept an immutable commit.
+Azure, Work IQ and Fabric repository commit pins and Azure MCP version. Local
+marketplace checkouts use explicit Git commit fetches: a Copilot marketplace
+`#ref` shortcut does not reliably accept an immutable commit. The hosted agent
+and web app need no Copilot package: the runner builds and publishes them with
+Azure CLI and native REST calls.
 
 Azure MCP is installed at a reviewed version as `azmcp`. The image's small,
 checked overlay points the Azure server and its telemetry launchers at that
@@ -51,8 +47,6 @@ do not configure the desktop host. The upstream manual marketplace commands are:
 /plugin install microsoft-365-agents-toolkit@work-iq
 /plugin marketplace add microsoft/skills-for-fabric
 /plugin install fabric-skills@fabric-collection
-/plugin marketplace add microsoft/Managed-Apps
-/plugin install microsoft-managed-apps@Managed-Apps
 ```
 
 Those upstream commands follow the marketplace's current revision. Use the
@@ -75,11 +69,11 @@ plugin or copy a personal MCP config into the repository.
   materialized or a semantic model is refreshed. Preserve the native
   `workspace/` ownership and target-local binding/readiness gates. Do not install
   extra Fabric tooling merely to perform template maintenance.
-- Managed Runtime still needs separate `ms` sign-in, eligible app hosting/Git
-  access, permitted user connections and the [runtime proof](runtime-integration.md).
-  Its shell-command attribution is handled by the official host plugin; do not
-  overwrite a user's `MS_CLI_ORIGIN`.
+- The `azure` package's `microsoft-foundry` skill can explain hosted agents and
+  toolboxes, but the runner owns their releases in this project. Do not create a
+  parallel azd project, agent, toolbox or Container App from a product skill;
+  follow the [runtime contract](runtime-integration.md) and its readiness proof.
 
 The coding assistant's MCP servers are authoring tools. They are not automatically
-Foundry agent tools or Managed Runtime data sources. Runtime wiring follows its
-own reviewed connection, identity, schema and readiness contract.
+Foundry agent tools or toolbox entries. Runtime wiring follows its own reviewed
+connection, identity, schema and readiness contract.

@@ -1,23 +1,48 @@
 version: 2
 
-# Terraform providers and the dev container's Copilot, Managed Runtime CLI and plugin pins
-# are updated deliberately, not here; see AGENTS.md and the template-maintenance skill.
+# Terraform providers and the dev container's Copilot and plugin pins are updated
+# deliberately, not here; see AGENTS.md and the template-maintenance skill.
 updates:
   - package-ecosystem: npm
-    directory: /
+    directory: /app
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    ignore:
+      # Keep Node's type definitions on the runtime's release line (node:24-alpine).
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
     groups:
-      # Keep the Managed Runtime SDK and Vite plugin together and in step with the CLI
-      # pinned in .devcontainer/features/managed-runtime/install.sh.
-      managed-runtime:
+      # The telemetry distro and the undici instrumentation must share one OpenTelemetry release line.
+      opentelemetry:
         patterns:
-          - "@microsoft/managed-apps*"
+          - "@microsoft/opentelemetry"
+          - "@opentelemetry/*"
       minor-and-patch:
         update-types:
           - minor
           - patch
+
+  # The hosted agent's hashed requirements.txt is compiled from requirements.in.
+  - package-ecosystem: pip
+    directory: /agents/scenario-assistant
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: docker
+    directories:
+      - /agents/scenario-assistant
+      - /app
+    schedule:
+      interval: weekly
+    ignore:
+      # Runtime lines change deliberately: Node stays on its 24 LTS line, and the hashed
+      # requirements.txt holds Python 3.13 wheels.
+      - dependency-name: node
+        update-types: ["version-update:semver-major"]
+      - dependency-name: python
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
 
   - package-ecosystem: github-actions
     directory: /

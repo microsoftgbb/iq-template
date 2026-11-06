@@ -1,14 +1,14 @@
 # Scenario authoring contract
 
 Derived projects change the domain and workflow, not the platform architecture.
-Use one **Fabric -> knowledge -> agent -> Managed Runtime app** core.
+Use one **Fabric -> knowledge -> hosted agent -> web app** core.
 The Web IQ account and public-search probe are standard platform components.
 Work IQ, graphs, semantic models and other runtime integrations are explicit opt-ins.
 
 The template ships this core end to end: the Fabric/knowledge baseline, the
-[scenario assistant](../agents/scenario-assistant/README.md) Copilot Studio agent
-and the [Managed Runtime app](../app/) that calls it. A derived project adds its
-scenario in the homes below; it does not replace the shell.
+[scenario assistant](../agents/scenario-assistant/README.md) Foundry hosted agent
+and the Azure Container Apps [web app](../app/) that calls it. A derived project
+adds its scenario in the homes below; it does not replace the shell.
 
 Use the [runtime diagram](runtime-integration.md#runtime-at-a-glance) for the fixed
 agent/app route, the [retrieval diagram](ontology-knowledge.md#two-retrieval-paths)
@@ -19,14 +19,14 @@ for the native work-package order.
 
 | Home | Put here | Do not put here |
 | --- | --- | --- |
-| `infra/` | Terraform infrastructure, permissions and knowledge/runtime connection registration. | Business logic, seed provisioners, another deployment state or an azd/Bicep replacement platform. |
+| `infra/` | Terraform infrastructure, permissions, knowledge/runtime connection registration and the agent/app hosting. | Business logic, seed provisioners, agent or app releases, another deployment state or an azd/Bicep replacement platform. |
 | `workspace/` | Native Fabric item folders, seed/transform/publish/bind/readiness notebooks and deployment plans. | Credentials, saved attachments, raw backups or another project's physical bindings. |
 | `scenario/data/` | Versioned domain/table contracts, deterministic synthetic generation and small fictional fixtures. | Real tenant/customer data or evaluation answers destined for indexing. |
 | `scenario/knowledge/` | Reviewed authoritative document sources, with IDs, versions, scope and effective dates. | Raw fixture bundles, temporary exports, golden answers or mirrored mailboxes. |
 | `scenario/workflows/` | Independently testable scenario-specific rules, transformations and approved tool logic. | An undeclared backend or a second source of authoritative facts. |
 | `scenario/evals/` | Expected outcomes, source/citation requirements, negative cases and scenario checks. | Content published to a lakehouse Files corpus. |
-| `agents/scenario-assistant/` | The Copilot Studio agent's instructions, topics and IQ tool actions, with placeholders that `studio_agent.py render` fills. | Rendered PAC workspaces, `.mcs/` metadata, access tokens, tenant IDs, deployment receipts or `Maker`-mode tools. |
-| `app/` | Managed Runtime application source. `app/src/config.ts` names the agent; scenario views call it through the generated service. | Raw browser calls to Azure/Fabric, edits to `generated/` or credentials copied from a developer's sign-in. |
+| `agents/scenario-assistant/` | The hosted agent's code (`main.py`), `instructions.md`, image (`Dockerfile`, hash-pinned `requirements.txt`) and `hosted-agent.json` definition, whose `{{placeholders}}` the runner fills from Terraform outputs. | Rendered definitions, physical IDs, access tokens, tenant IDs, deployment receipts, secret settings or tools that need approval. |
+| `app/` | The web app: browser views in `src/`, the transport-only proxy in `server/`, its tests and `Dockerfile`. Runtime settings come from `/config.json`. | Credentials or app-only tokens, raw browser calls to Azure/Fabric, or proxy routes to anything but the agent endpoint. |
 | `docs/`, `.github/skills/` | Canonical product explanations and repeatable procedures, respectively. | Session diaries or competing setup guides. |
 
 Use these locations rather than adding competing root `tools/`, `services/`,
@@ -34,10 +34,10 @@ Use these locations rather than adding competing root `tools/`, `services/`,
 design decision. Never infer permission to provision a backend from a Python
 workflow module.
 
-The repository root is Managed Runtime's verified native app root:
-`package.json`, `index.html`, CLI-managed `ms.config.json` and `generated/`.
-Application implementation stays in `app/`. Do not nest a second Git
-repository or force every tool's native configuration into `app/`.
+`agents/scenario-assistant/` and `app/` are self-contained build contexts, each
+with its own `Dockerfile`, dependency lockfile and `.dockerignore` allow-list;
+the runner builds each image from its directory only. Do not nest a second Git
+repository or move their files to the repository root.
 
 ## Fabric ontology work package
 
@@ -138,38 +138,52 @@ Distinguish these three mechanisms:
 ## Agent and app work package
 
 Start from the shipped read-only agent and app; [getting started](getting-started.md#7-create-the-agent-and-app)
-creates them. The agent is a published standard-harness Copilot Studio agent,
-because the Foundry Agent Service connector is blocked and the Studio connector
-refuses GitHub Copilot harness agents; see
-[routes to re-validate](runtime-integration.md#routes-to-re-validate).
-For a scenario, change the agent's instructions and tool descriptions in
-`agents/scenario-assistant/`. Instructions define source authority, routing,
-unavailable/denied-source behavior and inline source names; they do not invent
-deterministic metrics or authorize actions.
+publishes them. For a scenario, change the agent's
+[`instructions.md`](../agents/scenario-assistant/instructions.md) and the tool
+descriptions in `hosted-agent.json`. Instructions define source authority,
+routing, unavailable/denied-source behavior and inline source names; they do not
+invent deterministic metrics or authorize actions. Keep the connection-proof
+middleware in `main.py`: the runner and the app's **Check connection** depend on
+its exact `AGENT_PROOF|` reply.
 
-The Fabric IQ tool supplies delegated live facts and the Foundry IQ tool supplies
-document evidence, each through the user's own connection (`Invoker` mode).
-Keep the pinned knowledge `api-version`. A Search `fabricOntology` query still
-needs its separate Search-audience user header; managed identity or plugin
-installation cannot replace it.
+The Fabric IQ tool (`scenario_ontology`) supplies live facts as the signed-in
+user through its `UserEntraToken` connection. The knowledge-base tool
+(`knowledge_base`, allowing only `knowledge_base_retrieve`) supplies document
+evidence with the project's managed identity, so every agent user can receive
+every indexed document. Keep both server labels and connections: the runner's
+evidence checks look for them. A Search `fabricOntology` query still needs its
+separate Search-audience user header; managed identity or plugin installation
+cannot replace it.
 
-The app calls the agent only through the generated Copilot Studio service and
-`app/src/studio.ts`, which rejects receipts without answers, the harness refusal
-and malformed results. Keep conversations isolated per user and never accept
-client-side possession of a conversation ID as authorization.
+`hosted-agent.json` may use only the runner's placeholders: `chat_deployment`,
+`toolbox_endpoint`, `fabric_iq_server_url`, `fabric_iq_connection`,
+`knowledge_base_mcp_endpoint` and `knowledge_base_connection`. The runner
+refuses a size other than 0.5/1Gi, 1/2Gi or 2/4Gi, a definition without the
+Responses protocol, environment variables named `FOUNDRY_*` or `AGENT_*`,
+duplicate server labels or labels that are not lowercase identifiers, a tool
+without a project connection and any tool that requires approval. A new tool needs its own reviewed project
+connection and identity decision in Terraform, never a shared key.
+
+The app calls the agent only through its own proxy, `POST /api/responses`,
+which forwards the signed-in user's token and a narrowed body to the one
+configured endpoint. [`app/src/agent.ts`](../app/src/agent.ts) parses Responses
+output without trusting its shape and rejects incomplete or malformed results.
+Keep conversations isolated per user: the app holds only the latest response
+ID, and Foundry owns the conversation history and who may continue it.
 
 Build scenario views on the shell's conversation, connection check and failure
-states. Missing identity, pending connection consent, the 120-second connector
-timeout and source errors are explicit blocked/incomplete states. Do not return
-synthetic success or indexed snapshot facts as live data. Hosted builds,
-deployment and sharing are separate approval gates.
+states. Missing sign-in, missing agent access (HTTP 403), a pending tool consent
+link, the proxy's timeout and source errors are explicit blocked/incomplete
+states. Do not return synthetic success or indexed snapshot facts as live data.
+Releases follow the runner's `agent-deploy` and `app-deploy` approvals; granting
+other users access is a separate operator step.
 
 ## Additional runtime integrations
 
 | Capability | Required addition and exit evidence |
 | --- | --- |
 | Work IQ | A native approved user-delegated connection/tool, scoped read-only first, tenant consent/licensing and cited accessible work context. No mailbox clone or fixture masquerading as real work data. |
-| Web IQ | Required Terraform account and runner probe: [preparation](../preparation.md#web-iq). Portal AppID linking and an approved native Studio tool are separate gates; require public-only query fields, citations and scenario freshness/conflict checks. Replay and live modes are explicitly different. |
+| Web IQ | Required Terraform account and runner probe: [preparation](../preparation.md#web-iq). Portal AppID linking and an approved toolbox tool with its project connection are separate gates; require public-only query fields, citations and scenario freshness/conflict checks. Replay and live modes are explicitly different. |
 | Fabric graph | An approved native ontology projection/model, target-local bindings, materialization/refresh and bounded path-result checks. No second hand-authored relationship vocabulary. |
 | Semantic model | Native `.platform`, `definition.pbism` and exported TMDL definition parts, explicit binding/refresh action and exact governed calculation checks. |
 | Fabric data agent | Native definition/published endpoint, allowed sources, reader authorization and actual query receipts. Not a replacement for deterministic scenario rules. |

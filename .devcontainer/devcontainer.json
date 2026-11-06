@@ -16,25 +16,24 @@
     },
     "ghcr.io/devcontainers/features/node:2": {
       "version": "24",
-      "nodeGypDependencies": true,
+      "nodeGypDependencies": false,
       "pnpmVersion": "none"
     },
-    "ghcr.io/devcontainers/features/dotnet:2": {
-      "version": "10.0"
-    },
-    "./features/managed-runtime": {},
     "./features/iq-plugins": {}
   },
   "remoteUser": "vscode",
-  "postCreateCommand": "dotnet tool restore && bash .devcontainer/check-tools.sh",
-  "forwardPorts": [3000, 8080],
+  "postCreateCommand": "bash .devcontainer/check-tools.sh",
+  "forwardPorts": [
+    5173,
+    8080
+  ],
   "portsAttributes": {
-    "3000": {
-      "label": "Managed Runtime app",
+    "5173": {
+      "label": "Scenario assistant (Vite dev server)",
       "onAutoForward": "notify"
     },
     "8080": {
-      "label": "Managed Runtime config",
+      "label": "Scenario assistant app server",
       "onAutoForward": "silent"
     }
   },

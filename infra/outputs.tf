@@ -96,7 +96,7 @@ output "deployment_pipeline_stage_ids" {
 
 output "foundry_project_endpoint" {
   description = "Foundry project API endpoint."
-  value       = "https://${azapi_resource.foundry.name}.services.ai.azure.com/api/projects/${azapi_resource.foundry_project.name}"
+  value       = local.foundry_project_endpoint
 }
 
 output "foundry_project_id" {
@@ -205,12 +205,44 @@ output "web_iq" {
   }
 }
 
-output "studio_agent_schema_name" {
-  description = "Prescribed schema name for the scenario's Copilot Studio agent, derived from project_name. PAC creates the agent; Terraform does not."
-  value       = "iq_${replace(var.project_name, "-", "_")}_assistant"
+output "hosted_agent" {
+  description = "Names and endpoints of the hosted agent and its toolbox. deploy.py publishes their versions; Terraform does not."
+  value = {
+    name             = local.hosted_agent_name
+    toolbox_name     = local.toolbox_name
+    project_endpoint = local.foundry_project_endpoint
+    responses_url    = "${local.foundry_project_endpoint}/agents/${local.hosted_agent_name}/endpoint/protocols/openai/responses?api-version=v1"
+    toolbox_endpoint = "${local.foundry_project_endpoint}/toolboxes/${local.toolbox_name}/mcp?api-version=v1"
+  }
 }
 
-output "studio_agent_display_name" {
-  description = "Prescribed display name for the scenario's Copilot Studio agent and Managed Runtime app."
-  value       = "${var.project_name} assistant"
+output "container_registry" {
+  description = "Registry for the images deploy.py builds; the project and web app identities can pull from it."
+  value = {
+    id           = azurerm_container_registry.main.id
+    name         = azurerm_container_registry.main.name
+    login_server = azurerm_container_registry.main.login_server
+  }
+}
+
+output "web_app" {
+  description = "Container App target and browser sign-in for the scenario assistant. deploy.py creates the app at this URL."
+  value = {
+    name                        = local.web_app_name
+    url                         = local.web_app_url
+    environment_id              = azurerm_container_app_environment.main.id
+    identity_id                 = azurerm_user_assigned_identity.web.id
+    client_id                   = azuread_application.web.client_id
+    service_principal_object_id = azuread_service_principal.web.object_id
+    tenant_id                   = data.azuread_client_config.current.tenant_id
+    scope                       = local.foundry_api_scope
+    api_principal_object_id     = data.azuread_service_principal.foundry_api.object_id
+    api_permissions_url         = "https://portal.azure.com/#@${data.azuread_client_config.current.tenant_id}/view/Microsoft_AAD_RegisteredApps/ApplicationMenuBlade/~/CallAnAPI/appId/${azuread_application.web.client_id}/isMSAApp~/false"
+  }
+}
+
+output "application_insights_connection_string" {
+  description = "Application Insights connection string that deploy.py sets on the web app for request and agent-call tracing. It identifies the resource and is not a credential; the hosted agent gets the project's connection from Foundry."
+  value       = azurerm_application_insights.main.connection_string
+  sensitive   = true
 }

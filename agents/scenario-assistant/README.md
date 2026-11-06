@@ -1,28 +1,40 @@
-# Scenario assistant (Copilot Studio)
+# Scenario assistant (Foundry hosted agent)
 
-The app-facing agent: a **standard-harness** Copilot Studio agent with two native
-MCP tools that run with each user's own credentials (`mode: Invoker`):
+The app-facing agent: a Python
+[Microsoft Agent Framework](https://learn.microsoft.com/agent-framework/overview/agent-framework-overview)
+agent that runs as a Foundry hosted agent and answers only from its project
+toolbox. Its Fabric IQ tool queries the live ontology as the signed-in user;
+its knowledge-base tool retrieves documents with the project's managed identity.
 
-[![Managed Runtime invokes the published Copilot Studio scenario assistant through its generated connector. The agent's Invoker-mode Fabric IQ and Foundry IQ tools use the signed-in user's connections for live ontology facts and document evidence.](../../docs/diagrams/agent-runtime.svg)](../../docs/runtime-integration.md#runtime-at-a-glance)
+[![The Container Apps web app forwards the signed-in user's token to the hosted scenario assistant. Its toolbox queries the live Fabric IQ ontology as that user and retrieves documents from the Foundry IQ knowledge base with the project's managed identity.](../../docs/diagrams/agent-runtime.svg)](../../docs/runtime-integration.md#runtime-at-a-glance)
 
 | File | Purpose |
 | --- | --- |
-| `agent.mcs.yml` | Instructions: source routing, inline source names, unavailable-source behavior. |
-| `actions/FabricIQOntology.mcs.yml` | Live ontology facts through `shared_fabriciqmcpserver`. |
-| `actions/FoundryIQKnowledge.mcs.yml` | Indexed documents through `shared_azureaisearchfoundryiq`. |
-| `connectionreferences.mcs.yml` | The two connection references bound to each user's connections. |
-| `topics/ConnectionProof.mcs.yml` | Deterministic readiness probe: returns `CPS_AGENT_PROOF|<message>`. |
-| `topics/Fallback.mcs.yml` | Reports an unavailable source instead of a generic "rephrase" reply. |
+| `main.py` | The agent: `FoundryChatClient` on the project's `chat` deployment, `FoundryToolbox` for the project toolbox, and `ResponsesHostServer` serving the Responses protocol on port 8088. Its middleware answers `connection proof <uuid>` with `AGENT_PROOF|connection proof <uuid>` without calling the model or a tool. It skips the unused OpenAI Agents SDK trace instrumentation. |
+| `instructions.md` | Source routing: current facts only from Fabric IQ, guidance only from the knowledge base, inline source names and unavailable-source behavior. |
+| `hosted-agent.json` | Deployment definition: size (0.5 CPU, 1 GiB), the Responses protocol, environment variables, including `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=false`, and the toolbox's two tools, `scenario_ontology` and `knowledge_base`. |
+| `requirements.in`, `requirements.txt` | Direct dependencies and their hash-pinned closure. Regenerate `requirements.txt` with the command in `requirements.in`. |
+| `Dockerfile`, `.dockerignore` | The `python:3.13-slim` image, installed with `--require-hashes` from an allow-listed build context. |
 
-`{{agent_schema}}`, `{{agent_display_name}}`, `{{knowledge_base_name}}` and
-`{{search_api_version}}` are filled by
-[`studio_agent.py render`](../../.github/skills/deploy-platform/scripts/studio_agent.py)
-into a PAC workspace under `.artifacts/`. PAC supplies the remaining default
-topics. Do not commit rendered workspaces or their `.mcs/` metadata.
+The [deployment runner](../../.github/skills/deploy-platform/scripts/deploy.py)
+fills the `{{placeholders}}` in `hosted-agent.json` from Terraform outputs: the
+`chat` model deployment, the `hosted_agent` toolbox endpoint, the `scenario`
+Fabric IQ connection and the knowledge-base MCP endpoint and connection. It
+never writes the rendered definition to the repository. Foundry injects
+`FOUNDRY_PROJECT_ENDPOINT`; `FOUNDRY_*` and `AGENT_*` settings are reserved for
+the platform.
 
-Change the instructions and tool descriptions for a new scenario; keep both tools
-in `Invoker` mode. Access, grounding settings and connection bindings are set by
-`studio_agent.py configure`, because `pac copilot push` ignores
-`settings.mcs.yml`. Follow the
-[deployment skill](../../.github/skills/deploy-platform/SKILL.md) for the exact
-order and approvals.
+The agent's spans and logs go to the project's Application Insights through
+the connection string Foundry injects; see
+[observability](../../docs/runtime-integration.md#observability). Keep message
+content capture off outside a deliberate DEV debugging session.
+
+Change the instructions and tool descriptions for a new scenario. Keep the
+proof middleware, both tools' server labels and connections, and
+`require_approval: never`, because the runner's checks and the web app depend
+on them. The runner builds the image with `az acr build` from the published
+commit, publishes the toolbox and agent versions, and proves them as the
+deploying user. Follow the
+[deployment skill](../../.github/skills/deploy-platform/SKILL.md) for the order
+and approvals, and [runtime integration](../../docs/runtime-integration.md) for
+identity, access and evidence.

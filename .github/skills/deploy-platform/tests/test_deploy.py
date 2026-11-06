@@ -72,7 +72,8 @@ class FakeHttp:
         self.calls.append((method, url, body, dict(headers or {})))
         for route_method, pattern, responses in self.routes:
             if route_method == method and pattern.search(url):
-                return responses.pop(0) if len(responses) > 1 else responses[0]
+                response = responses.pop(0) if len(responses) > 1 else responses[0]
+                return response(url, body) if callable(response) else response
         raise AssertionError(f"unexpected request: {method} {url}")
 
     def posts(self, pattern):
@@ -96,10 +97,6 @@ def terraform(command):
 
 def command(*prefix):
     return lambda args: args[:len(prefix)] == list(prefix)
-
-
-def studio(subcommand):
-    return lambda args: len(args) > 2 and args[1].endswith("studio_agent.py") and args[2] == subcommand
 
 
 TOKEN_RULE = (command("az", "account", "get-access-token"),
@@ -131,11 +128,8 @@ def make_root(test):
     (root / "infra").mkdir()
     (root / "infra" / "main.tf").write_text("# fixture\n", encoding="utf-8")
     (root / "infra" / "terraform.tfvars").write_text('project_name = "demo"\n', encoding="utf-8")
-    (root / "app" / "src").mkdir(parents=True)
-    # Not copied: a deployed checkout legitimately sets its own schema here.
-    (root / "app" / "src" / "config.ts").write_text(
-        "// The only app setting: the schema name passed to `pac copilot init --schema-name`.\n"
-        "export const STUDIO_AGENT_SCHEMA = ''\n", encoding="utf-8")
+    (root / "agents" / "scenario-assistant").mkdir(parents=True)
+    shutil.copy(REPO / deploy.AGENT_SOURCE / "hosted-agent.json", root / deploy.AGENT_SOURCE / "hosted-agent.json")
     return root
 
 
@@ -161,15 +155,16 @@ def tmdl(bound, workspace=WORKSPACE):
     for table in deploy.SAMPLE_TABLES:
         text = f"table {table}\n"
         if bound:
-            text += (f"\tpartition {table} = entity\n\t\tmode: directLake\n\n"
-                     f"\t\tannotation ONT_WorkspaceId = {workspace}\n\n"
-                     f"\t\tannotation ONT_ItemId = {LAKEHOUSE}\n\n"
-                     "\t\tannotation ONT_ItemKind = Lakehouse\n")
+            # The live shape: getDefinition keeps the partition and pin timestamp but elides the source pins.
+            text += (f"\tpartition {table} = entity\n\t\tmode: directLake\n\t\tsource\n"
+                     f"\t\t\tentityName: {table}\n\t\t\tschemaName: dbo\n\t\t\texpressionSource: ScenarioLakehouse\n\n"
+                     "\t\tannotation ONT_PinnedAtUtc = 2026-01-01T00:00:00.000Z\n")
         parts.append(part(f"tables/{table}.tmdl", text))
     if bound:
         parts.append(part("expressions.tmdl", "expression ScenarioLakehouse =\n\t\tlet\n\t\t\tSource = "
                           f'AzureStorage.DataLake("https://onelake.dfs.fabric.microsoft.com/{workspace}/{LAKEHOUSE}", '
-                          "[HierarchicalNavigation=true])\n\t\tin\n\t\t\tSource\n"))
+                          "[HierarchicalNavigation=true])\n\t\tin\n\t\t\tSource\n"
+                          "\tlineageTag: afcdf5a6-abb9-4722-81d6-c540ac4b4433\n\n"))
     return {"definition": {"parts": parts}}
 
 
@@ -313,12 +308,14 @@ class PlanTests(unittest.TestCase):
         shell = FakeShell([
             TOKEN_RULE,
             (command("terraform", "version"), deploy.Result(0, json.dumps({"terraform_version": "1.16.5"}))),
+            (command("az", "version"), lambda args, options: deploy.Result(0, json.dumps({"azure-cli": cli[0]}))),
             (command("az", "account", "show"), deploy.Result(0, json.dumps(account))),
             (command("az", "ad", "sp", "show"), deploy.Result(0, '{"id": "shared-service"}')),
         ])
+        cli = ["2.90.0"]
         ctx = make_context(self, make_root(self), shell, subscription=subscription)
         ctx.environ = {}
-        ctx.cache["variables"]["search_sku"] = "serverless"
+        ctx.cache["variables"].update(search_sku="serverless", location="centralus")
         with mock.patch.object(deploy, "check_web_iq", return_value="Web IQ ready"), \
                 mock.patch.object(deploy, "state_addresses", return_value=deploy.PLATFORM_ADDRESSES), \
                 mock.patch.object(deploy, "check_search_tier", return_value="Search offered"), \
@@ -329,6 +326,15 @@ class PlanTests(unittest.TestCase):
             ctx.cache["variables"]["fabric_git_enabled"] = True
             deploy.phase_preflight(ctx)
             check_pat.assert_called_once_with(ctx, ctx.cache["variables"])
+            # A region without documented hosted agents stops before anything is provisioned.
+            ctx.cache["variables"]["location"] = "westus2"
+            with self.assertRaisesRegex(deploy.Blocked, "not documented in westus2"):
+                deploy.phase_preflight(ctx)
+            # So does an Azure CLI too old for ACR builds and hosted agents.
+            ctx.cache["variables"]["location"] = "centralus"
+            cli[0] = "2.79.1"
+            with self.assertRaisesRegex(deploy.Blocked, "Azure CLI 2.79.1 is older than 2.80.0"):
+                deploy.phase_preflight(ctx)
 
     def test_the_identity_bootstrap_plan_must_stay_inside_its_module(self):
         root = make_root(self)
@@ -374,11 +380,15 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(list((ctx.state.directory / "plans").iterdir()), [])
 
 
+PROJECT = "https://ai-demo.services.ai.azure.com/api/projects/demo-project"
+SUBSCRIPTION = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+ENVIRONMENT_ID = (f"/subscriptions/{SUBSCRIPTION}/resourceGroups/rg-demo/providers/Microsoft.App/"
+                  "managedEnvironments/cae-demo")
+APP_ID = f"/subscriptions/{SUBSCRIPTION}/resourceGroups/rg-demo/providers/Microsoft.App/containerApps/ca-demo-web"
+
+
 class TeardownTests(unittest.TestCase):
-    SUBSCRIPTION = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
-    ENVIRONMENT = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
-    URL = "https://example.crm.dynamics.com"
-    SCHEMA = "iq_demo_assistant"
+    SUBSCRIPTION = SUBSCRIPTION
 
     def context(self, **options):
         ctx = make_context(self, make_root(self), **options)
@@ -386,15 +396,27 @@ class TeardownTests(unittest.TestCase):
         ctx.args.allow_delete = options.get("allow_delete", False)
         ctx.initialized = True
         ctx.state.section("target").update(subscription_id=self.SUBSCRIPTION, tenant_id=TENANT, user_object_id="user")
-        ctx.state.section("choices").update(local_state=True, environment_id=self.ENVIRONMENT, environment_url=self.URL)
+        ctx.state.section("choices").update(local_state=True)
         ctx.cache["variables"].update(project_name="demo", github_owner="example", github_repository_name="demo-repo")
         return ctx
 
-    def snapshot(self, app=None):
+    def snapshot(self, runtime=True):
         return {"repository": "example/demo-repo", "project_name": "demo", "resource_ids": {},
-                "environment_id": self.ENVIRONMENT, "environment_url": self.URL,
-                "app_id": app, "agent_schema": self.SCHEMA, "workspaces": {"dev": WORKSPACE},
+                "hosted_agent": {"project_endpoint": PROJECT, "name": "demo-assistant", "toolbox_name": "demo-tools"}
+                if runtime else None,
+                "container_app": APP_ID if runtime else None, "workspaces": {"dev": WORKSPACE},
                 "foundry": {"name": "ai-demo", "resource_group": "rg-demo", "location": "westeurope"}}
+
+    def runtime_http(self, *, app=(200, 404), agent=(200, 404), toolbox=(200, 404), deleted=202):
+        http = FakeHttp()
+        for method, pattern, statuses in (("GET", re.escape(APP_ID) + r"\?", app),
+                                          ("GET", r"/agents/demo-assistant\?api-version=v1$", agent),
+                                          ("GET", r"/toolboxes/demo-tools\?api-version=v1$", toolbox)):
+            http.add(method, pattern, *[reply(status, {} if status == 200 else None) for status in statuses])
+        http.add("DELETE", re.escape(APP_ID) + r"\?", reply(deleted))
+        http.add("DELETE", r"/agents/demo-assistant\?api-version=v1&force=true$", reply(204))
+        http.add("DELETE", r"/toolboxes/demo-tools\?api-version=v1$", reply(204))
+        return http
 
     def state_rules(self, state):
         return [
@@ -445,8 +467,11 @@ class TeardownTests(unittest.TestCase):
             {"address": "azapi_resource.foundry", "mode": "managed",
              "values": {"id": foundry, "location": "westeurope", "secret": "do-not-persist"}},
             {"address": "fabric_workspace.dev", "mode": "managed", "values": {"id": WORKSPACE}},
-        ]}, "outputs": {"studio_agent_schema_name": {"value": self.SCHEMA},
-                        "unrelated_secret": {"value": "do-not-persist"}}}}
+        ]}, "outputs": {
+            "hosted_agent": {"value": {"name": "demo-assistant", "toolbox_name": "demo-tools", "project_endpoint": PROJECT,
+                                       "responses_url": "do-not-persist"}},
+            "web_app": {"value": {"name": "ca-demo-web", "environment_id": ENVIRONMENT_ID, "client_id": "do-not-persist"}},
+            "unrelated_secret": {"value": "do-not-persist"}}}}
         ctx.shell = FakeShell(self.state_rules(state))
         with mock.patch.object(deploy.runtime, "check_environment"):
             snapshot = deploy.teardown_snapshot(ctx)
@@ -454,6 +479,9 @@ class TeardownTests(unittest.TestCase):
             self.assertEqual(deploy.teardown_snapshot(ctx), snapshot)
         self.assertEqual(snapshot["workspaces"], {"dev": WORKSPACE})
         self.assertEqual(snapshot["foundry"]["name"], "ai-demo")
+        self.assertEqual(snapshot["container_app"], APP_ID)
+        self.assertEqual(snapshot["hosted_agent"], {"project_endpoint": PROJECT, "name": "demo-assistant",
+                                                    "toolbox_name": "demo-tools"})
         self.assertNotIn("do-not-persist", ctx.state.path.read_text())
 
     def test_snapshot_refuses_changed_resource_identity_or_foreign_subscription(self):
@@ -469,7 +497,6 @@ class TeardownTests(unittest.TestCase):
                 deploy.teardown_snapshot(ctx)
 
     def test_an_identity_only_deployment_tears_down_without_agent_outputs(self):
-        # The environment is chosen before sign-in, so it alone must not demand agent outputs.
         ctx = self.context()
         state = {"values": {"root_module": {"child_modules": [{"resources": [
             {"address": "module.fabric_user_auth.azuread_application.fabric", "mode": "managed",
@@ -478,88 +505,62 @@ class TeardownTests(unittest.TestCase):
         ctx.shell = FakeShell(self.state_rules(state))
         with mock.patch.object(deploy.runtime, "check_environment"):
             snapshot = deploy.teardown_snapshot(ctx)
-        self.assertIsNone(snapshot["agent_schema"])
+        self.assertIsNone(snapshot["hosted_agent"])
+        self.assertIsNone(snapshot["container_app"])
         ctx = self.context()
         ctx.state.section("phases")["agent"] = {"status": "approval"}
         ctx.shell = FakeShell(self.state_rules(state))
         with mock.patch.object(deploy.runtime, "check_environment"), \
-                self.assertRaisesRegex(deploy.Blocked, "agent schema is missing"):
+                self.assertRaisesRegex(deploy.Blocked, "outputs are missing"):
             deploy.teardown_snapshot(ctx)
 
-    def test_wrong_user_or_app_environment_blocks_before_any_delete(self):
+    def test_wrong_user_blocks_before_any_delete(self):
         ctx = self.context()
         ctx.state.section("target")["user_object_id"] = "other-user"
         ctx.shell = FakeShell(self.state_rules({}))
         with self.assertRaisesRegex(deploy.Blocked, "original Azure user"):
             deploy.teardown_snapshot(ctx)
-        ctx.state.section("target")["user_object_id"] = "user"
-        (ctx.root / "ms.config.json").write_text(json.dumps({"appId": "my-app", "environmentId": WORKSPACE}))
-        with mock.patch.object(deploy.runtime, "check_environment"), \
-                self.assertRaisesRegex(deploy.Blocked, "registered to environment"):
-            deploy.teardown_snapshot(ctx)
-        self.assertFalse(ctx.shell.matching(command("ms", "app", "delete")))
+        self.assertFalse(ctx.http.calls)
 
-    def test_missing_receipts_or_partial_app_registration_are_not_silently_skipped(self):
+    def test_missing_receipts_are_not_silently_skipped(self):
         ctx = self.context()
         ctx.state.data["target"] = {}
         with self.assertRaisesRegex(deploy.Blocked, "original deployment receipts"):
             deploy.teardown_snapshot(ctx)
-        ctx = self.context()
-        ctx.state.section("app")["init_started_at"] = "earlier"
-        ctx.shell = FakeShell(self.state_rules({}))
-        with mock.patch.object(deploy.runtime, "check_environment"), \
-                self.assertRaisesRegex(deploy.Blocked, "registration may exist"):
-            deploy.teardown_snapshot(ctx)
 
-    def test_changed_app_registration_is_not_deleted(self):
-        ctx = self.context()
-        ctx.state.section("app")["app_id"] = "original-app"
-        (ctx.root / "ms.config.json").write_text(json.dumps({
-            "appId": "other-app", "environmentId": self.ENVIRONMENT,
-        }))
-        ctx.shell = FakeShell(self.state_rules({}))
-        with mock.patch.object(deploy.runtime, "check_environment"), \
-                self.assertRaisesRegex(deploy.Blocked, "different app"):
-            deploy.teardown_snapshot(ctx)
-        self.assertFalse(ctx.shell.matching(command("ms", "app", "delete")))
-
-    def test_runtime_deletes_exact_app_and_agent_only_after_approval(self):
+    def test_runtime_deletes_exact_app_agent_and_toolbox_only_after_approval(self):
         ctx = self.context(yes=True, allow_delete=True)
-        snapshot = self.snapshot(app="my-app")
-        found = {"status": "found", "bot_id": ONTOLOGY}
-        with mock.patch.object(deploy, "studio_command", return_value=found), \
-                self.assertRaises(deploy.NeedsApproval):
-            deploy.delete_runtime(ctx, snapshot)
-        self.assertFalse(ctx.shell.calls)
-        ctx.args.approve = {"runtime-delete": True}
-        ctx.shell = FakeShell([
-            (command("ms", "app", "delete"), deploy.Result(0)),
-            (command("dotnet", "pac", "copilot", "delete"), deploy.Result(0)),
-        ])
-        with mock.patch.object(deploy, "studio_command", side_effect=[found, {"status": "missing"}]), \
-                mock.patch.object(deploy, "ms_signed_in", return_value=True):
-            deploy.delete_runtime(ctx, snapshot)
-        self.assertEqual(ctx.shell.calls, [
-            ["ms", "app", "delete", "--app", "my-app", "--environment-id", self.ENVIRONMENT,
-             "--force", "--non-interactive"],
-            ["dotnet", "pac", "copilot", "delete", "--bot", ONTOLOGY, "--environment", self.URL, "--confirm"],
-        ])
-        with mock.patch.object(deploy, "studio_command", return_value={"status": "missing"}):
-            deploy.delete_runtime(ctx, snapshot)
-        self.assertEqual(len(ctx.shell.calls), 2)
-
-    def test_unconfirmed_agent_deletion_is_observed_not_resubmitted(self):
-        ctx = self.context(allow_delete=True, approve={"runtime-delete": True})
-        found = {"status": "found", "bot_id": ONTOLOGY}
-        ctx.shell = FakeShell([(command("dotnet", "pac", "copilot", "delete"), deploy.Result(0))])
-        with mock.patch.object(deploy, "studio_command", return_value=found):
-            with self.assertRaisesRegex(deploy.Waiting, "not confirmed"):
-                deploy.delete_runtime(ctx, self.snapshot())
-            with self.assertRaisesRegex(deploy.Waiting, "not yet confirmed"):
-                deploy.delete_runtime(ctx, self.snapshot())
-        self.assertEqual(len(ctx.shell.calls), 1)
-        with mock.patch.object(deploy, "studio_command", return_value={"status": "missing"}):
+        ctx.shell = FakeShell([TOKEN_RULE])
+        ctx.http = self.runtime_http()
+        with self.assertRaises(deploy.NeedsApproval) as stop:
             deploy.delete_runtime(ctx, self.snapshot())
+        self.assertFalse([call for call in ctx.http.calls if call[0] == "DELETE"])
+        for name in ("Container App ca-demo-web", "hosted agent demo-assistant", "toolbox demo-tools"):
+            self.assertIn(name, stop.exception.approval["description"])
+        ctx.args.approve = {"runtime-delete": True}
+        ctx.http = self.runtime_http()
+        deploy.delete_runtime(ctx, self.snapshot())
+        deletes = [url for method, url, *_ in ctx.http.calls if method == "DELETE"]
+        self.assertEqual(len(deletes), 3)
+        self.assertTrue(deletes[0].startswith(deploy.ARM_API + APP_ID))
+        self.assertTrue(deletes[1].endswith("/agents/demo-assistant?api-version=v1&force=true"))
+        self.assertTrue(deletes[2].endswith("/toolboxes/demo-tools?api-version=v1"))
+        self.assertIn("runtime_deleted_at", ctx.state.section("destroy"))
+        # Already gone: nothing to approve or delete.
+        ctx.args.approve, ctx.http = {}, self.runtime_http(app=(404,), agent=(404,), toolbox=(404,))
+        deploy.delete_runtime(ctx, self.snapshot())
+        self.assertFalse([call for call in ctx.http.calls if call[0] == "DELETE"])
+
+    def test_a_deletion_still_running_is_observed_on_rerun(self):
+        ctx = self.context(allow_delete=True, approve={"runtime-delete": True})
+        ctx.shell = FakeShell([TOKEN_RULE])
+        ctx.http = self.runtime_http(app=(200,), agent=(404,), toolbox=(404,))
+        ctx.deadline = ctx.clock() + 30
+        with self.assertRaisesRegex(deploy.Waiting, "still being deleted"):
+            deploy.delete_runtime(ctx, self.snapshot())
+        self.assertNotIn("runtime_deleted_at", ctx.state.section("destroy"))
+        ctx.http = self.runtime_http(app=(404,), agent=(404,), toolbox=(404,))
+        deploy.delete_runtime(ctx, self.snapshot())
         self.assertIn("runtime_deleted_at", ctx.state.section("destroy"))
 
     def test_foundry_purge_requires_separate_approval_and_confirms_absence(self):
@@ -578,12 +579,10 @@ class TeardownTests(unittest.TestCase):
 
     def test_delete_failures_stop_before_terraform_or_completion(self):
         ctx = self.context(allow_delete=True, approve={"runtime-delete": True})
-        ctx.shell = FakeShell([(command("ms", "app", "delete"), deploy.Result(1, "", "denied"))])
-        with mock.patch.object(deploy, "studio_command", return_value={"status": "missing"}), \
-                mock.patch.object(deploy, "ms_signed_in", return_value=True), \
-                self.assertRaisesRegex(deploy.Blocked, "ms app delete failed"):
-            deploy.delete_runtime(ctx, self.snapshot(app="my-app"))
-        self.assertNotIn("app_deleted_at", ctx.state.section("destroy"))
+        ctx.shell = FakeShell([TOKEN_RULE])
+        ctx.http = self.runtime_http(agent=(404,), toolbox=(404,), deleted=403)
+        with self.assertRaisesRegex(deploy.Blocked, "Deleting the Container App"):
+            deploy.delete_runtime(ctx, self.snapshot())
         self.assertNotIn("runtime_deleted_at", ctx.state.section("destroy"))
 
     def test_no_infrastructure_changes_still_cleans_runtime_and_reports_retention(self):
@@ -599,7 +598,7 @@ class TeardownTests(unittest.TestCase):
         steps = " ".join(deploy.teardown_next(snapshot))
         self.assertIn(WORKSPACE, steps)
         self.assertIn("not immediate data erasure", steps)
-        self.assertIn("not deleted automatically", steps)
+        self.assertIn("are not deleted", steps)
         self.assertTrue((ctx.root / "infra" / "terraform.tfvars").exists())
 
     def test_runtime_deletion_precedes_full_destroy_and_purge_and_failed_apply_keeps_inventory(self):
@@ -798,7 +797,7 @@ class BootstrapTests(unittest.TestCase):
         with self.assertRaisesRegex(deploy.Blocked, "CommitToGit"):
             deploy.phase_bootstrap(bootstrap_context(self, root, http))
 
-    def test_binding_checks_target_local_pins_not_placeholders(self):
+    def test_binding_checks_target_local_source_not_placeholders(self):
         decode = deploy.base64.b64decode
 
         def parts(definition):
@@ -807,7 +806,31 @@ class BootstrapTests(unittest.TestCase):
         self.assertEqual(deploy.binding_problems(parts(tmdl(True)), WORKSPACE, LAKEHOUSE), [])
         self.assertIn("demo_sites has no partition yet", deploy.binding_problems(parts(tmdl(False)), WORKSPACE, LAKEHOUSE))
         placeholder = deploy.binding_problems(parts(tmdl(True, "00000000-0000-0000-0000-000000000000")), WORKSPACE, LAKEHOUSE)
-        self.assertIn("demo_assets is not pinned to the DEV workspace", placeholder)
+        self.assertEqual(placeholder, ["expressions.tmdl does not read the DEV lakehouse"])
+        rerouted = parts(tmdl(True))
+        rerouted["tables/demo_assets.tmdl"] = rerouted["tables/demo_assets.tmdl"].replace(
+            "expressionSource: ScenarioLakehouse", "expressionSource: DatabaseQuery")
+        self.assertEqual(deploy.binding_problems(rerouted, WORKSPACE, LAKEHOUSE),
+                         ["demo_assets does not read dbo.demo_assets through ScenarioLakehouse"])
+        unpinned = parts(tmdl(True))
+        unpinned["tables/demo_sites.tmdl"] = re.sub(r"(?m)^.*ONT_PinnedAtUtc.*\n", "", unpinned["tables/demo_sites.tmdl"])
+        self.assertEqual(deploy.binding_problems(unpinned, WORKSPACE, LAKEHOUSE), ["demo_sites has no source pins yet"])
+        # A table-level marker does not pin the partition.
+        unpinned["tables/demo_sites.tmdl"] += "\tannotation ONT_PinnedAtUtc = 2026-01-01T00:00:00.000Z\n"
+        self.assertEqual(deploy.binding_problems(unpinned, WORKSPACE, LAKEHOUSE), ["demo_sites has no source pins yet"])
+        root = f"https://onelake.dfs.fabric.microsoft.com/{WORKSPACE}/{LAKEHOUSE}"
+        source = f'Source = AzureStorage.DataLake("{root}", [HierarchicalNavigation=true])'
+        self.assertIn(source, parts(tmdl(True))["expressions.tmdl"])
+        # The DEV URL counts only as the complete URL of the returned Source step.
+        for decoy in (f'Source = Sql.Database("sql.example", "Scenario") // {root}',
+                      f'Unused = AzureStorage.DataLake("{root}", [HierarchicalNavigation=true]),\n'
+                      '\t\t\tSource = Sql.Database("sql.example", "Scenario")',
+                      source.replace(root, f"{root}/Files")):
+            with self.subTest(decoy=decoy):
+                misrouted = parts(tmdl(True))
+                misrouted["expressions.tmdl"] = misrouted["expressions.tmdl"].replace(source, decoy)
+                self.assertEqual(deploy.binding_problems(misrouted, WORKSPACE, LAKEHOUSE),
+                                 ["expressions.tmdl does not read the DEV lakehouse"])
 
 
 class NativeBootstrapTests(unittest.TestCase):
@@ -1339,35 +1362,27 @@ class ConsentTests(unittest.TestCase):
 
 
 ACCOUNT = {"id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "tenantId": TENANT, "user": {"type": "user"}}
-MS_STATUS = {"success": True, "signedIn": True, "activeAccount": {"homeAccountId": f"user.{TENANT}"}}
 REPOSITORY_RULES = [
     (command("gh", "auth", "status"), deploy.Result(0)),
     (command("git", "remote", "get-url", "origin"), deploy.Result(0, "https://github.com/example/demo-repo.git\n")),
     (command("gh", "repo", "view"), deploy.Result(0, json.dumps({"nameWithOwner": "example/demo-repo",
                                                                  "isTemplate": False}))),
-    (command("dotnet", "tool", "restore"), deploy.Result(0)),
 ]
 SIGNED_IN = [
     (command("az", "account", "show"), deploy.Result(0, json.dumps(ACCOUNT))),
     TOKEN_RULE,
-    (command("dotnet", "pac", "env", "who"), deploy.Result(0, "Org URL: https://org.crm.dynamics.com/\n")),
-    (command("ms", "auth", "status"), deploy.Result(0, json.dumps(MS_STATUS))),
 ]
 
 
 def signing_in(args):
-    return args[:2] == ["az", "login"] or args[:4] == ["dotnet", "pac", "auth", "create"] or args[1:3] == ["auth", "login"]
+    return args[:2] == ["az", "login"]
 
 
 class SignInTests(unittest.TestCase):
-    ENVIRONMENT = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
-    URL = "https://org.crm.dynamics.com"
     SUBSCRIPTION = ACCOUNT["id"]
 
     def context(self, rules, phases=deploy.PHASES, **overrides):
-        for key, value in (("environment_id", self.ENVIRONMENT), ("environment_url", self.URL),
-                           ("subscription", self.SUBSCRIPTION)):
-            overrides.setdefault(key, value)
+        overrides.setdefault("subscription", self.SUBSCRIPTION)
         ctx = make_context(self, make_root(self), FakeShell([*rules, *REPOSITORY_RULES]), **overrides)
         ctx.phases = phases
         return ctx
@@ -1380,11 +1395,12 @@ class SignInTests(unittest.TestCase):
         probes = ctx.shell.matching(command("az", "account", "get-access-token"))
         requested = {call[call.index("--resource" if "--resource" in call else "--scope") + 1] for call in probes}
         self.assertEqual(requested, {deploy.ARM_API + "/", deploy.GRAPH_API, deploy.FABRIC_API, "api://client/.default",
-                                     deploy.SEARCH_RESOURCE, self.URL, deploy.studio.POWERAPPS_RESOURCE})
+                                     deploy.SEARCH_RESOURCE, deploy.FOUNDRY_RESOURCE})
         self.assertTrue(all(call[call.index("--tenant") + 1] == TENANT for call in probes))
-        for expected in ("GitHub CLI for example/demo-repo", f"Azure CLI in tenant {TENANT}",
-                         f"Power Platform CLI on {self.URL}", "Managed Runtime CLI"):
+        for expected in ("GitHub CLI for example/demo-repo", f"Azure CLI in tenant {TENANT}", "Microsoft Foundry"):
             self.assertIn(expected, summary)
+        # Only GitHub CLI and Azure CLI sign in; no other publishing CLI is involved.
+        self.assertFalse(ctx.shell.matching(lambda args: args[0] in ("dotnet", "ms", "pac")))
 
     def test_missing_sign_ins_run_back_to_back_with_codes_only_on_stderr(self):
         signed, seen = set(), {}
@@ -1404,35 +1420,23 @@ class SignInTests(unittest.TestCase):
             (command("az", "login"), sign_in("az")),
             (command("az", "account", "set"), deploy.Result(0)),
             TOKEN_RULE,
-            (command("dotnet", "pac", "env", "who"), signed_in("pac", SIGNED_IN[2][1])),
-            (command("dotnet", "pac", "env", "select"), deploy.Result(1, "", "No profiles")),
-            (command("dotnet", "pac", "auth", "create"), sign_in("pac")),
-            (command("ms", "auth", "status"), signed_in("ms", SIGNED_IN[3][1])),
-            (command("ms", "auth", "login"), sign_in("ms")),
         ])
         deploy.phase_signin(ctx)
         self.assertEqual(ctx.shell.matching(lambda args: signing_in(args) or args[:3] == ["az", "account", "set"]), [
             ["az", "login", "--use-device-code"],
             ["az", "account", "set", "--subscription", self.SUBSCRIPTION],
-            ["dotnet", "pac", "auth", "create", "--environment", self.ENVIRONMENT, "--deviceCode"],
-            ["ms", "auth", "login", "--device-code"],
         ])
         self.assertTrue(all(options["stream"] and not options["interactive"] for options in seen.values()))
         self.assertEqual(seen["az"]["env"]["AZURE_CORE_LOGIN_EXPERIENCE_V2"], "off")
-        self.assertIsNone(seen["pac"]["env"])
-        self.assertTrue(any(message.startswith("Sign-in 3 of 3: Managed Runtime CLI") for message in ctx.messages))
+        self.assertTrue(any(message.startswith("Sign-in 1 of 1: Azure CLI") for message in ctx.messages))
 
     def test_declining_lists_every_missing_sign_in_at_once(self):
-        ctx = self.context([(command("az", "account", "show"), deploy.Result(1)),
-                            (command("dotnet", "pac", "env"), deploy.Result(1)),
-                            (command("ms", "auth", "status"), deploy.Result(1))])
+        ctx = self.context([(command("az", "account", "show"), deploy.Result(1))])
         ctx.interactive, ctx.prompt = True, lambda text: "n\n"
         with self.assertRaises(deploy.Waiting) as stop:
             deploy.phase_signin(ctx)
         steps = " ".join(stop.exception.next_steps)
-        for expected in ("Run: az login --use-device-code", f"Then: az account set --subscription {self.SUBSCRIPTION}",
-                         f"Run: dotnet pac auth create --environment {self.ENVIRONMENT} --deviceCode",
-                         "Run: ms auth login --device-code"):
+        for expected in ("Run: az login --use-device-code", f"Then: az account set --subscription {self.SUBSCRIPTION}"):
             self.assertIn(expected, steps)
         self.assertFalse(ctx.shell.matching(signing_in))
 
@@ -1450,16 +1454,16 @@ class SignInTests(unittest.TestCase):
         self.assertIn("Run: gh auth login --hostname github.com --git-protocol https --web", stop.exception.next_steps)
         self.assertEqual(ctx.shell.calls, [["gh", "auth", "status", "--hostname", "github.com"]])
 
-    def test_the_environment_is_chosen_before_signing_in_only_when_the_agent_runs(self):
-        ctx = self.context(SIGNED_IN, environment_id=None, environment_url=None)
-        with self.assertRaises(deploy.Waiting) as stop:
-            deploy.phase_signin(ctx)
-        self.assertIn("--through verify", " ".join(stop.exception.next_steps))
-        self.assertFalse(ctx.shell.matching(command("az")))
-        ctx = self.context(SIGNED_IN, deploy.PHASES[:deploy.PHASES.index("verify") + 1],
-                           environment_id=None, environment_url=None)
+    def test_the_foundry_token_is_needed_only_when_the_agent_or_app_runs(self):
+        ctx = self.context(SIGNED_IN, deploy.PHASES[:deploy.PHASES.index("verify") + 1])
+        self.assertEqual(deploy.sign_in_needs(ctx), {"foundry": False})
         deploy.phase_signin(ctx)
-        self.assertFalse(ctx.shell.matching(lambda args: args[0] in ("dotnet", "ms")))
+        probes = ctx.shell.matching(command("az", "account", "get-access-token"))
+        self.assertNotIn(deploy.FOUNDRY_RESOURCE, [call[call.index("--resource") + 1] for call in probes
+                                                   if "--resource" in call])
+        for phases in (deploy.PHASES, ("signin", "app")):
+            ctx.phases = phases
+            self.assertEqual(deploy.sign_in_needs(ctx), {"foundry": True})
 
     def test_only_the_token_audiences_that_fail_are_signed_in_again(self):
         def token(args, options):
@@ -1468,13 +1472,13 @@ class SignInTests(unittest.TestCase):
 
         account = (command("az", "account", "show"), deploy.Result(0, json.dumps(ACCOUNT)))
         ctx = self.context([account, (command("az", "account", "get-access-token"), token)])
-        pending, _ = deploy.missing_sign_ins(ctx, {"pac": None, "ms": False})
+        pending, _ = deploy.missing_sign_ins(ctx, {"foundry": True})
         self.assertEqual([(command, after) for _, command, after in pending], [(
             ["az", "login", "--use-device-code", "--tenant", TENANT, "--scope", deploy.FABRIC_API + "/.default"],
             (["az", "account", "set", "--subscription", self.SUBSCRIPTION],))])
         # Without a Resource Manager token the whole sign-in expired: one plain login, not one per audience.
         ctx = self.context([account, (command("az", "account", "get-access-token"), deploy.Result(1))])
-        pending, _ = deploy.missing_sign_ins(ctx, {"pac": None, "ms": False})
+        pending, _ = deploy.missing_sign_ins(ctx, {"foundry": True})
         self.assertEqual([command for _, command, _ in pending], [["az", "login", "--use-device-code", "--tenant", TENANT]])
 
     def test_a_service_principal_or_another_tenant_is_not_the_deploying_user(self):
@@ -1486,42 +1490,31 @@ class SignInTests(unittest.TestCase):
         ctx = self.context([(command("az", "account", "show"), deploy.Result(0, json.dumps(ACCOUNT)))], tenant=other)
         self.assertEqual(deploy.azure_sign_in(ctx)[2], ["az", "login", "--use-device-code", "--tenant", other])
 
-    def test_a_signed_in_pac_profile_is_pointed_at_the_environment_instead_of_signing_in(self):
-        who = iter([deploy.Result(0, "Org URL: https://other.crm.dynamics.com/\n"), SIGNED_IN[2][1]])
-        ctx = self.context([(command("dotnet", "pac", "env", "who"), lambda args, options: next(who)),
-                            (command("dotnet", "pac", "env", "select"), deploy.Result(0))])
-        self.assertTrue(deploy.pac_ready(ctx, self.URL))
-        select, = ctx.shell.matching(command("dotnet", "pac", "env", "select"))
-        self.assertEqual(select[-1], self.URL)
-        self.assertFalse(ctx.shell.matching(command("dotnet", "pac", "auth")))
-
-    def test_teardown_signs_in_only_to_the_clis_it_will_use(self):
+    def test_teardown_signs_in_only_to_the_audiences_it_will_use(self):
         ctx = self.context([], ("signin", "destroy"))
-        ctx.state.section("choices").update(environment_id=self.ENVIRONMENT, environment_url=self.URL)
-        self.assertEqual(deploy.sign_in_needs(ctx), {"pac": None, "ms": False})
-        ctx.state.section("agent")["workspace"] = ".artifacts/studio/iq_demo_assistant"
-        (ctx.root / "ms.config.json").write_text("{}", encoding="utf-8")
-        self.assertEqual(deploy.sign_in_needs(ctx), {"pac": (self.ENVIRONMENT, self.URL), "ms": True})
-        ctx.state.section("destroy").update(app_deleted_at="earlier", runtime_deleted_at="earlier")
-        self.assertEqual(deploy.sign_in_needs(ctx), {"pac": None, "ms": False})
+        self.assertEqual(deploy.sign_in_needs(ctx), {"foundry": False})
+        ctx.state.section("agent")["name"] = "demo-assistant"
+        self.assertEqual(deploy.sign_in_needs(ctx), {"foundry": True})
+        ctx.state.section("destroy").update(runtime_deleted_at="earlier")
+        self.assertEqual(deploy.sign_in_needs(ctx), {"foundry": False})
         # Teardown deletes the registration behind the deployment scope, so a resumed `down` never requires it.
         ctx.state.section("consent")["login_scope"] = "api://client/.default"
         self.assertNotIn("the Fabric deployment scope",
-                         [label for label, _ in deploy.token_audiences(ctx, {"pac": None, "ms": False})])
+                         [label for label, _ in deploy.token_audiences(ctx, {"foundry": False})])
         ctx.phases = deploy.PHASES
         self.assertIn("the Fabric deployment scope",
-                      [label for label, _ in deploy.token_audiences(ctx, {"pac": None, "ms": False})])
+                      [label for label, _ in deploy.token_audiences(ctx, {"foundry": False})])
 
     def test_the_last_sign_in_round_is_checked_before_giving_up(self):
         logins = []
-        other = dict(MS_STATUS, activeAccount={"homeAccountId": "user.ffffffff-ffff-4fff-8fff-ffffffffffff"})
 
-        def status(args, options):
-            return deploy.Result(0, json.dumps(MS_STATUS if len(logins) == 3 else other))
+        def show(args, options):
+            return deploy.Result(0, json.dumps(ACCOUNT)) if len(logins) == 3 else deploy.Result(1, "", "not signed in")
 
-        ctx = self.context([*SIGNED_IN[:3], (command("ms", "auth", "status"), status),
-                            (command("ms", "auth", "login"), lambda args, options: logins.append(args) or deploy.Result(0))])
-        self.assertIn("Managed Runtime CLI", deploy.phase_signin(ctx))
+        ctx = self.context([(command("az", "account", "show"), show), TOKEN_RULE,
+                            (command("az", "account", "set"), deploy.Result(0)),
+                            (command("az", "login"), lambda args, options: logins.append(args) or deploy.Result(0))])
+        self.assertIn("Azure CLI in tenant", deploy.phase_signin(ctx))
         self.assertEqual(len(logins), 3)
 
 
@@ -1529,7 +1522,6 @@ class PermissionTests(unittest.TestCase):
     def context(self):
         ctx = make_context(self, make_root(self))
         ctx.state.section("target")["subscription_id"] = "sub-1"
-        ctx.state.section("choices")["environment_id"] = "env-1"
         ctx.state.section("consent")["api_permissions_url"] = "https://portal.azure.com/#approve"
         return ctx
 
@@ -1554,12 +1546,11 @@ class PermissionTests(unittest.TestCase):
                           "│ StatusCode: 403 Forbidden", ("fabric_capacity_admins",)),
             ("config", "terraform init failed; nothing was planned.\nStatus=403 Code=\"AuthorizationPermissionMismatch\"",
              ("Storage Blob Data Contributor",)),
-            ("agent", "Studio agent step blocked: GET /api/data/v9.2/bots failed with HTTP 403: missing prvReadbot privilege",
-             ("Environment Maker", "env-1")),
-            ("agent", "pac copilot init failed (exit 1).\nThe connector is blocked by a Data Loss Prevention policy.",
-             ("data policies of environment env-1",)),
-            ("app", "ms app init failed (exit 1).\nThe user does not have a valid license for this operation.",
-             ("Power Apps Premium",)),
+            ("agent", "Creating hosted agent demo-assistant failed with HTTP 403 PermissionDenied: The principal lacks "
+                      "Microsoft.CognitiveServices/accounts/AIServices/agents/write", ("Foundry User",)),
+            ("app", "Building web:abc in crdemo failed (exit 1).\nAuthorizationFailed: The client 'u' does not have "
+                    "authorization to perform action 'Microsoft.ContainerRegistry/registries/listBuildSourceUploadUrl/action' "
+                    "over scope 'x'", ("Contributor (or Owner) on subscription sub-1",)),
         )
         for phase, text, fragments in cases:
             with self.subTest(phase=phase, text=text[:60]):
@@ -1571,11 +1562,9 @@ class PermissionTests(unittest.TestCase):
             ("bootstrap", "Bulk Import with the Bootstrap plan failed with HTTP 403 FeatureNotAvailable: no plans"),
             ("verify", "fabricOntology retrieval is not verified: Retrieval from scenario failed with HTTP 403"),
             ("platform", "terraform apply failed during platform; state is preserved.\n│ Error: quota exceeded"),
-            ("app", "ms app init failed (exit 1).\nMicrosoft GitHub App can't access the bound repository."),
-            ("app", "npm ci failed (exit 1).\nnpm ERR! 403 403 Forbidden - GET https://registry.npmjs.org/react"),
-            ("app", "ms app init failed (exit 1).\nnpm ERR! 403 403 Forbidden - GET https://registry.npmjs.org/vite"),
-            ("agent", "dotnet tool restore failed (exit 1).\nerror NU1301: Unable to load the service index for "
-                      "https://pkgs.example/nuget: 401 (Unauthorized). Microsoft.PowerApps.CLI.Tool"),
+            ("app", "Building web:abc in crdemo failed (exit 1).\nnpm ERR! 403 403 Forbidden - GET "
+                    "https://registry.npmjs.org/react"),
+            ("agent", "The hosted agent's agent-ontology answer is not verified: no scenario_ontology tool call"),
         ):
             with self.subTest(phase=phase, text=text[:60]):
                 self.assertEqual(deploy.permission_grants(ctx, phase, text), [])
@@ -1637,7 +1626,7 @@ class StateAndCliTests(unittest.TestCase):
         self.assertEqual(code, deploy.BLOCKED)
         report = json.loads(stdout.getvalue())
         self.assertIn("reusable template", report["message"])
-        # Refused in the first phase, before any Azure, Power Platform or Managed Runtime sign-in.
+        # Refused in the first phase, before any Azure sign-in.
         self.assertEqual(report["phase"], "signin")
         self.assertFalse(shell.matching(lambda args: args[0] in ("az", "dotnet", "ms")))
 
@@ -1663,261 +1652,353 @@ class StateAndCliTests(unittest.TestCase):
     def test_plan_approvals_need_a_hash_and_actions_take_none(self):
         self.assertEqual(deploy.parse_arguments(["up", "--approve", "platform=ABCDEF012345"]).approve,
                          {"platform": "abcdef012345"})
-        self.assertEqual(deploy.parse_arguments(["up", "--approve", "agent-create"]).approve, {"agent-create": True})
-        for value in ("platform", "platform=xyz", "agent-create=1", "unknown"):
+        self.assertEqual(deploy.parse_arguments(["up", "--approve", "agent-deploy"]).approve, {"agent-deploy": True})
+        for value in ("platform", "platform=xyz", "agent-deploy=1", "agent-create", "app-register", "unknown"):
             with self.assertRaises(SystemExit) as stop, contextlib.redirect_stderr(io.StringIO()):
                 deploy.parse_arguments(["up", "--approve", value])
             self.assertEqual(stop.exception.code, deploy.USAGE)
 
 
+AGENT_TREE, APP_TREE = "a" * 40, "b" * 40
+REGISTRY = {"id": f"/subscriptions/{SUBSCRIPTION}/resourceGroups/rg-demo/providers/Microsoft.ContainerRegistry/"
+                  "registries/crdemo", "name": "crdemo", "login_server": "crdemo.azurecr.io"}
+FABRIC_SERVER = f"https://api.fabric.microsoft.com/v1/mcp/dataPlane/workspaces/{WORKSPACE}/items/{ONTOLOGY}/ontologyEndpoint"
+KB_ENDPOINT = "https://srch.search.windows.net/knowledgebases/demo-knowledge/mcp?api-version=2026-08-01-preview"
+WEB_URL = "https://ca-demo-web.happysky-1234.centralus.azurecontainerapps.io"
+IDENTITY_ID = f"/subscriptions/{SUBSCRIPTION}/resourceGroups/rg-demo/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-demo-web"
+WEB_CLIENT, WEB_PRINCIPAL, API_PRINCIPAL = ("c1111111-1111-4111-8111-111111111111", "c2222222-2222-4222-8222-222222222222",
+                                            "c3333333-3333-4333-8333-333333333333")
+RUNTIME_OUTPUTS = {
+    "hosted_agent": {"name": "demo-assistant", "toolbox_name": "demo-tools", "project_endpoint": PROJECT,
+                     "responses_url": f"{PROJECT}/agents/demo-assistant/endpoint/protocols/openai/responses?api-version=v1",
+                     "toolbox_endpoint": f"{PROJECT}/toolboxes/demo-tools/mcp?api-version=v1"},
+    "container_registry": REGISTRY,
+    "model_deployments": {"chat": "chat", "embedding": "embedding"},
+    "knowledge_base_mcp_endpoint": KB_ENDPOINT,
+    "knowledge_base_connection_id": "/subscriptions/x/resourceGroups/rg/providers/Microsoft.CognitiveServices/accounts/"
+                                    "ai-demo/projects/demo-project/connections/knowledge-base",
+    "fabric_iq_connections": {"scenario": {"id": "fabric-id", "name": "fabric-scenario", "server_url": FABRIC_SERVER}},
+    "web_app": {"name": "ca-demo-web", "url": WEB_URL, "environment_id": ENVIRONMENT_ID, "identity_id": IDENTITY_ID,
+                "client_id": WEB_CLIENT, "service_principal_object_id": WEB_PRINCIPAL, "tenant_id": TENANT,
+                "scope": "https://ai.azure.com/user_impersonation", "api_principal_object_id": API_PRINCIPAL,
+                "api_permissions_url": "https://portal.azure.com/#web"},
+    "application_insights_connection_string": "InstrumentationKey=00000000-0000-4000-8000-000000000000;"
+                                              "IngestionEndpoint=https://centralus-0.in.applicationinsights.azure.com/",
+}
+
+
+def completed(*items, text):
+    return {"id": "caresp_1", "object": "response", "status": "completed", "output": [
+        *items, {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": text}]}]}
+
+
+def tool_turn(name, output, text):
+    return completed({"type": "function_call", "name": name, "call_id": "call_1", "arguments": "{}", "status": "completed"},
+                     {"type": "function_call_output", "call_id": "call_1", "output": output}, text=text)
+
+
+def agent_replies(ontology_output="Pump B (Maintenance) is at North Works.", document_output="starter.txt: Git stores"):
+    def respond(url, body):
+        question = body["input"]
+        if question.startswith("connection proof "):
+            return reply(body=completed(text=deploy.hosted.PROOF_PREFIX + question))
+        if question == deploy.ONTOLOGY_QUESTION:
+            return reply(body=tool_turn("scenario_ontology___ask_ontology", ontology_output,
+                                        "Pump B is in Maintenance at North Works. (Source: ontology)"))
+        return reply(body=tool_turn("knowledge_base___knowledge_base_retrieve", document_output,
+                                    "Git stores definitions. (Source: starter.txt)"))
+    return respond
+
+
 class AgentAndAppTests(unittest.TestCase):
-    SCHEMA = "iq_demo_assistant"
-    ENVIRONMENT = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+    def context(self, rules=(), *, built=False, **overrides):
+        state = {"built": set(["scenario-assistant:" + AGENT_TREE[:16], "web:" + APP_TREE[:16]] if built else [])}
 
-    def agent_context(self, root, rules):
-        shell = FakeShell([
-            (command("dotnet", "tool", "restore"), deploy.Result(0)),
-            (command("dotnet", "pac", "env", "who"), deploy.Result(0, "Org URL: https://org.crm.dynamics.com/\n")),
-            (command("dotnet", "pac", "copilot", "push"), deploy.Result(0)),
-            (command("dotnet", "pac", "copilot", "publish"), deploy.Result(0)),
-            (studio("find"), deploy.Result(0, json.dumps({"status": "found", "bot_id": "bot"}))),
-            (studio("render"), deploy.Result(0, json.dumps({"status": "rendered"}))),
-            *rules,
-        ])
-        ctx = make_context(self, root, shell, environment_id=self.ENVIRONMENT,
-                           environment_url="https://org.crm.dynamics.com")
-        ctx.state.section("target").update(tenant_id=TENANT)
-        ctx.cache["outputs"] = {"studio_agent_schema_name": self.SCHEMA, "studio_agent_display_name": "demo assistant",
-                                "knowledge_base_name": "demo-knowledge", "dev_workspace_id": WORKSPACE,
-                                "search_endpoint": "https://srch.search.windows.net",
-                                "ontology_knowledge_sources": {"scenario": {"ontology_id": ONTOLOGY}}}
-        return ctx, shell
+        def show(args, options):
+            image = args[args.index("--image") + 1]
+            return deploy.Result(0) if image in state["built"] else deploy.Result(1, "", f"{image} not found")
 
-    def test_the_agent_waits_for_the_owner_to_fix_their_connections(self):
-        root = make_root(self)
-        (root / ".artifacts" / "studio" / self.SCHEMA / ".mcs").mkdir(parents=True)
-        plan = {"status": "plan", "sign_in": "https://make.powerapps.com/environments/env/connections",
-                "connections": {"shared_fabriciqmcpserver": {"action": "sign-in", "connection": "a" * 32},
-                                "shared_azureaisearchfoundryiq": {"action": "reuse", "connection": "b" * 32,
-                                                                  "status": "Connected"}}}
-        ctx, shell = self.agent_context(root, [(studio("connections"), deploy.Result(0, json.dumps(plan)))])
-        with self.assertRaises(deploy.Waiting) as stop:
+        def build(args, options):
+            state["built"].add(args[args.index("--image") + 1])
+            return deploy.Result(0, "build log")
+
+        shell = FakeShell([*rules, TOKEN_RULE, *GIT_RULES,
+                           (command("git", "rev-parse", f"HEAD:{deploy.AGENT_SOURCE}"), deploy.Result(0, AGENT_TREE)),
+                           (command("git", "rev-parse", f"HEAD:{deploy.APP_SOURCE}"), deploy.Result(0, APP_TREE)),
+                           (command("az", "acr", "repository", "show"), show),
+                           (command("az", "acr", "build"), build)])
+        ctx = make_context(self, make_root(self), shell, **overrides)
+        ctx.state.section("target").update(tenant_id=TENANT, subscription_id=SUBSCRIPTION)
+        ctx.cache["outputs"] = json.loads(json.dumps(RUNTIME_OUTPUTS))
+        ctx.cache["variables"].update(github_branch_name="main", project_name="demo")
+        return ctx
+
+    def rendered(self, ctx, image=f"crdemo.azurecr.io/scenario-assistant:{AGENT_TREE[:16]}"):
+        definition = deploy.hosted.render(ctx.root / deploy.AGENT_SOURCE / "hosted-agent.json", {
+            "chat_deployment": "chat", "toolbox_endpoint": RUNTIME_OUTPUTS["hosted_agent"]["toolbox_endpoint"],
+            "fabric_iq_server_url": FABRIC_SERVER, "fabric_iq_connection": "fabric-scenario",
+            "knowledge_base_mcp_endpoint": KB_ENDPOINT, "knowledge_base_connection": "knowledge-base"})
+        return definition, deploy.hosted.agent_definition(definition["agent"], image)
+
+    def agent_http(self, ctx, *, existing=False, status="active", responses=None):
+        definition, desired = self.rendered(ctx)
+        http = FakeHttp()
+        toolbox = reply(body={"name": "demo-tools", "default_version": "1"})
+        latest = {"version": "1", "status": status, "definition": desired}
+        http.add("GET", r"/toolboxes/demo-tools\?api-version=v1$", *([toolbox] if existing else [reply(404), toolbox]))
+        http.add("GET", r"/toolboxes/demo-tools/versions/1\?api-version=v1$", reply(body=definition["toolbox"]))
+        http.add("POST", r"/toolboxes/demo-tools/versions\?api-version=v1$", reply(body={"version": "1"}))
+        http.add("GET", r"/agents/demo-assistant\?api-version=v1$",
+                 reply(body={"name": "demo-assistant", "versions": {"latest": latest}}) if existing else reply(404))
+        http.add("POST", rf"{re.escape(PROJECT)}/agents\?api-version=v1$",
+                 reply(body={"name": "demo-assistant", "versions": {"latest": dict(latest, status="creating")}}))
+        http.add("POST", r"/agents/demo-assistant/versions\?api-version=v1$", reply(body=dict(latest, version="2")))
+        http.add("GET", r"/agents/demo-assistant/versions/\d+\?api-version=v1$",
+                 reply(body={"status": "creating"}),
+                 reply(body={"status": status, "instance_identity": {"principal_id": "agent-principal"}}))
+        http.add("POST", r"/endpoint/protocols/openai/responses\?api-version=v1$", responses or agent_replies())
+        return http
+
+    def test_a_cold_agent_session_is_retried_but_a_refusal_is_not(self):
+        url = RUNTIME_OUTPUTS["hosted_agent"]["responses_url"]
+        for replies, expected_calls, answered in (([reply(424), reply(503), reply(body={"output": []})], 3, True),
+                                                  ([reply(403)], 1, False), ([reply(503)], 6, False)):
+            ctx = self.context()
+            ctx.http = FakeHttp()
+            ctx.http.add("POST", r"/responses\?api-version=v1$", *replies)
+            if answered:
+                self.assertEqual(deploy.invoke_agent(ctx, url, "question"), {"output": []})
+            else:
+                with self.assertRaises(deploy.ServiceError):
+                    deploy.invoke_agent(ctx, url, "question")
+            self.assertEqual(len(ctx.http.posts(r"/responses")), expected_calls)
+
+    def test_the_agent_is_published_once_after_approval_and_proved_as_the_user(self):
+        ctx = self.context()
+        ctx.http = self.agent_http(ctx)
+        with self.assertRaises(deploy.NeedsApproval) as stop:
             deploy.phase_agent(ctx)
-        self.assertIn(plan["sign_in"], " ".join(stop.exception.next_steps))
-        self.assertFalse(shell.matching(lambda args: "--apply" in args))
-        self.assertEqual(len(shell.matching(command("dotnet", "pac", "copilot", "push"))), 1)
-        find, = shell.matching(studio("find"))
-        self.assertEqual(find[find.index("--environment-id") + 1], self.ENVIRONMENT)
+        description = stop.exception.approval["description"]
+        for fragment in ("build image scenario-assistant:" + AGENT_TREE[:16], "toolbox demo-tools",
+                         "hosted agent demo-assistant"):
+            self.assertIn(fragment, description)
+        self.assertFalse(ctx.shell.matching(command("az", "acr", "build")))
+        self.assertFalse(ctx.http.posts(r"/toolboxes|/agents"))
 
-    def test_a_synchronizing_publish_is_observed_not_repeated(self):
-        root = make_root(self)
-        project = root / ".artifacts" / "studio" / self.SCHEMA
-        (project / ".mcs").mkdir(parents=True)
-        connected = {"status": "connected", "connections": {
-            "shared_fabriciqmcpserver": {"action": "reuse", "connection": "a" * 32, "status": "Connected"},
-            "shared_azureaisearchfoundryiq": {"action": "reuse", "connection": "b" * 32, "status": "Connected"}}}
-        reports = [{"status": "blocked", "blockers": ["The agent is not published and synchronized (state: Pending); "
-                                                      "recheck after publishing finishes."]}] * 2 + [{"status": "ready"}]
-        ctx, shell = self.agent_context(root, [
-            (studio("connections"), deploy.Result(0, json.dumps(connected))),
-            (studio("configure"), deploy.Result(0, json.dumps({"status": "plan", "bot_id": "bot", "changes": []}))),
-            (studio("check"), lambda args, options: deploy.Result(0, json.dumps(reports.pop(0)))),
-        ])
-        digest = deploy.tree_digest(project)
-        ctx.state.section("agent").update(pushed=digest, published={"digest": digest, "at": "earlier", "status": "started"})
-        self.assertIn("ready", deploy.phase_agent(ctx))
-        self.assertFalse(shell.matching(command("dotnet", "pac", "copilot", "publish")))
-        self.assertFalse(shell.matching(command("dotnet", "pac", "copilot", "push")))
+        ctx.args.approve = {"agent-deploy": True}
+        ctx.http = self.agent_http(ctx)
+        self.assertIn("ready as you", deploy.phase_agent(ctx))
+        build, = ctx.shell.matching(command("az", "acr", "build"))
+        self.assertEqual(build[build.index("--platform") + 1], "linux/amd64")
+        self.assertEqual(build[-2], deploy.AGENT_SOURCE)
+        (toolbox_url, toolbox), = ctx.http.posts(r"/toolboxes/demo-tools/versions")
+        labels = [tool["server_label"] for tool in toolbox["tools"]]
+        self.assertEqual(labels, [deploy.ONTOLOGY_TOOL, deploy.KNOWLEDGE_TOOL])
+        self.assertEqual(toolbox["tools"][0]["project_connection_id"], "fabric-scenario")
+        self.assertEqual(toolbox["tools"][1]["server_url"], KB_ENDPOINT)
+        (_, created), = ctx.http.posts(rf"{re.escape(PROJECT)}/agents\?")
+        definition = created["definition"]
+        self.assertEqual(definition["container_configuration"]["image"],
+                         f"crdemo.azurecr.io/scenario-assistant:{AGENT_TREE[:16]}")
+        self.assertEqual(definition["environment_variables"]["TOOLBOX_ENDPOINT"],
+                         RUNTIME_OUTPUTS["hosted_agent"]["toolbox_endpoint"])
+        self.assertEqual(definition["environment_variables"]["AZURE_AI_MODEL_DEPLOYMENT_NAME"], "chat")
+        receipts = ctx.state.section("agent")
+        self.assertEqual(receipts["version"]["version"], "1")
+        self.assertEqual(receipts["identity_principal_id"], "agent-principal")
+        self.assertTrue((ctx.root / receipts["ontology"]["response"]).is_file())
+        # Tokens only go to the Foundry project.
+        self.assertTrue(all(url.startswith(PROJECT) for _, url, _, headers in ctx.http.calls if headers))
 
-    def test_a_failed_publish_is_not_repeated_without_retry_failed(self):
-        root = make_root(self)
-        project = root / ".artifacts" / "studio" / self.SCHEMA
-        (project / ".mcs").mkdir(parents=True)
-        connected = {"status": "connected", "connections": {
-            "shared_fabriciqmcpserver": {"action": "reuse", "connection": "a" * 32, "status": "Connected"},
-            "shared_azureaisearchfoundryiq": {"action": "reuse", "connection": "b" * 32, "status": "Connected"}}}
-        blocked = {"status": "blocked", "blockers": ["The agent has changes that are not published."]}
-        ctx, shell = self.agent_context(root, [
-            (studio("connections"), deploy.Result(0, json.dumps(connected))),
-            (studio("configure"), deploy.Result(0, json.dumps({"status": "plan", "bot_id": "bot", "changes": []}))),
-            (studio("check"), deploy.Result(1, json.dumps(blocked))),
-        ])
-        digest = deploy.tree_digest(project)
-        ctx.state.section("agent").update(pushed=digest, published={"digest": digest, "at": "earlier", "status": "failed"})
-        with self.assertRaisesRegex(deploy.Blocked, "publish started at earlier failed"):
+        # A rerun with everything live and unchanged only re-proves readiness.
+        ctx.args.approve = {}
+        ctx.http = self.agent_http(ctx, existing=True)
+        deploy.phase_agent(ctx)
+        self.assertFalse(ctx.http.posts(r"/toolboxes|/agents\?|/agents/demo-assistant/versions"))
+        self.assertEqual(len(ctx.shell.matching(command("az", "acr", "build"))), 1)
+
+    def test_a_changed_definition_creates_one_new_version_and_a_failed_one_needs_retry_failed(self):
+        ctx = self.context(built=True, approve={"agent-deploy": True})
+        ctx.http = self.agent_http(ctx, existing=True)
+        definition, _ = self.rendered(ctx, image="crdemo.azurecr.io/scenario-assistant:older")
+        ctx.http.routes = [route for route in ctx.http.routes if not route[1].pattern.endswith(r"/agents/demo-assistant\?api-version=v1$")]
+        ctx.http.add("GET", r"/agents/demo-assistant\?api-version=v1$", reply(body={"versions": {"latest": {
+            "version": "1", "status": "active", "definition": deploy.hosted.agent_definition(
+                definition["agent"], "crdemo.azurecr.io/scenario-assistant:older")}}}))
+        deploy.phase_agent(ctx)
+        self.assertEqual(len(ctx.http.posts(r"/agents/demo-assistant/versions")), 1)
+        self.assertEqual(ctx.state.section("agent")["version"]["version"], "2")
+
+        ctx = self.context(built=True)
+        ctx.http = self.agent_http(ctx, existing=True, status="failed")
+        with self.assertRaisesRegex(deploy.Blocked, "is failed") as stop:
             deploy.phase_agent(ctx)
-        self.assertFalse(shell.matching(command("dotnet", "pac", "copilot", "publish")))
-
-    def test_an_interrupted_app_registration_is_never_repeated_automatically(self):
-        root = make_root(self)
-        (root / "package-lock.json").write_text("{}", encoding="utf-8")
-        (root / "node_modules").mkdir()
-        status = {"success": True, "signedIn": True, "activeAccount": {"homeAccountId": f"user.{TENANT}"}}
-        ctx, shell = self.agent_context(root, [(command("ms", "auth", "status"), deploy.Result(0, json.dumps(status)))])
-        ctx.state.section("app").update(installed=deploy.sha256_file(root / "package-lock.json"),
-                                        init_started_at="earlier")
-        with self.assertRaisesRegex(deploy.Blocked, "may have registered the app") as stop:
-            deploy.phase_app(ctx)
         self.assertIn("--retry-failed", " ".join(stop.exception.next_steps))
-        self.assertFalse(shell.matching(command("ms", "app", "init")))
+        self.assertFalse(ctx.http.posts(r"/agents"))
+        ctx.args.retry_failed, ctx.args.approve = True, {"agent-deploy": True}
+        ctx.http = self.agent_http(ctx, existing=True, status="failed")
+        with self.assertRaisesRegex(deploy.Blocked, "is failed"):
+            deploy.phase_agent(ctx)
+        self.assertEqual(len(ctx.http.posts(r"/agents/demo-assistant/versions")), 1)
 
-    def test_a_data_source_addition_is_verified_in_ms_config(self):
-        root = make_root(self)
-        (root / "package-lock.json").write_text("{}", encoding="utf-8")
-        (root / "node_modules").mkdir()
-        (root / "ms.config.json").write_text(json.dumps({
-            "appId": "demo-app", "environmentId": self.ENVIRONMENT, "connectionReferences": {}}),
-                                             encoding="utf-8")
-        status = {"success": True, "signedIn": True, "activeAccount": {"homeAccountId": f"user.{TENANT}"}}
-        ctx, shell = self.agent_context(root, [(command("ms", "auth", "status"), deploy.Result(0, json.dumps(status))),
-                                               (command("ms", "app", "add", "data-source"), deploy.Result(0))])
-        ctx.args.approve = {"app-register": True}
-        ctx.state.section("app").update(installed=deploy.sha256_file(root / "package-lock.json"))
-        with self.assertRaisesRegex(deploy.Blocked, "without a Copilot Studio connection reference"):
+    def test_a_provisioning_version_is_observed_not_recreated(self):
+        ctx = self.context(built=True)
+        ctx.http = self.agent_http(ctx, existing=True, status="creating")
+        ctx.deadline = ctx.clock() + 40
+        with self.assertRaisesRegex(deploy.Waiting, "still creating"):
+            deploy.phase_agent(ctx)
+        self.assertFalse(ctx.http.posts(r"/agents|/toolboxes"))
+
+    def test_only_committed_published_source_is_built(self):
+        ctx = self.context([(command("git", "status", "--porcelain"), deploy.Result(0, " M agents/scenario-assistant/main.py"))])
+        ctx.http = self.agent_http(ctx)
+        with self.assertRaisesRegex(deploy.Blocked, "uncommitted changes"):
+            deploy.phase_agent(ctx)
+        ctx = self.context([(command("git", "ls-remote"), deploy.Result(0, f"{'d' * 40}\trefs/heads/main\n"))])
+        ctx.http = self.agent_http(ctx)
+        with self.assertRaisesRegex(deploy.Blocked, "not the published origin/main"):
+            deploy.phase_agent(ctx)
+        self.assertFalse(ctx.shell.matching(command("az", "acr")))
+
+    def test_a_correct_sounding_answer_without_live_tool_evidence_is_not_readiness(self):
+        ctx = self.context(built=True)
+        ctx.http = self.agent_http(ctx, existing=True, responses=agent_replies(ontology_output="no rows"))
+        with self.assertRaisesRegex(deploy.Blocked, "tool output lacks Pump B, North Works"):
+            deploy.phase_agent(ctx)
+        self.assertTrue((ctx.root / ".artifacts" / "deploy" / "evidence" / "agent-ontology-failed.json").is_file())
+
+        def wrong_proof(url, body):
+            return reply(body=completed(text=deploy.hosted.PROOF_PREFIX + "connection proof older"))
+
+        ctx = self.context(built=True)
+        ctx.http = self.agent_http(ctx, existing=True, responses=wrong_proof)
+        with self.assertRaisesRegex(deploy.Blocked, "fresh challenge"):
+            deploy.phase_agent(ctx)
+
+    def app_http(self, *, granted=False, deployed=False, state="Succeeded", config=None, proof=True, streaming=True):
+        http = FakeHttp()
+        grant = {"consentType": "AllPrincipals", "resourceId": API_PRINCIPAL, "scope": "user_impersonation", "id": "g1"}
+        grants = [reply(body={"value": [grant]})] if granted else [reply(body={"value": []}), reply(body={"value": []}),
+                                                                   reply(body={"value": [grant]})]
+        http.add("GET", rf"/servicePrincipals/{WEB_PRINCIPAL}/oauth2PermissionGrants$", *grants)
+        http.add("POST", r"/v1\.0/oauth2PermissionGrants$", reply(201, {}))
+        http.add("GET", re.escape(ENVIRONMENT_ID) + r"\?", reply(body={"location": "centralus"}))
+        live = {"properties": {"provisioningState": state, "latestRevisionName": "r2", "latestReadyRevisionName": "r2"}}
+        if deployed:
+            live = deploy.container_app_body("centralus", RUNTIME_OUTPUTS["web_app"], REGISTRY,
+                                             RUNTIME_OUTPUTS["hosted_agent"],
+                                             f"crdemo.azurecr.io/web:{APP_TREE[:16]}", "demo",
+                                             RUNTIME_OUTPUTS["application_insights_connection_string"])
+            live["properties"].update(provisioningState=state, latestRevisionName="r2", latestReadyRevisionName="r2")
+        http.add("GET", re.escape(APP_ID) + r"\?", *([reply(body=live)] if deployed else [reply(404), reply(body=live)]))
+        http.add("PUT", re.escape(APP_ID) + r"\?", reply(201, {}))
+        http.add("GET", re.escape(WEB_URL) + "/healthz$", reply(503), reply(200))
+        http.add("GET", re.escape(WEB_URL) + "/config.json$", reply(body=config or {
+            "clientId": WEB_CLIENT, "tenantId": TENANT, "scope": "https://ai.azure.com/user_impersonation",
+            "agentName": "demo-assistant"}))
+
+        def relay(url, body):
+            final = completed(text=deploy.hosted.PROOF_PREFIX + (body["input"] if proof else "connection proof older"))
+            if not (body.get("stream") and streaming):
+                return reply(body=final)
+            events = [{"type": "response.created", "response": dict(final, status="in_progress", output=[])},
+                      {"type": "response.completed", "response": final}]
+            stream = ": keep-alive\n\n" + "".join(f"event: {event['type']}\ndata: {json.dumps(event)}\n\n" for event in events)
+            return deploy.Response(200, {"Content-Type": "text/event-stream"}, stream.encode())
+
+        http.add("POST", re.escape(WEB_URL) + "/api/responses$", relay)
+        return http
+
+    def test_the_app_is_consented_built_deployed_and_relays_a_fresh_challenge_as_the_user(self):
+        ctx = self.context()
+        ctx.http = self.app_http()
+        with self.assertRaises(deploy.NeedsApproval) as stop:
             deploy.phase_app(ctx)
-        self.assertEqual(len(shell.matching(command("ms", "app", "add", "data-source"))), 1)
-        self.assertNotIn("registered_at", ctx.state.section("app"))
+        for fragment in ("grant tenant-wide consent", "build image web:" + APP_TREE[:16], "create Container App ca-demo-web"):
+            self.assertIn(fragment, stop.exception.approval["description"])
+        self.assertFalse([call for call in ctx.http.calls if call[0] in ("POST", "PUT")])
 
-    APP_MANIFEST = {"name": "app-root", "private": True, "dependencies": {"react": "19.0.0"}}
-    CLI_PIN = {"@microsoft/managed-apps-cli": "0.28.0"}
+        ctx.args.approve = {"app-deploy": True}
+        ctx.http = self.app_http()
+        self.assertIn(WEB_URL, deploy.phase_app(ctx))
+        (_, grant), = ctx.http.posts(r"/oauth2PermissionGrants$")
+        self.assertEqual(grant, {"clientId": WEB_PRINCIPAL, "consentType": "AllPrincipals", "resourceId": API_PRINCIPAL,
+                                 "scope": "user_impersonation"})
+        build, = ctx.shell.matching(command("az", "acr", "build"))
+        self.assertEqual(build[-2], deploy.APP_SOURCE)
+        (_, _, body, _), = [call for call in ctx.http.calls if call[0] == "PUT"]
+        container = body["properties"]["template"]["containers"][0]
+        self.assertEqual(container["image"], f"crdemo.azurecr.io/web:{APP_TREE[:16]}")
+        env = {item["name"]: item["value"] for item in container["env"]}
+        self.assertEqual(env["AGENT_RESPONSES_URL"], RUNTIME_OUTPUTS["hosted_agent"]["responses_url"])
+        self.assertEqual(env["ENTRA_CLIENT_ID"], WEB_CLIENT)
+        telemetry = RUNTIME_OUTPUTS["application_insights_connection_string"]
+        self.assertEqual((env["APPLICATIONINSIGHTS_CONNECTION_STRING"], env["OTEL_SERVICE_NAME"]), (telemetry, "demo-web"))
+        # The connection string reaches only the app: never the log or the receipts.
+        self.assertNotIn(telemetry, "\n".join(map(str, ctx.messages)))
+        self.assertNotIn(telemetry, (ctx.root / ".artifacts" / "deploy" / "state.json").read_text())
+        self.assertNotIn("secret", json.dumps(body).lower())
+        self.assertEqual(body["properties"]["configuration"]["registries"],
+                         [{"server": "crdemo.azurecr.io", "identity": IDENTITY_ID}])
+        self.assertEqual(ctx.state.section("app")["revision"], "r2")
+        # The readiness check relays one JSON and one streamed challenge, each fresh.
+        relayed = [body for _, url, body, _ in ctx.http.calls if url == WEB_URL + "/api/responses"]
+        self.assertEqual([bool(body.get("stream")) for body in relayed], [False, True])
+        self.assertNotEqual(relayed[0]["input"], relayed[1]["input"])
 
-    def lockfile_sync(self, root):
-        def lock_only(args, options):
-            current = json.loads((root / "package.json").read_text(encoding="utf-8"))
-            (root / "package-lock.json").write_text(json.dumps({"packages": {"": current}}), encoding="utf-8")
-            return deploy.Result(0)
-        return command("npm", "install"), lock_only
-
-    def test_the_cli_pin_ms_app_init_adds_is_synced_into_the_lockfile(self):
-        root = make_root(self)
-        (root / "package.json").write_text(json.dumps(self.APP_MANIFEST), encoding="utf-8")
-        (root / "package-lock.json").write_text(json.dumps({"packages": {"": self.APP_MANIFEST}}), encoding="utf-8")
-        (root / "node_modules").mkdir()
-
-        def init(args, options):
-            pinned = dict(self.APP_MANIFEST, devDependencies=self.CLI_PIN)
-            (root / "package.json").write_text(json.dumps(pinned), encoding="utf-8")
-            (root / "ms.config.json").write_text(json.dumps({
-                "appId": "demo-app", "environmentId": self.ENVIRONMENT,
-                "connectionReferences": {"studio": {"id": "/apis/shared_microsoftcopilotstudio"}}}), encoding="utf-8")
-            return deploy.Result(0)
-
-        status = {"success": True, "signedIn": True, "activeAccount": {"homeAccountId": f"user.{TENANT}"}}
-        ctx, shell = self.agent_context(root, [(command("ms", "auth", "status"), deploy.Result(0, json.dumps(status))),
-                                               (command("ms", "app", "init"), init), self.lockfile_sync(root)])
-        ctx.args.approve = {"app-register": True}
-        ctx.state.section("app").update(installed=deploy.sha256_file(root / "package-lock.json"))
+    def test_an_up_to_date_app_is_only_verified(self):
+        ctx = self.context(built=True)
+        ctx.http = self.app_http(granted=True, deployed=True)
         deploy.phase_app(ctx)
-        sync, = shell.matching(command("npm", "install"))
-        self.assertIn("--package-lock-only", sync)
-        self.assertIn("--ignore-scripts", sync)
-        self.assertLess(shell.calls.index(shell.matching(command("ms", "app", "init"))[0]), shell.calls.index(sync))
-        self.assertFalse(deploy.lockfile_out_of_sync(root))
-        self.assertIn("package-lock.json", " ".join(deploy.APP_NEXT))
+        self.assertFalse([call for call in ctx.http.calls if call[0] == "PUT"])
+        self.assertFalse(ctx.http.posts(r"/oauth2PermissionGrants$"))
+        self.assertFalse(ctx.shell.matching(command("az", "acr", "build")))
 
-    def test_a_clone_with_the_cli_pin_syncs_the_lockfile_before_npm_ci(self):
-        root = make_root(self)
-        (root / "package.json").write_text(json.dumps(dict(self.APP_MANIFEST, devDependencies=self.CLI_PIN)),
-                                          encoding="utf-8")
-        (root / "package-lock.json").write_text(json.dumps({"packages": {"": self.APP_MANIFEST}}), encoding="utf-8")
-        (root / "ms.config.json").write_text(json.dumps({
-            "appId": "demo-app", "environmentId": self.ENVIRONMENT,
-            "connectionReferences": {"studio": {"id": "/apis/shared_microsoftcopilotstudio"}}}), encoding="utf-8")
-        status = {"success": True, "signedIn": True, "activeAccount": {"homeAccountId": f"user.{TENANT}"}}
-        ctx, shell = self.agent_context(root, [(command("ms", "auth", "status"), deploy.Result(0, json.dumps(status))),
-                                               self.lockfile_sync(root), (command("npm", "ci"), deploy.Result(0))])
-        deploy.phase_app(ctx)
-        sync, = shell.matching(command("npm", "install"))
-        self.assertLess(shell.calls.index(sync), shell.calls.index(shell.matching(command("npm", "ci"))[0]))
-        self.assertFalse(deploy.lockfile_out_of_sync(root))
-
-    def test_an_in_sync_or_unreadable_lockfile_is_left_alone(self):
-        root = make_root(self)
-        self.assertFalse(deploy.lockfile_out_of_sync(root), "no package.json")
-        (root / "package.json").write_text(json.dumps(self.APP_MANIFEST), encoding="utf-8")
-        (root / "package-lock.json").write_text(json.dumps({"packages": {"": self.APP_MANIFEST}}), encoding="utf-8")
-        self.assertFalse(deploy.lockfile_out_of_sync(root))
-        (root / "package-lock.json").write_text("not json", encoding="utf-8")
-        self.assertFalse(deploy.lockfile_out_of_sync(root))
-
-    def test_the_app_targets_exactly_one_agent_schema(self):
-        root = make_root(self)
-        config = root / "app" / "src" / "config.ts"
-        self.assertTrue(deploy.set_agent_schema(config, "iq_demo_assistant"))
-        self.assertIn("export const STUDIO_AGENT_SCHEMA = 'iq_demo_assistant'", config.read_text(encoding="utf-8"))
-        self.assertFalse(deploy.set_agent_schema(config, "iq_demo_assistant"))
-        with self.assertRaisesRegex(deploy.Blocked, "targets agent iq_demo_assistant"):
-            deploy.set_agent_schema(config, "iq_other_assistant")
-
-    def test_app_init_repository_access_errors_offer_admin_guidance_without_retrying(self):
-        errors = (
-            ("Microsoft GitHub App can't access the bound repository.", False, True),
-            ("GitHub App authentication failed.", False, False),
-            ("The environment is not eligible.", False, False),
-            ("", True, True),
-        )
-        for message, interactive, needs_install in errors:
-            with self.subTest(message=message, interactive=interactive):
-                root = make_root(self)
-                (root / "package-lock.json").write_text("{}", encoding="utf-8")
-                (root / "node_modules").mkdir()
-                status = {"success": True, "signedIn": True,
-                          "activeAccount": {"homeAccountId": f"user.{TENANT}"}}
-                ctx, shell = self.agent_context(root, [
-                    (command("ms", "auth", "status"), deploy.Result(0, json.dumps(status))),
-                    (command("ms", "app", "init"), deploy.Result(1, "", message)),
-                ])
-                ctx.interactive = interactive
-                ctx.args.approve = {"app-register": True}
-                ctx.state.section("app").update(installed=deploy.sha256_file(root / "package-lock.json"))
-                with self.assertRaises(deploy.Blocked) as stop:
+    def test_failed_revisions_foreign_settings_and_wrong_relays_are_not_readiness(self):
+        for options, pattern in (({"state": "Failed"}, "Container App is Failed"),
+                                 ({"config": {"clientId": "other"}}, "different sign-in settings"),
+                                 ({"proof": False}, "did not relay this check's fresh challenge"),
+                                 ({"streaming": False}, "did not stream this check's fresh challenge.*not an event stream")):
+            with self.subTest(options=options):
+                ctx = self.context(built=True)
+                ctx.http = self.app_http(granted=True, deployed=True, **options)
+                with self.assertRaisesRegex(deploy.Blocked, pattern):
                     deploy.phase_app(ctx)
-                self.assertIn("ms app init failed (exit 1).", stop.exception.message)
-                if message:
-                    self.assertIn(message, stop.exception.message)
-                guidance = " ".join(stop.exception.next_steps)
-                if needs_install:
-                    self.assertIn("https://github.com/marketplace/microsoft-managed-apps", guidance)
-                    self.assertIn("ms app info", guidance)
-                    self.assertIn("--retry-failed only after confirming no app was registered", guidance)
-                    if interactive:
-                        self.assertIn("If the terminal reported", guidance)
-                else:
-                    self.assertEqual(guidance, "")
-                self.assertEqual(len(shell.matching(command("ms", "app", "init"))), 1)
-                saved = json.loads(ctx.state.path.read_text(encoding="utf-8"))["app"]
-                self.assertIn("init_started_at", saved)
-                self.assertNotIn("registered_at", saved)
-                with self.assertRaisesRegex(deploy.Blocked, "may have registered the app"):
-                    deploy.phase_app(ctx)
-                self.assertEqual(len(shell.matching(command("ms", "app", "init"))), 1)
+                self.assertNotIn("verified_at", ctx.state.section("app"))
 
-    def test_app_registration_surfaces_both_user_authorizations_without_claiming_readiness(self):
-        root = make_root(self)
-        (root / "package-lock.json").write_text("{}", encoding="utf-8")
-        (root / "node_modules").mkdir()
-        (root / "ms.config.json").write_text(json.dumps({
-            "appId": "demo-app",
-            "environmentId": self.ENVIRONMENT,
-            "connectionReferences": {"studio": {"id": "/apis/shared_microsoftcopilotstudio"}},
-        }), encoding="utf-8")
-        status = {"success": True, "signedIn": True, "activeAccount": {"homeAccountId": f"user.{TENANT}"}}
-        ctx, shell = self.agent_context(root, [(command("ms", "auth", "status"), deploy.Result(0, json.dumps(status)))])
-        ctx.state.section("app").update(installed=deploy.sha256_file(root / "package-lock.json"))
-        for _ in range(2):
-            message = deploy.phase_app(ctx)
-            self.assertIn(f"https://make.powerapps.com/environments/{self.ENVIRONMENT}/connections", message)
-            self.assertIn("each user", message)
-            self.assertIn("when prompted", message)
-            self.assertNotIn("app ready", message)
+    def test_manual_grants_leave_the_web_sign_in_consent_to_an_administrator(self):
+        ctx = self.context(built=True, manual_grants=True, approve={"app-deploy": True})
+        ctx.http = self.app_http(deployed=True)
+        with self.assertRaisesRegex(deploy.Waiting, "--manual-grants") as stop:
+            deploy.phase_app(ctx)
+        self.assertIn("https://portal.azure.com/#web", " ".join(stop.exception.next_steps))
+        self.assertFalse(ctx.http.posts(r"/oauth2PermissionGrants$"))
+
+    def test_a_malformed_telemetry_connection_string_stops_without_echoing_it(self):
+        ctx = self.context(built=True)
+        ctx.cache["outputs"]["application_insights_connection_string"] = "InstrumentationKey=leaked-value"
+        ctx.http = self.app_http(granted=True, deployed=True)
+        with self.assertRaisesRegex(deploy.Blocked, "not an Application Insights connection string") as stop:
+            deploy.phase_app(ctx)
+        self.assertNotIn("leaked-value", str(stop.exception))
+
+    def test_app_targets_must_stay_inside_the_deployment(self):
+        for change, pattern in (({"url": "https://example.com"}, "not a Container Apps address"),
+                                ({"environment_id": "/subscriptions/other/resourceGroups/rg/providers/Microsoft.App/"
+                                                    "managedEnvironments/x"}, "not a Container Apps target"),
+                                ({"tenant_id": "ffffffff-ffff-4fff-8fff-ffffffffffff"}, "tenant differs")):
+            with self.subTest(change=change):
+                ctx = self.context(built=True)
+                ctx.cache["outputs"]["web_app"].update(change)
+                ctx.http = self.app_http()
+                with self.assertRaisesRegex(deploy.Blocked, pattern):
+                    deploy.phase_app(ctx)
+                self.assertFalse([call for call in ctx.http.calls if call[0] in ("POST", "PUT")])
+
+    def test_the_final_report_tells_the_user_how_to_try_the_app(self):
         steps = " ".join(deploy.APP_NEXT)
-        self.assertLess(steps.index("Before playback"), steps.index("ms app dev"))
-        self.assertIn("Studio user-connections", steps)
-        self.assertIn("Fabric IQ and Foundry IQ", steps)
-        self.assertNotIn("ms app deploy", steps)
-        self.assertFalse(shell.matching(command("ms", "app", "init")))
-        self.assertFalse(shell.matching(command("ms", "app", "add", "data-source")))
-        self.assertIn("registered_at", ctx.state.section("app"))
+        for fragment in ("sign in", "Check connection", "Pump B", "Foundry Agent Consumer"):
+            self.assertIn(fragment, steps)
 
 
 class WebIqTests(unittest.TestCase):

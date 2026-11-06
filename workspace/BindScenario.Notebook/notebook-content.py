@@ -225,7 +225,24 @@ def bind_partition_annotations(text, values):
     return "".join(lines[:start]) + body + "".join(lines[end:])
 
 
-def bound_definition(original, lakehouse, target_workspace_name):
+def partition_pinned(text):
+    # Like bind_partition_annotations, read only the partition's own annotations, not the table's or a column's.
+    lines = text.splitlines()
+    starts = [index for index, line in enumerate(lines) if line.startswith("\tpartition ")]
+    block = lines[starts[0] + 1:] if len(starts) == 1 else []
+    end = next(
+        (index for index, line in enumerate(block) if line.strip() and not line.startswith("\t\t")),
+        len(block),
+    )
+    return any(re.match(r"\t\tannotation[ \t]+ONT_PinnedAtUtc[ \t]*=[ \t]*\S", line) for line in block[:end])
+
+
+def pinned(parts):
+    # getDefinition keeps only the pin timestamp, so it marks a definition this binder has already pinned.
+    return all(partition_pinned(part_text(parts, f"tables/{name}.tmdl")) for name in table_names)
+
+
+def bound_definition(original, lakehouse, target_workspace_name, pin_sources=True):
     target_workspace_id = str(UUID(lakehouse["workspaceId"]))
     lakehouse_id = str(UUID(lakehouse["id"]))
     if target_workspace_id != workspace_id or lakehouse["type"] != "Lakehouse":
@@ -288,7 +305,8 @@ def bound_definition(original, lakehouse, target_workspace_name):
                 "\t\t\tschemaName: dbo\n"
                 "\t\t\texpressionSource: ScenarioLakehouse\n"
             )
-        annotated = bind_partition_annotations(text, annotations)
+        # getDefinition elides the source pins it derives from the expression, so read-backs are checked without them.
+        annotated = bind_partition_annotations(text, annotations) if pin_sources else text
         if annotated != part_text(parts, path):
             set_part(parts, path, annotated)
 
@@ -361,6 +379,10 @@ while True:
     wait_for_poll(5)
 
 sql_id = str(UUID(sql_endpoint["id"]))
+already_bound = (
+    pinned(original)
+    and bound_definition(original, lakehouse, workspace_name, pin_sources=False) == original
+)
 updated = bound_definition(original, lakehouse, workspace_name)
 
 sync = fabric_operation(
@@ -387,7 +409,7 @@ for name, result in statuses.items():
     else:
         raise RuntimeError(f"SQL metadata is not ready for dbo.{name}: {result}")
 
-if updated != original:
+if not already_bound:
     if get_definition(ontology_id) != original:
         raise RuntimeError("The ontology changed during binding. Serialize authoring and rerun.")
     fabric_operation(
@@ -396,7 +418,7 @@ if updated != original:
         has_result=False,
     )
     verified = get_definition(ontology_id)
-    if bound_definition(verified, lakehouse, workspace_name) != verified:
+    if not pinned(verified) or bound_definition(verified, lakehouse, workspace_name, pin_sources=False) != verified:
         raise RuntimeError("The ontology update completed without the expected target binding.")
     print("Bound ScenarioOntology. Review and commit the generated DEV definition in Git.")
 else:

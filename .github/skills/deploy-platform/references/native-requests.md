@@ -1,6 +1,6 @@
 # Native requests for guided DEV deployment
 
-Read this after choosing the derived repository, execution host and delegated user. It is the request contract that the [deterministic runner](../scripts/deploy.py) implements: use it to review the runner's behavior and diagnose a blocked run. Do not hand-submit mutating requests that a resumable run owns. Terraform owns infrastructure; Fabric APIs own bootstrap and notebook execution.
+Read this after choosing the derived repository, execution host and delegated user. It is the request contract that the [deterministic runner](../scripts/deploy.py) implements: use it to review the runner's behavior and diagnose a blocked run. Do not hand-submit mutating requests that a resumable run owns. Terraform owns infrastructure; Fabric APIs own bootstrap and notebook execution; Foundry and Azure Resource Manager requests own the agent and app releases.
 
 ## Contents
 
@@ -12,23 +12,27 @@ Read this after choosing the derived repository, execution host and delegated us
 - [Resolve and verify target bindings](#resolve-and-verify-target-bindings)
 - [Serverless Search identity](#serverless-search-identity)
 - [Knowledge readiness and retrieval](#knowledge-readiness-and-retrieval)
+- [Hosted agent and web app](#hosted-agent-and-web-app)
 - [Teardown](#teardown)
 
 ## Teardown
 
 `deploy.py down` uses these supported native operations after explicit approvals:
 
-- [Managed Runtime CLI](https://learn.microsoft.com/en-us/microsoft-365/managed-apps/developer/ms-cli-command-reference#ms-app-delete): `ms app delete --app <recorded-appId> --environment-id <guid> --force --non-interactive`.
-- [PAC](https://learn.microsoft.com/en-us/power-platform/developer/cli/reference/copilot#pac-copilot-delete): `dotnet pac copilot delete --bot <verified-bot-guid> --environment <verified-org-url> --confirm`.
+- [Container App](https://learn.microsoft.com/rest/api/resource-manager/containerapps/container-apps): `DELETE https://management.azure.com/subscriptions/{subscription}/resourceGroups/{group}/providers/Microsoft.App/containerApps/{name}?api-version=2025-07-01`, then GET until `404`.
+- [Hosted agent](https://learn.microsoft.com/azure/foundry/agents/how-to/manage-hosted-agent) and its sessions: `DELETE {project}/agents/{name}?api-version=v1&force=true`, then GET `{project}/agents/{name}?api-version=v1` until `404`.
+- Toolbox: `DELETE {project}/toolboxes/{name}?api-version=v1`, then GET until `404`.
 - Terraform: full saved `plan -destroy`, then `apply <approved-plan>`; no targeting.
 - [Deleted Foundry account](https://learn.microsoft.com/en-us/rest/api/aiservices/accountmanagement/deleted-accounts/get?view=rest-aiservices-accountmanagement-2024-10-01): GET `/subscriptions/{subscription}/providers/Microsoft.CognitiveServices/locations/{location}/resourceGroups/{group}/deletedAccounts/{name}?api-version=2024-10-01`; `az cognitiveservices account purge` uses that same target, then GET must return 404.
 
-The runner preserves only cleanup identifiers from state, not keys or retrieved
-content. App deletion is idempotent; agent deletion and Foundry purge retain
-receipts and require inspection before resubmission. Fabric workspace/data
-retention is [administrator-owned](https://learn.microsoft.com/en-us/fabric/admin/workspace-retention),
-not proof of immediate erasure. Shared user connections and portal credentials
-remain explicit manual cleanup.
+The runner takes these targets from its teardown inventory of Terraform state
+and outputs, and preserves only cleanup identifiers, not keys or retrieved
+content. Runtime deletion is idempotent: a rerun deletes only the targets that
+still exist, and Terraform runs only after each is confirmed gone. The Foundry
+purge retains its receipt and requires inspection before resubmission. Fabric
+workspace/data retention is [administrator-owned](https://learn.microsoft.com/en-us/fabric/admin/workspace-retention),
+not proof of immediate erasure. Portal credentials remain explicit manual
+cleanup.
 
 ## Authentication and response receipts
 
@@ -92,6 +96,13 @@ tenant-wide consent; the runner hands over the registration's
 `--manual-grants` it never writes. If the read itself is refused, the user can
 neither grant nor verify consent, so only `--consent-confirmed` after an
 administrator's confirmation continues.
+
+The `app` phase applies the same reads and writes to the web sign-in
+registration: its service principal (`web_app.service_principal_object_id`) is
+the client, the Microsoft Foundry API principal behind `https://ai.azure.com`
+(`web_app.api_principal_object_id`, shown as Azure Machine Learning Services)
+is the resource, and `scope` is exactly `user_impersonation`. Its
+administrator handover is the `web_app` output's `api_permissions_url`.
 
 ## Native item import (default)
 
@@ -267,3 +278,67 @@ Require a successful `activity` entry of type `fabricOntology`, a `references` e
 Check the indexed file source separately, using a documentation/background question and the actual document source name. Its parameter discriminator is `kind: "indexedOneLake"`, not `searchIndex`; request references/source data there too. Require successful ingestion and a reference from that source. Preserve denied/failed-source errors instead of accepting partial answers as fully ready. Never persist either token in config, state, request JSON or logs.
 
 References: [Fabric ontology retrieval and response fields](https://learn.microsoft.com/azure/search/agentic-knowledge-source-how-to-fabric-ontology#query-a-knowledge-base), [ontology runtime parameters](https://learn.microsoft.com/javascript/api/@azure/search-documents/fabricontologyknowledgesourceparams?view=azure-node-preview), [OneLake runtime parameters](https://learn.microsoft.com/javascript/api/@azure/search-documents/indexedonelakeknowledgesourceparams?view=azure-node-preview).
+
+## Hosted agent and web app
+
+The `agent` and `app` phases call the Foundry project data plane with the
+signed-in user's Azure CLI token for `https://ai.azure.com`, and Azure Resource
+Manager with the user's ARM token. They use only targets from Terraform outputs
+(`hosted_agent`, `container_registry`, `web_app`) and refuse a project endpoint
+outside `https://*.services.ai.azure.com/api/projects/{name}`, a Container Apps
+environment in another subscription or a web app URL outside
+`*.azurecontainerapps.io`. `{project}` below is that project endpoint; every
+Foundry call uses `api-version=v1`.
+
+**Images.** `az acr repository show --name {registry} --image {repository}:{tag}`
+finds an existing image; otherwise `az acr build --registry {registry} --image {repository}:{tag} --platform linux/amd64 --file {directory}/Dockerfile {directory}`
+builds it in the registry. The tag is the first 16 characters of
+`git rev-parse HEAD:{directory}`; the directory must be clean and `HEAD` must
+equal the published branch. The repositories are `scenario-assistant` and `web`.
+
+**Toolbox.** `GET {project}/toolboxes/{name}` reads `default_version`, and
+`GET {project}/toolboxes/{name}/versions/{version}` reads its `tools`. A default
+version whose tools carry every rendered setting, matched by `server_label`, is
+reused. Otherwise `POST {project}/toolboxes/{name}/versions` with the rendered
+`toolbox` object creates a version, and, when the toolbox already existed,
+`PATCH {project}/toolboxes/{name}` with `{"default_version": "{version}"}`
+promotes it.
+
+**Hosted agent.** `GET {project}/agents/{name}` returns the agent and
+`versions.latest`. A latest version whose `definition` already runs this image
+with the same `cpu`, `memory`, `protocol_versions` and `environment_variables`
+is reused. Otherwise `POST {project}/agents` with `{"name", "definition"}`
+creates the agent, or `POST {project}/agents/{name}/versions` with
+`{"definition"}` adds a version, where the definition is
+`{"kind": "hosted", "container_configuration": {"image"}, "cpu", "memory", "protocol_versions", "environment_variables"}`.
+The runner records the returned version before polling
+`GET {project}/agents/{name}/versions/{version}` until `status` is `active`;
+`failed` stops with the version's `error`.
+
+**Invocation.** `POST {project}/agents/{name}/endpoint/protocols/openai/responses`
+with `{"input": "{text}", "stream": false}` invokes the agent as the user. A new
+session can answer `408`, `424` or `5xx` first, so the runner retries briefly.
+Evidence comes from the response's `output` items: the assistant `message`'s
+`output_text` must equal `AGENT_PROOF|{challenge}` for the proof, and the
+`*_call` items, matched by `server_label` or `name`, must carry the expected
+facts or document in their own output. The runner never judges answer text.
+
+**Container App.** `GET {environment_id}?api-version=2025-07-01` reads the
+environment's location. The app is
+`/subscriptions/{subscription}/resourceGroups/{group}/providers/Microsoft.App/containerApps/{name}`
+with `api-version=2025-07-01`: GET reads it and PUT creates or updates it with
+the web user-assigned identity, the `Consumption` workload profile, single
+active revision, external ingress to port 8080 without insecure HTTP, registry
+pull through that identity, the five non-secret settings, `/healthz` readiness
+and liveness probes, 0.5 CPU, 1 GiB and 0 to 2 replicas. An app that already
+runs the image with these settings, identity and ingress is not updated. The
+runner records the submission, then polls until `provisioningState` is
+`Succeeded` and `latestReadyRevisionName` equals `latestRevisionName`; a failed
+revision (`GET .../revisions/{revision}`) stops with its error.
+
+**App readiness.** `GET {url}/healthz` must return `200`; `GET {url}/config.json`
+must equal exactly `{"clientId", "tenantId", "scope", "agentName"}` from the
+outputs; and `POST {url}/api/responses` with the user's Foundry token and
+`{"input": "connection proof {uuid}"}` must return the agent's exact proof.
+
+References: [deploy a hosted agent](https://learn.microsoft.com/azure/foundry/agents/how-to/deploy-hosted-agent), [manage hosted agents](https://learn.microsoft.com/azure/foundry/agents/how-to/manage-hosted-agent), [toolboxes](https://learn.microsoft.com/azure/foundry/agents/how-to/tools/toolbox), [Container Apps create or update](https://learn.microsoft.com/rest/api/resource-manager/containerapps/container-apps/create-or-update), [ACR tasks](https://learn.microsoft.com/azure/container-registry/container-registry-tasks-overview).
