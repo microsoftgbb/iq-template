@@ -17,6 +17,13 @@ AGENT_FIELDS = ("cpu", "memory", "protocol_versions", "environment_variables")
 TOOL_LABEL = re.compile(r"[a-z][a-z0-9_]{0,63}")
 
 
+def size(value):
+    """A CPU or memory setting in one canonical string form, so 0.5, 1.0 and "0.5" or "1" compare as documented."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return format(value, "g")
+    return str(value)
+
+
 class DefinitionError(ValueError):
     pass
 
@@ -53,7 +60,7 @@ def validate(data):
     if not isinstance(data, dict) or not isinstance(data.get("agent"), dict) or not isinstance(data.get("toolbox"), dict):
         raise DefinitionError("The hosted agent definition needs agent and toolbox objects.")
     agent, toolbox = data["agent"], data["toolbox"]
-    if (str(agent.get("cpu")), str(agent.get("memory"))) not in SIZES:
+    if (size(agent.get("cpu")), size(agent.get("memory"))) not in SIZES:
         raise DefinitionError("Choose a documented hosted-agent size: 0.5/1Gi, 1/2Gi or 2/4Gi.")
     protocols = agent.get("protocol_versions")
     if not isinstance(protocols, list) or not protocols or not all(
@@ -90,6 +97,8 @@ def agent_definition(agent, image):
         "kind": "hosted",
         "container_configuration": {"image": image},
         **{field: agent[field] for field in AGENT_FIELDS},
+        "cpu": size(agent["cpu"]),
+        "memory": size(agent["memory"]),
     }
 
 
@@ -100,7 +109,7 @@ def definition_matches(current, desired):
     image = (current.get("container_configuration") or {}).get("image")
     if current.get("kind") != "hosted" or image != desired["container_configuration"]["image"]:
         return False
-    if str(current.get("cpu")) != desired["cpu"] or str(current.get("memory")) != desired["memory"]:
+    if size(current.get("cpu")) != size(desired["cpu"]) or size(current.get("memory")) != size(desired["memory"]):
         return False
     protocols = sorted((item.get("protocol"), item.get("version")) for item in current.get("protocol_versions") or []
                        if isinstance(item, dict))

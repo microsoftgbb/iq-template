@@ -90,6 +90,17 @@ class MatchTests(unittest.TestCase):
                 self.assertFalse(hosted.definition_matches(changed, self.desired))
         self.assertFalse(hosted.definition_matches(None, self.desired))
 
+    def test_numeric_sizes_are_published_and_compared_in_canonical_form(self):
+        numeric = dict(self.data["agent"], cpu=0.5)
+        hosted.validate(dict(self.data, agent=numeric))
+        desired = hosted.agent_definition(numeric, "crdemo.azurecr.io/scenario-assistant:abc")
+        self.assertEqual((desired["cpu"], desired["memory"]), ("0.5", "1Gi"))
+        # The service may echo either form; an unchanged definition must not publish a new version.
+        for echoed in ("0.5", 0.5):
+            self.assertTrue(hosted.definition_matches(dict(desired, cpu=echoed), desired))
+        self.assertTrue(hosted.definition_matches(dict(self.desired, cpu=1.0, memory="2Gi"),
+                                                  dict(self.desired, cpu="1", memory="2Gi")))
+
     def test_published_tools_match_by_label_and_every_desired_setting(self):
         tools = self.data["toolbox"]["tools"]
         published = [dict(tool, id=f"tool-{index}") for index, tool in enumerate(reversed(tools))]
