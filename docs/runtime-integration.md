@@ -24,8 +24,8 @@ App, outside Terraform state.
 
 Successful `agent` and `app` phases prove the route for the deploying user
 only: a fresh challenge through the agent, live ontology facts and the starter
-document in its tools' own output, and another fresh challenge relayed by the
-deployed app. Browser sign-in, a second user's denial and isolation, and other
+document in its tools' own output, and two more fresh challenges relayed by
+the deployed app, one as JSON and one streamed. Browser sign-in, a second user's denial and isolation, and other
 users' access remain unproven, so report "verified for one user", not a ready
 shell.
 
@@ -116,9 +116,14 @@ hash, so unchanged source is never rebuilt or redeployed.
    `app` phase grants tenant-wide consent.
 2. **Relay.** The browser posts the question, at most 2,000 characters, to
    `/api/responses` with the user's bearer token. The server forwards only that
-   token and the narrowed body `{input, stream: false, previous_response_id?}`
-   to the one configured `AGENT_RESPONSES_URL`, refuses redirects and waits up
-   to `AGENT_TIMEOUT_SECONDS` (220 by default). It logs only the method, route,
+   token and the narrowed body `{input, stream, previous_response_id?}` to the
+   one configured `AGENT_RESPONSES_URL`, refuses redirects and waits up to
+   `AGENT_TIMEOUT_SECONDS` (220 by default). The page asks with `stream: true`:
+   the server relays the agent's server-sent events unchanged as they arrive,
+   so each tool appears when it starts and the answer as it is written, and
+   the final `response.completed` event decides what is shown. A failure after
+   streaming started ends the stream with a Responses `error` event, and a
+   browser that leaves cancels the agent call. It logs only the method, route,
    status and duration, never headers, tokens or questions, and traces the
    request and the agent call the same way (see [observability](#observability)). Its Content
    Security Policy allows connections only to the app itself and Microsoft
@@ -194,7 +199,7 @@ agent, and Fabric decides which ontology data each user can read.
 | Agent | The exact fresh challenge through the agent endpoint as the caller. | `agent` phase |
 | Live ontology | The `scenario_ontology` tool call's own output contains the expected seeded facts (`Pump B` and `North Works`, or `--expect`). Answer text alone, or a fact copied from `starter.txt`, is not live evidence. | `agent` phase |
 | Documents | The `knowledge_base` tool call's output references `starter.txt`, after successful ingestion. | `agent` phase |
-| App | `/healthz`, a `/config.json` that matches this deployment, and the fresh challenge relayed through `/api/responses` with the deployer's token. | `app` phase |
+| App | `/healthz`, a `/config.json` that matches this deployment, and fresh challenges relayed through `/api/responses` with the deployer's token, as JSON and as a server-sent event stream. | `app` phase |
 | Browser sign-in | A person signs in at the app URL and gets **Check connection**'s fresh challenge, a live answer and a follow-up in the same conversation. | You |
 | End-user authorization | A user without a Foundry role gets HTTP 403; a user without Fabric access gets an explicit unavailable-source answer, never a document substitute. | You, with a second account |
 | Isolation | A second user cannot continue or read the first user's conversation. | You, with a second account |
@@ -355,6 +360,7 @@ agent or app to hide a failure.
 | HTTP 403 | The user lacks agent-endpoint access. The app's message names Foundry Agent Consumer, the least-privilege role. | An operator assigns a role from the [access model](#access-model); allow a few minutes. |
 | HTTP 404 | No agent at the configured endpoint. | Run the `agent` phase, and compare the `hosted_agent` output's `responses_url` with the Container App's `AGENT_RESPONSES_URL`. |
 | HTTP 424 or 5xx on a first question | A new session is starting. | Ask again. For persistent errors, follow the question's operation in Application Insights; see [observability](#observability). |
+| The answer appears only when it is complete, without tool progress | Something between the browser and the app buffers server-sent events, such as a corporate proxy or another gateway in front of the app. | The `app` phase proves streaming through the app's own ingress. Check that `/api/responses` with `stream: true` still returns `text/event-stream` along your route, and let it pass unbuffered. |
 | HTTP 502 | The agent endpoint was unreachable, or the connection dropped while the agent answered. | Ask again. If it persists, check the agent's traces in Application Insights and the Container App's logs. |
 | HTTP 504 after about 220 seconds | The agent did not answer within `AGENT_TIMEOUT_SECONDS`. | Ask again. A cold live ontology query can be slow on small capacities; do not add retry loops or another backend. |
 | The answer says the ontology is unavailable | The user lacks Fabric access, the ontology is unbound, or Fabric IQ needs the user's consent. | Grant Fabric access, check the [binding](ontology-knowledge.md#review-the-generated-binding), or open the consent link the app shows and ask again. |
