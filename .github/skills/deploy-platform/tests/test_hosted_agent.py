@@ -147,6 +147,13 @@ class EvidenceTests(unittest.TestCase):
         answer_only = {"status": "completed", "output": [message("Pump B is at North Works.")]}
         problems, _ = hosted.ontology_evidence(answer_only, "scenario_ontology", ("Pump B",))
         self.assertEqual(problems, ["no scenario_ontology tool call"])
+        # A similarly named tool is not the ontology tool, and a tool result without an answer is not ready.
+        lookalike = json.loads(json.dumps(good))
+        lookalike["output"][0]["name"] = "not_scenario_ontology___ask"
+        self.assertIn("no scenario_ontology tool call", hosted.ontology_evidence(lookalike, "scenario_ontology", ("Pump B",))[0])
+        silent = dict(good, output=good["output"][:2])
+        self.assertEqual(hosted.ontology_evidence(silent, "scenario_ontology", ("Pump B",))[0],
+                         ["the response has no assistant answer"])
         failed = {"status": "completed", "output": [
             {"type": "mcp_call", "name": "ask_ontology", "server_label": "scenario_ontology", "error": "denied"},
             message("unavailable")]}

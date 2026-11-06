@@ -193,14 +193,22 @@ def _failed(call):
 
 
 def _calls_for(response, label):
+    """Calls to one toolbox tool: its exact server label, or the toolbox's "<label>___<tool>" function name."""
     label = label.lower()
     return [call for call in tool_calls(response)
-            if label in (call.get("server_label") or "").lower() or label in call["name"].lower()]
+            if (call.get("server_label") or "").lower() == label or call["name"].lower().startswith(label + "___")]
+
+
+def _answer_problems(response):
+    """The app rejects a completed response without an assistant answer, so readiness must too."""
+    if failure(response):
+        return [f"the response failed ({failure(response)})"]
+    return [] if output_text(response) else ["the response has no assistant answer"]
 
 
 def ontology_evidence(response, label, facts):
     """Problems with a live-ontology answer: the tool must run and its own output must carry every fact."""
-    problems = [f"the response failed ({failure(response)})"] if failure(response) else []
+    problems = _answer_problems(response)
     calls = _calls_for(response, label)
     if not calls:
         problems.append(f"no {label} tool call")
@@ -217,7 +225,7 @@ def ontology_evidence(response, label, facts):
 
 def document_evidence(response, label, document):
     """Problems with a document answer: the knowledge tool must return the named source document."""
-    problems = [f"the response failed ({failure(response)})"] if failure(response) else []
+    problems = _answer_problems(response)
     calls = _calls_for(response, label)
     if not calls:
         problems.append(f"no {label} tool call")
