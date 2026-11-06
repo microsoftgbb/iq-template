@@ -13,6 +13,11 @@ updates:
       - dependency-name: "@types/node"
         update-types: ["version-update:semver-major"]
     groups:
+      # The telemetry distro and the undici instrumentation must share one OpenTelemetry release line.
+      opentelemetry:
+        patterns:
+          - "@microsoft/opentelemetry"
+          - "@opentelemetry/*"
       minor-and-patch:
         update-types:
           - minor

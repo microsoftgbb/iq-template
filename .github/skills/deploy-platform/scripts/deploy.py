@@ -2646,9 +2646,11 @@ def container_app_id(web, subscription):
     return f"/subscriptions/{match[1]}/resourceGroups/{match[2]}/providers/Microsoft.App/containerApps/{web['name']}"
 
 
-def container_app_body(location, web, registry, agent, image, project_name):
+def container_app_body(location, web, registry, agent, image, project_name, telemetry):
     settings = {"AGENT_RESPONSES_URL": agent["responses_url"], "AGENT_NAME": agent["name"],
-                "ENTRA_CLIENT_ID": web["client_id"], "ENTRA_TENANT_ID": web["tenant_id"], "AGENT_SCOPE": web["scope"]}
+                "ENTRA_CLIENT_ID": web["client_id"], "ENTRA_TENANT_ID": web["tenant_id"], "AGENT_SCOPE": web["scope"],
+                # The server traces requests and agent calls to the project's Application Insights.
+                "APPLICATIONINSIGHTS_CONNECTION_STRING": telemetry, "OTEL_SERVICE_NAME": f"{project_name}-web"}
     probe = {"httpGet": {"path": "/healthz", "port": 8080}, "periodSeconds": 10}
     return {
         "location": location,
@@ -2761,7 +2763,12 @@ def check_web_app(ctx, base, web, agent):
 
 
 def phase_app(ctx):
-    web, registry, agent = required_outputs(ctx, "web_app", "container_registry", "hosted_agent")
+    web, registry, agent, telemetry = required_outputs(ctx, "web_app", "container_registry", "hosted_agent",
+                                                        "application_insights_connection_string")
+    # Identifies the Application Insights resource; never echoed, even when malformed.
+    if (not isinstance(telemetry, str) or not re.search(r"(?:^|;)InstrumentationKey=[0-9a-fA-F-]{36}(?:;|$)", telemetry)
+            or not re.search(r"(?:^|;)IngestionEndpoint=https://", telemetry)):
+        raise Blocked("The application_insights_connection_string output is not an Application Insights connection string.")
     subscription, tenant = ctx.target("subscription_id"), ctx.target("tenant_id")
     if not same_guid(web.get("tenant_id"), tenant):
         raise Blocked("The web app registration's tenant differs from the deployment tenant.")
@@ -2782,7 +2789,7 @@ def phase_app(ctx):
     if environment.status != 200:
         raise ServiceError("Reading the Container Apps environment", environment)
     location = (environment.json(default={}) or {}).get("location")
-    desired = container_app_body(location, web, registry, agent, image, variables(ctx)["project_name"])
+    desired = container_app_body(location, web, registry, agent, image, variables(ctx)["project_name"], telemetry)
 
     state, _ = tenant_grant(ctx, client, resource, scopes)
     built = image_present(ctx, registry["name"], APP_REPOSITORY, tag)

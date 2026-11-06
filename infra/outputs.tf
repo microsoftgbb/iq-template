@@ -240,3 +240,9 @@ output "web_app" {
     api_permissions_url         = "https://portal.azure.com/#@${data.azuread_client_config.current.tenant_id}/view/Microsoft_AAD_RegisteredApps/ApplicationMenuBlade/~/CallAnAPI/appId/${azuread_application.web.client_id}/isMSAApp~/false"
   }
 }
+
+output "application_insights_connection_string" {
+  description = "Application Insights connection string that deploy.py sets on the web app for request and agent-call tracing. It identifies the resource and is not a credential; the hosted agent gets the project's connection from Foundry."
+  value       = azurerm_application_insights.main.connection_string
+  sensitive   = true
+}

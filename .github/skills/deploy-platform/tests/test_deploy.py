@@ -1665,6 +1665,8 @@ RUNTIME_OUTPUTS = {
                 "client_id": WEB_CLIENT, "service_principal_object_id": WEB_PRINCIPAL, "tenant_id": TENANT,
                 "scope": "https://ai.azure.com/user_impersonation", "api_principal_object_id": API_PRINCIPAL,
                 "api_permissions_url": "https://portal.azure.com/#web"},
+    "application_insights_connection_string": "InstrumentationKey=00000000-0000-4000-8000-000000000000;"
+                                              "IngestionEndpoint=https://centralus-0.in.applicationinsights.azure.com/",
 }
 
 
@@ -1868,7 +1870,8 @@ class AgentAndAppTests(unittest.TestCase):
         if deployed:
             live = deploy.container_app_body("centralus", RUNTIME_OUTPUTS["web_app"], REGISTRY,
                                              RUNTIME_OUTPUTS["hosted_agent"],
-                                             f"crdemo.azurecr.io/web:{APP_TREE[:16]}", "demo")
+                                             f"crdemo.azurecr.io/web:{APP_TREE[:16]}", "demo",
+                                             RUNTIME_OUTPUTS["application_insights_connection_string"])
             live["properties"].update(provisioningState=state, latestRevisionName="r2", latestReadyRevisionName="r2")
         http.add("GET", re.escape(APP_ID) + r"\?", *([reply(body=live)] if deployed else [reply(404), reply(body=live)]))
         http.add("PUT", re.escape(APP_ID) + r"\?", reply(201, {}))
@@ -1907,6 +1910,11 @@ class AgentAndAppTests(unittest.TestCase):
         env = {item["name"]: item["value"] for item in container["env"]}
         self.assertEqual(env["AGENT_RESPONSES_URL"], RUNTIME_OUTPUTS["hosted_agent"]["responses_url"])
         self.assertEqual(env["ENTRA_CLIENT_ID"], WEB_CLIENT)
+        telemetry = RUNTIME_OUTPUTS["application_insights_connection_string"]
+        self.assertEqual((env["APPLICATIONINSIGHTS_CONNECTION_STRING"], env["OTEL_SERVICE_NAME"]), (telemetry, "demo-web"))
+        # The connection string reaches only the app: never the log or the receipts.
+        self.assertNotIn(telemetry, "\n".join(map(str, ctx.messages)))
+        self.assertNotIn(telemetry, (ctx.root / ".artifacts" / "deploy" / "state.json").read_text())
         self.assertNotIn("secret", json.dumps(body).lower())
         self.assertEqual(body["properties"]["configuration"]["registries"],
                          [{"server": "crdemo.azurecr.io", "identity": IDENTITY_ID}])
@@ -1938,6 +1946,14 @@ class AgentAndAppTests(unittest.TestCase):
             deploy.phase_app(ctx)
         self.assertIn("https://portal.azure.com/#web", " ".join(stop.exception.next_steps))
         self.assertFalse(ctx.http.posts(r"/oauth2PermissionGrants$"))
+
+    def test_a_malformed_telemetry_connection_string_stops_without_echoing_it(self):
+        ctx = self.context(built=True)
+        ctx.cache["outputs"]["application_insights_connection_string"] = "InstrumentationKey=leaked-value"
+        ctx.http = self.app_http(granted=True, deployed=True)
+        with self.assertRaisesRegex(deploy.Blocked, "not an Application Insights connection string") as stop:
+            deploy.phase_app(ctx)
+        self.assertNotIn("leaked-value", str(stop.exception))
 
     def test_app_targets_must_stay_inside_the_deployment(self):
         for change, pattern in (({"url": "https://example.com"}, "not a Container Apps address"),
