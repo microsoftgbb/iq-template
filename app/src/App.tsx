@@ -47,19 +47,25 @@ function App() {
   const [result, setResult] = useState<Result>({ tone: 'ready', title: 'Loading the app configuration.' })
 
   useEffect(() => {
+    // Development StrictMode mounts twice; both runs share one sign-in client and only the live one updates state.
+    let active = true
     void (async () => {
       try {
         const loaded = await loadConfig()
         const session = await createAuth(loaded)
+        if (!active) return
         setConfig(loaded)
         setAuth(session)
         setResult(session.user
           ? { tone: 'ready', title: 'Ask a question, or check the agent connection first.' }
           : { tone: 'ready', title: 'Sign in with your work account to ask the agent.' })
       } catch (error) {
-        setResult({ tone: 'error', title: error instanceof Error ? error.message : 'The app could not start.' })
+        if (active) setResult({ tone: 'error', title: error instanceof Error ? error.message : 'The app could not start.' })
       }
     })()
+    return () => {
+      active = false
+    }
   }, [])
 
   async function run(work: (session: Auth) => Promise<Result>) {

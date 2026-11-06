@@ -9,7 +9,18 @@ export interface Auth {
 }
 
 // Public SPA client with PKCE: the browser holds no secret and calls the agent as the signed-in user.
-export async function createAuth(config: AppConfig): Promise<Auth> {
+// One client per page: React runs effects twice in development, and a redirect response is single-use.
+let pending: Promise<Auth> | undefined
+
+export function createAuth(config: AppConfig): Promise<Auth> {
+  pending ??= start(config).catch((error: unknown) => {
+    pending = undefined
+    throw error
+  })
+  return pending
+}
+
+async function start(config: AppConfig): Promise<Auth> {
   const client = new PublicClientApplication({
     auth: {
       clientId: config.clientId,
