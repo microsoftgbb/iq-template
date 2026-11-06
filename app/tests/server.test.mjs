@@ -4,7 +4,7 @@ import { createServer, request } from 'node:http'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import { createHandler, settings, upstreamBody, MAX_INPUT_CHARS } from '../server/handlers.mjs'
+import { createHandler, routeName, settings, upstreamBody, MAX_INPUT_CHARS } from '../server/handlers.mjs'
 
 const env = {
   AGENT_RESPONSES_URL: 'https://ai-demo.services.ai.azure.com/api/projects/demo-project/agents/demo-assistant/endpoint/protocols/openai/responses?api-version=v1',
@@ -185,4 +185,9 @@ test('an answer that stalls or drops after its headers is a gateway error', asyn
       await app.close()
     }
   }
+})
+
+test('request telemetry is named by a low-cardinality route', () => {
+  assert.deepEqual(['/api/responses', '/config.json', '/healthz', '/assets/app-abc.js', '/', '/some/route', null].map(routeName),
+    ['/api/responses', '/config.json', '/healthz', '/assets/*', '/*', '/*', 'invalid'])
 })

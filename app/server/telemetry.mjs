@@ -18,7 +18,12 @@ if (connectionString) {
     instrumentationOptions: {
       // Each browser request becomes an App Insights request. Health probes would only add noise. HTTP spans
       // carry the method, path and status, never headers or bodies, so the user's token and question stay out.
-      http: { enabled: true, ignoreIncomingRequestHook: (request) => request.url === '/healthz' },
+      // The server makes no node:http calls of its own, so client spans would only show the SDK's requests.
+      http: {
+        enabled: true,
+        ignoreIncomingRequestHook: (request) => request.url === '/healthz',
+        disableOutgoingRequestInstrumentation: true,
+      },
       azureSdk: { enabled: false },
       mongoDb: { enabled: false },
       mySql: { enabled: false },

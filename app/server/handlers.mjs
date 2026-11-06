@@ -2,6 +2,7 @@
 // forwards the signed-in user's own Foundry token to the one configured hosted-agent endpoint.
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
+import { trace } from '@opentelemetry/api'
 
 export const MAX_BODY_BYTES = 16 * 1024
 export const MAX_INPUT_CHARS = 2000
@@ -178,11 +179,24 @@ function routeOf(target) {
   }
 }
 
+// The low-cardinality route that names request telemetry; every static file shares one name.
+export function routeName(route) {
+  if (route === null) return 'invalid'
+  if (['/healthz', '/config.json', '/api/responses'].includes(route)) return route
+  return route.startsWith('/assets/') ? '/assets/*' : '/*'
+}
+
 export function createHandler(options) {
   return async (request, response) => {
     const started = Date.now()
     // A malformed target such as // must become a 400, never an unhandled rejection that stops the server.
     const route = routeOf(request.url)
+    // With telemetry preloaded, name this request's span by its route; otherwise there is no span.
+    const span = trace.getActiveSpan()
+    if (span) {
+      span.setAttribute('http.route', routeName(route))
+      span.updateName(`${request.method} ${routeName(route)}`)
+    }
     try {
       if (route === null) {
         throw new ClientError(400, 'The request target is not valid.')
