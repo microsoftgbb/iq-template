@@ -44,6 +44,12 @@ class RenderTests(unittest.TestCase):
         values.pop("knowledge_base_connection")
         with self.assertRaisesRegex(hosted.DefinitionError, "Unknown placeholder"):
             hosted.render(DEFINITION, values)
+        # A spelling the renderer does not fill is refused rather than published as a literal.
+        for spelling in ("{{ chat_deployment }}", "{{Chat}}"):
+            data = hosted.render(DEFINITION, VALUES)
+            data["agent"]["environment_variables"]["AZURE_AI_MODEL_DEPLOYMENT_NAME"] = spelling
+            with self.subTest(spelling=spelling), self.assertRaisesRegex(hosted.DefinitionError, "still contains placeholders"):
+                hosted.validate(data)
 
     def test_unsafe_or_unsupported_settings_are_refused(self):
         base = json.loads(DEFINITION.read_text(encoding="utf-8"))

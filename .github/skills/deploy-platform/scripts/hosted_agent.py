@@ -11,6 +11,8 @@ import re
 
 PROOF_PREFIX = "AGENT_PROOF|"
 PLACEHOLDER = re.compile(r"\{\{([a-z_]+)\}\}")
+# Any brace pair left after rendering, including spellings the renderer does not fill, such as {{ Chat }}.
+LEFTOVER = re.compile(r"\{\{[^{}]*\}\}")
 # Documented hosted-agent sandbox sizes (CPU, memory).
 SIZES = {("0.5", "1Gi"), ("1", "2Gi"), ("2", "4Gi")}
 AGENT_FIELDS = ("cpu", "memory", "protocol_versions", "environment_variables")
@@ -87,7 +89,7 @@ def validate(data):
         if tool.get("require_approval") != "never":
             raise DefinitionError(f"Toolbox tool {tool['server_label']} must set require_approval to never: "
                                   "the app has no approval flow.")
-    if PLACEHOLDER.search(json.dumps(data)):
+    if LEFTOVER.search(json.dumps(data)):
         raise DefinitionError("The hosted agent definition still contains placeholders.")
 
 
