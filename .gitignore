@@ -44,11 +44,10 @@ __pycache__/
 # Disposable verification checkouts and generated runtime artifacts.
 .artifacts/
 
-# App dependencies, builds and the Managed Runtime CLI's local cache.
+# App dependencies and builds.
 node_modules/
 dist/
 *.tsbuildinfo
-.ms/
 
 # Local logs, notes, editor backups, and OS metadata.
 *.log

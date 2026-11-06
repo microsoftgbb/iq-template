@@ -1372,7 +1372,7 @@ class SignInTests(unittest.TestCase):
         self.assertTrue(all(call[call.index("--tenant") + 1] == TENANT for call in probes))
         for expected in ("GitHub CLI for example/demo-repo", f"Azure CLI in tenant {TENANT}", "Microsoft Foundry"):
             self.assertIn(expected, summary)
-        # No Power Platform or Managed Runtime CLI is involved any more.
+        # Only GitHub CLI and Azure CLI sign in; no other publishing CLI is involved.
         self.assertFalse(ctx.shell.matching(lambda args: args[0] in ("dotnet", "ms", "pac")))
 
     def test_missing_sign_ins_run_back_to_back_with_codes_only_on_stderr(self):

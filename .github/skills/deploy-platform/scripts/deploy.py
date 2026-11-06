@@ -16,7 +16,7 @@ Device-code entry and browser sign-in stay with people.
 `down` signs in the same way, deletes the Container App, hosted agent and
 toolbox, applies a reviewed full
 Terraform destroy plan, and purges the deleted Foundry account. Retained Fabric
-data and shared connections are reported for manual cleanup. Local
+workspaces and the Web IQ portal profile are reported for manual cleanup. Local
 configuration and state stay.
 
 Exit codes: 0 done, 1 usage error, 2 blocked (investigate), 3 waiting for a
@@ -425,15 +425,6 @@ def sha256_file(path):
     with open(path, "rb") as handle:
         for chunk in iter(lambda: handle.read(1 << 20), b""):
             digest.update(chunk)
-    return digest.hexdigest()
-
-
-def tree_digest(directory, exclude=(".mcs",)):
-    digest = hashlib.sha256()
-    for path in sorted(Path(directory).rglob("*")):
-        relative = path.relative_to(directory)
-        if path.is_file() and relative.parts[0] not in exclude:
-            digest.update(str(relative).encode() + b"\0" + path.read_bytes() + b"\0")
     return digest.hexdigest()
 
 
@@ -3027,7 +3018,7 @@ def phase_destroy(ctx):
     receipt = ctx.state.section("destroy")
     receipt["managed_resources_deleted_at"] = utc_now()
     ctx.state.save()
-    return f"{result}; managed resources deleted; retained data and shared connections need manual cleanup"
+    return f"{result}; managed resources deleted; retained Fabric workspaces and the Web IQ profile need manual cleanup"
 
 
 def permission_grants(ctx, phase, text):

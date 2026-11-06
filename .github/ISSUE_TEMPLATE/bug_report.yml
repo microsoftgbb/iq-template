@@ -15,8 +15,8 @@ body:
         - Deployment runner or teardown
         - Terraform infrastructure
         - Fabric items or notebooks
-        - Studio agent
-        - Managed Runtime app
+        - Foundry hosted agent
+        - Container Apps web app
         - Dev container or tooling
         - Copilot skills or guidance
         - Documentation
