@@ -1970,6 +1970,8 @@ def bootstrap_native(ctx, workspace, expected, receipts):
 
 PARTITION_SOURCE = {"mode": "directLake", "schemaName": "dbo", "expressionSource": "ScenarioLakehouse"}
 PINNED = re.compile(r"(?m)^[ \t]+annotation[ \t]+ONT_PinnedAtUtc[ \t]*=[ \t]*\S")
+ONELAKE_SOURCE = re.compile(r'Source\s*=\s*AzureStorage\.DataLake\(\s*"https://onelake\.dfs\.fabric\.microsoft\.com/'
+                            r'([0-9a-fA-F-]{36})/([0-9a-fA-F-]{36})"\s*,\s*\[\s*HierarchicalNavigation\s*=\s*true\s*\]\s*\)')
 
 
 def binding_problems(parts, workspace, lakehouse):
@@ -1994,9 +1996,12 @@ def binding_problems(parts, workspace, lakehouse):
             problems.append(f"{table} does not read dbo.{table} through ScenarioLakehouse")
         elif not PINNED.search(text):
             problems.append(f"{table} has no source pins yet")
-    expression = parts.get("expressions.tmdl") or ""
-    root = f"https://onelake.dfs.fabric.microsoft.com/{workspace}/{lakehouse}"
-    if not re.match(r"\s*expression[ \t]+'?ScenarioLakehouse'?[ \t]*=", expression) or root not in expression.lower():
+    # Match BindScenario's whole expression, so the DEV URL in a comment or unused step does not count.
+    lines = [line.strip() for line in (parts.get("expressions.tmdl") or "").splitlines() if line.strip()]
+    source = ONELAKE_SOURCE.fullmatch(lines[2]) if len(lines) == 6 else None
+    if (not source or not same_guid(source[1], workspace) or not same_guid(source[2], lakehouse)
+            or lines[0] not in ("expression ScenarioLakehouse =", "expression 'ScenarioLakehouse' =")
+            or lines[1] != "let" or lines[3:5] != ["in", "Source"] or not lines[5].startswith("lineageTag:")):
         problems.append("expressions.tmdl does not read the DEV lakehouse")
     return problems
 
