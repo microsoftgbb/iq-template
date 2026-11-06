@@ -58,8 +58,9 @@ def create_agent(credential):
         ),
         name="scenario-assistant",
         instructions=INSTRUCTIONS,
-        # TOOLBOX_ENDPOINT selects the project toolbox that the deployment runner publishes.
-        tools=FoundryToolbox(credential),
+        # TOOLBOX_ENDPOINT selects the project toolbox that the deployment runner publishes. Fabric IQ returns
+        # its answer as content and only citations as structuredContent, so the model must see both.
+        tools=FoundryToolbox(credential, tool_result_content="both"),
         middleware=[ConnectionProof()],
         # The hosting platform keeps conversation history.
         default_options={"store": False},
