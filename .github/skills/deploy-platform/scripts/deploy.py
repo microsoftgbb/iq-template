@@ -6,7 +6,8 @@ Azure CLI, ACR Tasks and Fabric/Search/Graph/Foundry REST. Its first phase
 completes every CLI sign-in the run needs, back to back, before anything is
 created. Every phase checks live state first and acts only on what is missing,
 so a rerun resumes instead of duplicating work. Plans and creations need
-approval.
+approval: each saved plan by its hash, each action by name or, for a new
+environment, everything that only adds to it at once (--approve-creates).
 
 The signed-in user is assumed to administer every target: the runner grants
 tenant-wide consent and registers required subscription features as that user,
@@ -68,10 +69,15 @@ OK, USAGE, BLOCKED, WAITING, APPROVAL = 0, 1, 2, 3, 4
 PLAN_PHASES = ("identity", "platform", "knowledge", "app", "destroy")
 # Never granted by --yes: deletions, and replacing live Fabric definitions.
 DESTRUCTIVE_APPROVALS = ("destroy", "purge-foundry", "item-update", "shared-action-group")
+# Never granted by --approve-creates, which approves only what adds to an environment: these replace or delete.
+CHANGE_APPROVALS = DESTRUCTIVE_APPROVALS + ("knowledge-registration",)
 # Approved by the sha256 prefix of exactly what they change.
 DIGEST_APPROVALS = PLAN_PHASES + ("item-update",)
 APPROVAL_KEYS = DIGEST_APPROVALS + ("knowledge-registration", "agent-publish", "app-build", "purge-foundry",
                                     "shared-action-group")
+APPROVE_CREATES_SCOPE = ("--approve-creates: this run approves saved plans that only create resources, the first "
+                         "publish of agents that don't exist yet and the environment's first image build; it still "
+                         "stops for updates, replacements, deletions, definition updates and teardown.")
 # A transient failure (a connection reset, EOF or timeout, HTTP 429 or 5xx) of a read is retried: at most this many
 # attempts in all, after Retry-After or an exponential backoff from RETRY_BACKOFF seconds.
 RETRY_ATTEMPTS = 3
@@ -667,9 +673,14 @@ def complete_sign_ins(ctx, pending):
     ctx.tokens.clear()
 
 
-def approve(ctx, key, description, pending=None):
-    """Approve one action or one exact saved plan (by hash) before it changes anything."""
+def approve(ctx, key, description, pending=None, *, creates_only=False):
+    """Approve one action or one exact saved plan (by hash) before it changes anything.
+
+    `creates_only` is the caller's finding, from facts it already holds, that the change only adds to the environment:
+    --approve-creates then approves it without a prompt and saves a receipt before the change runs.
+    """
     granted = ctx.args.approve.get(key)
+    policy = getattr(ctx.args, "approve_creates", False)
     if ctx.args.yes and key not in DESTRUCTIVE_APPROVALS:
         ctx.log(f"Approved by --yes: {description}.")
         return
@@ -684,6 +695,11 @@ def approve(ctx, key, description, pending=None):
         raise NeedsApproval(f"--approve {key}={granted} does not match the {target} (sha256 {pending['sha256'][:12]}).",
                             f"Review the current {target}, then approve its hash.",
                             approval=approval_record(key, description, pending))
+    if policy and creates_only and key not in CHANGE_APPROVALS:
+        ctx.state.data.setdefault("approvals", []).append(policy_receipt(key, description, pending))
+        ctx.state.save()
+        ctx.log(f"Approved by --approve-creates: {description}.")
+        return
     if ctx.interactive:
         if ctx.prompt(f"{description}? [y/N] ").strip().lower() in ("y", "yes"):
             return
@@ -692,7 +708,9 @@ def approve(ctx, key, description, pending=None):
     review = None
     if pending:
         review = pending.get("review") or f"Review it: terraform -chdir=infra show {pending['path']}"
-    raise NeedsApproval(f"Approval required: {description}.", review,
+    uncovered = ("Not covered by --approve-creates: it approves only plans that only create resources, agents that "
+                 "don't exist yet and the first image build.") if policy else None
+    raise NeedsApproval(f"Approval required: {description}.", uncovered, review,
                         f"Then rerun with --approve {flag}, or run interactively.",
                         approval=approval_record(key, description, pending))
 
@@ -703,6 +721,14 @@ def approval_record(key, description, pending):
         record.update(sha256=pending["sha256"], summary=pending["summary"])
         record.update({name: pending[field] for name, field in (("plan", "path"), ("review", "review")) if field in pending})
     return record
+
+
+def policy_receipt(key, description, pending):
+    """What --approve-creates approved and when, listed by status."""
+    receipt = {"key": key, "description": description, "by": "approve-creates", "at": utc_now()}
+    if pending:
+        receipt.update(sha256=pending["sha256"], counts=dict(pending["summary"]["counts"]))
+    return receipt
 
 
 def terraform_env(ctx, token_required, web_iq_required=False):
@@ -833,15 +859,22 @@ def fingerprint(ctx):
 
 
 def summarize(plan):
-    changes = []
+    changes, imports = [], []
     for change in plan.get("resource_changes") or []:
-        actions = (change.get("change") or {}).get("actions") or []
+        details = change.get("change") or {}
+        actions = details.get("actions") or []
+        # Adopting an existing resource is not a create, even when it changes nothing (a no-op import).
+        if details.get("importing"):
+            imports.append(change.get("address", "?"))
         if actions in (["no-op"], ["read"]):
             continue
         action = "replace" if "delete" in actions and "create" in actions else "+".join(actions) or "unknown"
         changes.append({"address": change.get("address", "?"), "action": action})
     counts = collections.Counter(change["action"] for change in changes)
-    return {"changes": changes, "counts": dict(sorted(counts.items()))}
+    summary = {"changes": changes, "counts": dict(sorted(counts.items()))}
+    if imports:
+        summary["imports"] = imports
+    return summary
 
 
 def describe(summary):
@@ -931,7 +964,12 @@ def converge(ctx, phase, target=None, check=None, variables=None, before_apply=N
                             f"Inspect: terraform -chdir=infra show {pending['path']}",
                             f"To apply exactly this plan, rerun with --allow-replace --approve {phase}={pending['sha256'][:12]}.",
                             approval=approval_record(phase, f"Apply the saved {phase} plan", pending))
-    approve(ctx, phase, f"Apply the saved {phase} plan ({describe(summary)})" + (f"; {note}" if note else ""), pending)
+    # Only additions: at least one change, every one a create, and nothing adopted by an import (an update,
+    # replacement, deletion or any other action is a change to review).
+    additions = not destroy and bool(summary["changes"]) and not summary.get("imports") and all(
+        change["action"] == "create" for change in summary["changes"])
+    approve(ctx, phase, f"Apply the saved {phase} plan ({describe(summary)})" + (f"; {note}" if note else ""), pending,
+            creates_only=additions)
     if before_apply:
         before_apply()
     result = terraform(ctx, "apply", "-input=false", pending["path"], token=git_token_required(ctx),
@@ -3066,10 +3104,12 @@ def phase_agent(ctx):
         agent["status"] = foundry.status(live_agent(ctx, agent), agent["body"])
     pending = [agent for agent in agents if agent["status"] != "current"]
     if pending:
+        # Only creations when no agent to publish exists yet: a new version of a live agent changes it.
         approve(ctx, "agent-publish", "; ".join(
             f"{'Create' if agent['status'] == 'missing' else 'Publish a new version of'} Foundry agent "
             f"{agent['name']} ({agent['display_name']}) from {agent['source']} "
-            f"(sha256 {agent['body']['metadata'][foundry.DIGEST_KEY][:12]})" for agent in pending))
+            f"(sha256 {agent['body']['metadata'][foundry.DIGEST_KEY][:12]})" for agent in pending),
+            creates_only=all(agent["status"] == "missing" for agent in pending))
     for agent in pending:
         created = agent["status"] == "missing"
         digest = agent["body"]["metadata"][foundry.DIGEST_KEY]
@@ -3197,11 +3237,14 @@ def phase_app(ctx):
     # The app registration exists once the platform plan is applied: grant its sign-in scope before users arrive.
     consent = ensure_app_consent(ctx, required=True)
     tag = app_tag(ctx)
-    app_image_tag_line(ctx)
+    deployed, _ = app_image_tag_line(ctx)
     receipts = ctx.state.section("app")
     if not image_built(ctx, name, repository, tag):
+        # The environment's first image: none is deployed or set, and no build was attempted before.
+        first = (deployed.group(1) == "null" and not (outputs(ctx).get("app") or {}).get("image_tag")
+                 and "build" not in receipts and not receipts.get("image_tag"))
         approve(ctx, "app-build", f"Build image {repository}:{tag} from this checkout's committed {APP_CONTEXT}/ in "
-                                  f"registry {name} with ACR Tasks")
+                                  f"registry {name} with ACR Tasks", creates_only=first)
         receipts["build"] = {"tag": tag, "started_at": utc_now()}
         ctx.state.save()
         # For a local context, az acr build reads --file from the working directory, the repository root, and uploads
@@ -3532,6 +3575,8 @@ def run_phases(ctx, phases):
     ctx.phases = phases
     if ctx.args.command == "up" and ctx.state.section("destroy").get("started_at"):
         raise Blocked("This deployment is being torn down; do not resume up with its old receipts.")
+    if getattr(ctx.args, "approve_creates", False):
+        ctx.log(APPROVE_CREATES_SCOPE)
     report = {"result": "done", "phases": {}}
     began_run = ctx.clock()
     for phase in phases:
@@ -3587,6 +3632,9 @@ def status_report(ctx):
     if pending:
         report["pending_plans"] = {phase: {"sha256": plan["sha256"], "summary": describe(plan["summary"]),
                                            "plan": plan["path"]} for phase, plan in pending.items()}
+    approvals = ctx.state.data.get("approvals") or []
+    if approvals:
+        report["approvals"] = approvals
     report["next"] = ["Receipts only; up/down rechecks live state before acting."]
     return OK, report
 
@@ -3600,6 +3648,14 @@ def print_report(report, as_json):
         print(f"{phase:<10} {entry['status']:<9} {seconds:>6}  {entry['detail']}")
     if report.get("seconds") is not None:
         print(f"{'total':<10} {'':<9} {report['seconds']:>5}s")
+    if report.get("approvals"):
+        print("\nPolicy approvals:")
+        for receipt in report["approvals"]:
+            # A saved plan by its hash and change counts; an action by what it did.
+            what = (f"sha256 {receipt['sha256'][:12]}, {describe({'counts': receipt.get('counts') or {}})}"
+                    if receipt.get("sha256") else receipt.get("description", ""))
+            print(f"  {receipt.get('at', '?')}  {receipt.get('key', '?'):<14} {what} (by --{receipt.get('by', '?')})")
+        print()
     if report.get("message"):
         print(f"\n{report['result'].upper()}: {report['message']}")
     for step in report.get("next") or []:
@@ -3635,7 +3691,8 @@ def parse_arguments(argv):
     options = argparse.ArgumentParser(add_help=False)
     group = options.add_argument_group("approvals and behavior")
     group.add_argument("--yes", action="store_true",
-                       help="approve plans and creations in this run (never deletions or replacements)")
+                       help="approve every plan, publication and build in this run, updates of existing resources "
+                            "included (never deletions, replacements or definition updates)")
     group.add_argument("--approve", action="append", default=[], metavar="KEY[=SHA]",
                        help="approve a saved plan or item update by hash (identity|platform|knowledge|app|destroy|"
                             "item-update=SHA) or an action (knowledge-registration, agent-publish, app-build, "
@@ -3653,6 +3710,10 @@ def parse_arguments(argv):
     deployment = argparse.ArgumentParser(add_help=False)
     deployment.add_argument("--allow-replace", action="store_true",
                             help="permit an approved up plan that deletes or replaces")
+    deployment.add_argument("--approve-creates", action="store_true",
+                            help="approve saved plans that only create resources, a first agent publish and a first "
+                                 "image build; still stop for updates, replacements, deletions, definition updates "
+                                 "and teardown")
     group = deployment.add_argument_group("first-use configuration (when infra/terraform.tfvars is missing)")
     group.add_argument("--project-name")
     group.add_argument("--location")
@@ -3685,6 +3746,9 @@ def parse_arguments(argv):
     args = parser.parse_args(argv)
     if args.command == "status":
         args.non_interactive, args.timeout_minutes, args.approve = True, 30, []
+    if args.command == "up" and args.approve_creates and args.yes:
+        up.error("--approve-creates and --yes are mutually exclusive: --yes also approves updates of existing "
+                 "resources; --approve-creates is the narrower choice, approving only what adds to the environment")
     if args.timeout_minutes < 1:
         parser.error("--timeout-minutes must be at least 1")
     args.approve = approvals(args.approve, parser)
