@@ -14,7 +14,8 @@
 # # Seed the scenario
 # Run after the Scenario lakehouse is deployed. No default lakehouse attachment
 # is required: the target is resolved only in this notebook's current workspace.
-# Missing synthetic keys are inserted; existing rows and starter.txt are preserved.
+# Missing synthetic keys are inserted; existing rows and Files/documents/starter.txt
+# are preserved.
 # By default, only workspaces ending in -dev or -test may receive demo data.
 
 # PARAMETERS CELL ********************
@@ -141,10 +142,10 @@ demo_assets.site_id references demo_sites.site_id. ScenarioOntology maps these
 tables to Site and Asset entities and their LocatedAt relationship.
 BindScenario configures the target-specific binding.
 
-This starter document is indexed from the lakehouse Files area by Foundry IQ.
-The Delta tables and ontology are not indexed by that OneLake Files knowledge
-source. Register ScenarioOntology as a separate fabricOntology knowledge source
-to query its bound data live, with a delegated end-user token.
+Foundry IQ indexes this starter document from the lakehouse's Files/documents
+folder, through the default documents knowledge source. That OneLake folder
+source does not index the Delta tables or the ontology. Query ScenarioOntology
+live for its bound data, with the signed-in user's delegated token.
 The facts above describe the original seed, not current operational status.
 Use the ontology source, not this document, for current entity values and counts.
 
@@ -153,16 +154,20 @@ the sample data in each target workspace; Git does not copy OneLake data.
 Reruns preserve existing rows and this file, including any local edits.
 """
 
+# The default knowledge_folders entry, documents (target_path documents), indexes Files/documents.
 files_path = f"{lakehouse_path}/Files"
-starter_path = f"{files_path}/starter.txt"
+documents_path = f"{files_path}/documents"
+starter_path = f"{documents_path}/starter.txt"
 if notebookutils.fs.exists(starter_path):
-    print("Preserving existing Files/starter.txt.")
+    print("Preserving existing Files/documents/starter.txt.")
 else:
-    if not notebookutils.fs.mkdirs(files_path):
-        raise RuntimeError(f"Could not create the Files directory: {files_path}")
+    if not notebookutils.fs.mkdirs(documents_path):
+        raise RuntimeError(f"Could not create the documents folder: {documents_path}")
     if not notebookutils.fs.put(starter_path, starter_document, False):
         raise RuntimeError(f"Could not write starter knowledge: {starter_path}")
-    print("Created Files/starter.txt.")
+    print("Created Files/documents/starter.txt.")
+if notebookutils.fs.exists(f"{files_path}/starter.txt"):
+    print("Left Files/starter.txt in place; the default documents folder source does not index it.")
 
 print(f"Seed completed in {workspace_name}; lakehouse GUID: {lakehouse_id}")
 print("SQL endpoint discovery, graph loading and semantic-model refresh are separate.")
