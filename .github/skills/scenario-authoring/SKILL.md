@@ -43,7 +43,10 @@ do not turn the sample binder into unrestricted text substitution.
    descriptions in `agents/scenario-with-iq/tools/`. Keep each tool's server label,
    connection placeholder, read-only `allowed_tools` and `require_approval: never`.
    Change the reply format only together with `app/src/live/reply.ts`, its tests
-   and the mock answers. Update the app's sample questions and the runner's
+   and the demo script's scripted replies. When you change the story, update the
+   demo script, `app/src/demo/script.json`: its steps, questions, checks and
+   scripted replies, which the app's sample questions, presenter mode, mock mode
+   and `npm run rehearse` all read; `npm test` and `npm run build` validate it. Update the runner's
    `SCENARIO` readiness questions and facts with the seed data. To show what one IQ
    adds, add a `scenario-no-<iq>` variant as `agents/README.md` describes. Add
    scenario views in `app/src/` on the shell's sign-in, tool timeline and failure
@@ -71,7 +74,10 @@ widen roles or recreate a partially deployed agent or app to get a plausible
 answer.
 
 Run `python3 .github/skills/deploy-platform/scripts/foundry_agent.py validate` and the
-deploy-platform and app tests after changing agents or the app. Use product skills
+deploy-platform and app tests after changing agents or the app. To tune instructions or
+tool descriptions against live answers, follow the tuning playbook in
+`docs/scenario-authoring.md#tune-with-rehearsals` in a chosen derived deployment:
+`npm run rehearse` asks live agents, so it is never a static check. Use product skills
 from `docs/copilot-tooling.md` for opted-in capabilities, but retain repository
 ownership/approval rules. Unsupported capabilities stop for
 a design decision rather than becoming scenario-specific improvisation.

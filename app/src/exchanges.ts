@@ -11,6 +11,8 @@ export interface Turn {
   running: boolean
   toolCalls: ToolCall[]
   result?: TurnResult
+  // The presenter showed the step's scripted answer in place of this turn's (presenter mode's plan B).
+  scripted?: boolean
 }
 
 export interface Thread {
@@ -22,6 +24,8 @@ export interface Thread {
 export interface Exchange {
   id: string
   question: string
+  // The demo script step that presenter mode asked this question for.
+  stepId?: string
   threads: Thread[]
 }
 
@@ -31,6 +35,7 @@ export type Action =
   | { type: 'restart'; turnId: string; startedAt: number }
   | { type: 'tool'; turnId: string; call: ToolCall }
   | { type: 'finish'; turnId: string; result: TurnResult }
+  | { type: 'scripted'; turnId: string }
 
 export function newTurn(id: string, question: string, startedAt: number, previousResponseId?: string): Turn {
   return { id, question, startedAt, running: true, toolCalls: [], ...(previousResponseId ? { previousResponseId } : {}) }
@@ -74,5 +79,7 @@ export function reduce(state: Exchange[], action: Action): Exchange[] {
       return mapTurns(state, (turn) => (turn.id === action.turnId
         ? { ...turn, running: false, result: action.result, toolCalls: action.result.toolCalls }
         : turn))
+    case 'scripted':
+      return mapTurns(state, (turn) => (turn.id === action.turnId && !turn.running ? { ...turn, scripted: true } : turn))
   }
 }

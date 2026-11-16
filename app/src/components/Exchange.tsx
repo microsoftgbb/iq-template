@@ -1,7 +1,10 @@
-import { useEffect, useId, useState, type FormEvent } from 'react'
+import { useEffect, useId, useMemo, useRef, useState, type FormEvent } from 'react'
+import { SCRIPTED_LABEL, scriptedFallback } from '../demo/presenter.ts'
+import { SCRIPT, type Scripted } from '../demo/script.ts'
 import { followUpFrom, type Exchange, type Thread, type Turn } from '../exchanges.ts'
 import { VARIANT_DETAILS, VARIANT_LABELS, announcement, duration, iqName } from '../labels.ts'
 import { QUESTION_LIMIT } from '../live/protocol.ts'
+import { parseReply } from '../live/reply.ts'
 import { UNAUTHORIZED } from '../live/stream.ts'
 import { CANCELLED } from '../live/turn.ts'
 import type { TurnResult } from '../live/types.ts'
@@ -13,6 +16,8 @@ export interface TurnActions {
   onRetry: (thread: Thread, turn: Turn) => void
   onStop: (turn: Turn) => void
   onSignIn: () => void
+  // Presenter mode's plan B: shows the step's scripted answer in place of a turn that didn't answer.
+  onScripted: (turn: Turn) => void
 }
 
 // Whole seconds since the turn started, ticking while it runs.
@@ -37,7 +42,20 @@ function Running({ turn, onStop }: { turn: Turn; onStop: () => void }) {
   )
 }
 
-function Outcome({ result, turnId, onRetry, onSignIn }: { result: TurnResult; turnId: string; onRetry: () => void; onSignIn: () => void }) {
+interface OutcomeProps {
+  result: TurnResult
+  turnId: string
+  onRetry: () => void
+  onSignIn: () => void
+  // Presenter mode's plan B, offered once a step's turn ends without an answer.
+  onScripted?: () => void
+}
+
+function ScriptedButton({ onScripted }: { onScripted?: () => void }) {
+  return onScripted ? <button type="button" className="secondary" onClick={onScripted}>Show scripted answer</button> : null
+}
+
+function Outcome({ result, turnId, onRetry, onSignIn, onScripted }: OutcomeProps) {
   switch (result.status) {
     case 'answered':
       return <Reply reply={result.reply} turnId={turnId} />
@@ -54,6 +72,7 @@ function Outcome({ result, turnId, onRetry, onSignIn }: { result: TurnResult; tu
               Authorize {name ?? 'tool'} access
             </a>
             <button type="button" className="secondary" onClick={onRetry}>Ask again</button>
+            <ScriptedButton onScripted={onScripted} />
           </div>
         </div>
       )
@@ -66,14 +85,32 @@ function Outcome({ result, turnId, onRetry, onSignIn }: { result: TurnResult; tu
             {result.code === UNAUTHORIZED
               ? <button type="button" className="primary" onClick={onSignIn}>Sign in again</button>
               : <button type="button" className="secondary" onClick={onRetry}>Ask again</button>}
+            <ScriptedButton onScripted={onScripted} />
           </div>
         </div>
       )
   }
 }
 
-function TurnView({ thread, turn, first, actions }: { thread: Thread; turn: Turn; first: boolean; actions: TurnActions }) {
+// The script's reply, styled and labelled so nobody mistakes it for a live answer. It takes the focus from the button
+// that showed it.
+function ScriptedAnswer({ scripted, turnId }: { scripted: Scripted; turnId: string }) {
+  const reply = useMemo(() => parseReply(scripted.reply), [scripted.reply])
+  const box = useRef<HTMLDivElement>(null)
+  useEffect(() => box.current?.focus(), [])
+  return (
+    <div className="scripted" ref={box} tabIndex={-1}>
+      <p className="scripted-label">
+        <strong>{SCRIPTED_LABEL}</strong> From the demo script: the agent didn’t answer this turn live.
+      </p>
+      <Reply reply={reply} turnId={`${turnId}-scripted`} />
+    </div>
+  )
+}
+
+function TurnView({ thread, turn, first, stepId, actions }: { thread: Thread; turn: Turn; first: boolean; stepId?: string; actions: TurnActions }) {
   const result = turn.running ? undefined : turn.result
+  const fallback = scriptedFallback(SCRIPT, stepId, thread.variant, turn, first)
   return (
     <div className="turn" aria-busy={turn.running}>
       {!first && <p className="follow-up-question"><span>Follow-up</span> {turn.question}</p>}
@@ -81,7 +118,14 @@ function TurnView({ thread, turn, first, actions }: { thread: Thread; turn: Turn
       {turn.running && <Running turn={turn} onStop={() => actions.onStop(turn)} />}
       {result && (
         <>
-          <Outcome result={result} turnId={turn.id} onRetry={() => actions.onRetry(thread, turn)} onSignIn={actions.onSignIn} />
+          <Outcome
+            result={result}
+            turnId={turn.id}
+            onRetry={() => actions.onRetry(thread, turn)}
+            onSignIn={actions.onSignIn}
+            onScripted={fallback && !turn.scripted ? () => actions.onScripted(turn) : undefined}
+          />
+          {fallback && turn.scripted && <ScriptedAnswer scripted={fallback} turnId={turn.id} />}
           <p className="meta">
             {result.responseId && <span>Response <code>{result.responseId}</code></span>}
             <span>{duration(result.elapsedMs)}</span>
@@ -119,7 +163,7 @@ const STATUS_LABELS: Record<'running' | TurnResult['status'], string> = {
   failed: 'Not answered',
 }
 
-function ThreadCard({ thread, actions }: { thread: Thread; actions: TurnActions }) {
+function ThreadCard({ thread, stepId, actions }: { thread: Thread; stepId?: string; actions: TurnActions }) {
   const id = useId()
   const last = thread.turns.at(-1)
   const status = !last || last.running ? 'running' : last.result?.status ?? 'running'
@@ -130,7 +174,9 @@ function ThreadCard({ thread, actions }: { thread: Thread; actions: TurnActions 
         <span className="thread-detail">{VARIANT_DETAILS[thread.variant]}</span>
         <span className={`state state-${status}`}>{STATUS_LABELS[status]}</span>
       </header>
-      {thread.turns.map((turn, index) => <TurnView key={turn.id} thread={thread} turn={turn} first={index === 0} actions={actions} />)}
+      {thread.turns.map((turn, index) => (
+        <TurnView key={turn.id} thread={thread} turn={turn} first={index === 0} stepId={stepId} actions={actions} />
+      ))}
       {followUpFrom(thread) && <FollowUp thread={thread} onFollowUp={actions.onFollowUp} />}
     </section>
   )
@@ -138,11 +184,13 @@ function ThreadCard({ thread, actions }: { thread: Thread; actions: TurnActions 
 
 export function ExchangeView({ exchange, actions }: { exchange: Exchange; actions: TurnActions }) {
   const id = useId()
+  const step = exchange.stepId ? SCRIPT.steps.find((entry) => entry.id === exchange.stepId) : undefined
   return (
     <article className="exchange" aria-labelledby={id}>
+      {step && <p className="exchange-step">{step.title}</p>}
       <h2 id={id} className="question">{exchange.question}</h2>
       <div className={exchange.threads.length > 1 ? 'threads compare' : 'threads'}>
-        {exchange.threads.map((thread) => <ThreadCard key={thread.id} thread={thread} actions={actions} />)}
+        {exchange.threads.map((thread) => <ThreadCard key={thread.id} thread={thread} stepId={exchange.stepId} actions={actions} />)}
       </div>
     </article>
   )

@@ -921,6 +921,247 @@ summary .count {
   font-size: 0.9375rem;
 }
 
+/* Presenter mode: the demo script's steps on a rail, the current step with its timers, question and notes. A
+   scripted answer is hatched and labelled, so it never passes for a live one. */
+
+.presenter {
+  display: grid;
+  gap: 20px;
+  padding: 20px 24px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+@media (min-width: 900px) {
+  .presenter {
+    grid-template-columns: minmax(200px, 250px) minmax(0, 1fr);
+    align-items: start;
+  }
+}
+
+.rail ol {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.rail-step {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  width: 100%;
+  min-height: 40px;
+  padding: 6px 10px;
+  background: transparent;
+  color: var(--ink-2);
+  font-weight: 500;
+  text-align: left;
+}
+
+.rail-step:hover {
+  background: var(--surface-2);
+}
+
+.rail-step[aria-current='step'] {
+  border-color: var(--line-strong);
+  background: var(--surface-2);
+  color: var(--ink);
+  font-weight: 650;
+}
+
+.rail-number {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.rail-step[aria-current='step'] .rail-number {
+  border-color: var(--primary);
+  background: var(--primary);
+  color: var(--on-primary);
+}
+
+.rail-title {
+  flex: 1 1 8rem;
+  min-width: 0;
+}
+
+.stage {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.stage p {
+  margin: 0;
+}
+
+.stage-head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 16px;
+  color: var(--ink-3);
+  font-size: 0.8125rem;
+}
+
+.timers {
+  display: flex;
+  gap: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+.timers [role='timer']:first-child {
+  color: var(--ink);
+  font-weight: 650;
+}
+
+.stage-title {
+  font-size: 1.375rem;
+  font-weight: 650;
+  letter-spacing: -0.015em;
+  line-height: 1.3;
+}
+
+/* The title holds the focus so Enter asks (Presenter.tsx); it is not a control, so it shows no focus ring. */
+.stage-title:focus {
+  outline: none;
+}
+
+.stage-iqs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.stage .stage-question {
+  max-width: 75ch;
+  padding: 8px 0 8px 14px;
+  border-left: 3px solid var(--line-strong);
+  font-size: 1.125rem;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.stage .actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.notes {
+  padding: 14px 16px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 12px;
+  background: var(--surface-2);
+}
+
+.notes dl {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+}
+
+.notes dl div {
+  display: grid;
+  grid-template-columns: 4.5rem minmax(0, 1fr);
+  gap: 12px;
+}
+
+.notes dt {
+  color: var(--ink-3);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.notes dd {
+  max-width: 75ch;
+  margin: 0;
+}
+
+.notes dd ul {
+  margin: 0;
+  padding-left: 1.1em;
+}
+
+.notes.blank {
+  border-style: solid;
+}
+
+.notes-blank,
+.keys {
+  color: var(--ink-3);
+  font-size: 0.8125rem;
+}
+
+kbd {
+  padding: 0 5px;
+  border: 1px solid var(--line-strong);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--surface);
+  font-family: var(--mono);
+  font-size: 0.75rem;
+}
+
+.exchange-step {
+  margin: 0 0 4px;
+  color: var(--ink-3);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.scripted {
+  margin-top: 12px;
+  overflow: hidden;
+  border: 2px dashed var(--attention-line);
+  border-radius: 10px;
+}
+
+.scripted:focus {
+  outline: none;
+}
+
+.scripted:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.scripted-label {
+  margin: 0;
+  padding: 8px 14px;
+  background: repeating-linear-gradient(135deg, var(--attention-soft) 0 10px, color-mix(in srgb, var(--attention-soft) 55%, var(--surface)) 10px 20px);
+  color: var(--attention);
+  font-size: 0.8125rem;
+}
+
+.scripted-label strong {
+  margin-right: 6px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.scripted .reply {
+  padding: 12px 14px 14px;
+}
+
 @media (max-width: 640px) {
   .topbar {
     padding: 10px 16px;
@@ -939,7 +1180,8 @@ summary .count {
     padding: 0 16px 24px;
   }
 
-  .composer {
+  .composer,
+  .presenter {
     padding: 18px 16px 16px;
   }
 

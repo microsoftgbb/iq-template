@@ -4,6 +4,9 @@ import { readdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { brotliCompressSync, constants, gzipSync } from 'node:zlib'
+// The demo script drives the sample questions, presenter mode and mock mode, and src/demo/script.ts throws when it is
+// invalid: loading it here fails every build, the image's included, rather than the page.
+import './src/demo/script.ts'
 
 const COMPRESSIBLE = new Set(['.html', '.js', '.css', '.json', '.svg', '.txt', '.map'])
 

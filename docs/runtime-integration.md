@@ -329,9 +329,14 @@ traces both halves of a turn to the Application Insights resource `appi-<prefix>
   Foundry portal's **Traces** view lists the runs and finds one by the response ID
   the app shows. Traces appear within a few minutes.
 
-To find a turn's trace by the response ID the app shows, query
-`AppDependencies | where Properties["gen_ai.response.id"] == "<response ID>"` and
-open its `OperationId`.
+To find a turn's trace by the response ID the app shows, run
+`deploy.py trace "<response ID>"`: it validates the ID, queries Application Insights
+with `az monitor app-insights query` for the operation whose dependency carries that
+`gen_ai.response.id`, and prints the operation's spans with their durations, outcomes
+and tool names, never their content. Through that API, Application Insights uses its
+classic table names, `dependencies` with `customDimensions`. In the Log Analytics
+workspace, query `AppDependencies | where Properties["gen_ai.response.id"] == "<response ID>"`
+and open its `OperationId`.
 
 Nothing holds an ingestion key: Application Insights accepts only Entra ID, and the
 app's managed identity and the Foundry project's identity publish with **Monitoring
@@ -426,7 +431,10 @@ A deployed resource is not readiness. The runner reports **DEV ready** after
 `verify`, **agents ready** after `agent` and a **healthy app** after `app`; an answer
 from each variant through the app gives **verified for one user**. None is a ready
 shell. A single-account run is verified for that user, with isolation not
-demonstrated. Work IQ stays unverified without a tenant with mailboxes and a
+demonstrated. Before a session, `deploy.py check` repeats the runner's read-only
+readiness reads and `npm run rehearse` asks the demo script's questions as you
+([runbook](runbook.md)); a passing rehearsal is answers for your account, not
+evidence for other users. Work IQ stays unverified without a tenant with mailboxes and a
 spending policy that covers the Work IQ API. A catalog entry, cached sign-in,
 plausible answer or the preflight's `candidate` result is not evidence.
 
@@ -466,7 +474,7 @@ before changing regions or replacing anything.
 
 From `app/`, run the checks as CI does: `npm ci`, `npm run lint`, `npm run build`
 and `npm test`. `npm run dev:mock` serves the page at `http://localhost:3000/` with
-canned answers for the sample questions: no sign-in and no Azure. The mock module
+the demo script's scripted answers: no sign-in and no Azure. The mock module
 loads only behind a literal `import.meta.env.MODE === 'mock'`, so production builds
 leave it out.
 
@@ -540,8 +548,9 @@ token checks or recreate an agent to hide a failure.
 
 **Cost hygiene.** Between sessions, pause the Fabric capacity and set
 `app = { min_replicas = 0 }`, then rerun `up` to apply it. Resume the capacity
-before the next session and warm up with one question: the first one waits for the
-capacity and a cold start.
+before the next session, run `deploy.py check` and warm up with one question: the
+first one waits for the capacity and a cold start. The [presenter runbook](runbook.md)
+covers a session from the day before to the reset.
 
 ## Routes to re-validate
 

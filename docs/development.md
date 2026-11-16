@@ -72,11 +72,12 @@ The app is a standalone npm project in `app/` with its own `package-lock.json`. 
 
 | Command | Runs |
 | --- | --- |
-| `npm run dev:mock` | The page at `http://localhost:3000/` with canned answers for the sample questions: no sign-in and no Azure |
+| `npm run dev:mock` | The page at `http://localhost:3000/` with the demo script's scripted answers: no sign-in and no Azure |
 | `npm run dev` | The real server with Vite's middleware at `http://localhost:3000/`, against the deployment that the ignored `app/.env.local` names |
 | `npm run build` | The type check, then the page into `dist/` and the server into one module, `dist-server/main.mjs` |
 | `npm start` | The built server on port 8080, with the same settings |
 | `npm run lint`, `npm test` | ESLint; the unit tests, with `node --test` and type stripping |
+| `npm run rehearse` | Asks the demo script's questions of the deployed agents, as you, and checks each answer ([rehearsal](#demo-script-presenter-mode-and-rehearsal)); a live operation, never a template check |
 
 Write `app/.env.local` from `terraform -chdir=infra output -json app_settings`, and
 register `app_local_redirect_uris = ["http://localhost:3000/redirect.html"]` before
@@ -98,9 +99,14 @@ Keep these boundaries:
   `{ cid, variant, question, previousResponseId? }` and builds no prompt of its own.
 - **Mock mode.** The app loads [`app/src/mock/client.ts`](../app/src/mock/client.ts)
   only behind the literal `import.meta.env.MODE === 'mock'` comparison, so production
-  builds drop it. Keep that comparison literal.
+  builds drop it. Keep that comparison literal. It replays the demo script's scripted
+  answers.
+- **Demo script.** [`app/src/demo/script.json`](../app/src/demo/script.json) is the
+  single source of the sample questions, presenter mode, mock mode's replies and the
+  rehearsal ([below](#demo-script-presenter-mode-and-rehearsal)).
 - **Reply format.** Change the agents' shared instructions, the parser and its tests,
-  and the mock answers together ([reply format](architecture.md#reply-format)).
+  the demo script's scripted replies and mock mode together
+  ([reply format](architecture.md#reply-format)).
 - **Tests.** `app/tests/*.test.ts` import the pure modules and the server directly,
   with fake Foundry streams and signing keys, so keep those modules free of React and
   Vite-only APIs, import them with explicit `.ts` paths and keep all TypeScript
@@ -113,6 +119,68 @@ placeholder settings and checks its health endpoint, its refusal of an
 unauthenticated question and of a missing configuration, and the redirect bridge's
 framing header. The agent phase publishes the definitions in this checkout, and the
 app phase builds only committed app files: commit before you rerun `up`.
+
+## Demo script, presenter mode and rehearsal
+
+[`app/src/demo/script.json`](../app/src/demo/script.json), format `iq-template.demo.v1`, is
+the demo's single source: the app's sample questions, presenter mode's steps and notes, mock
+mode's replies and the rehearsal's checks all come from it.
+[`script.ts`](../app/src/demo/script.ts) validates and types it. The tests and
+`vite.config.ts` load it, so a broken script fails `npm test` and every build, the image's
+included, rather than a session. The
+[presenter runbook](runbook.md) is the procedure for presenting it.
+
+| Step field | Meaning |
+| --- | --- |
+| `id`, `title` | A unique lowercase slug, such as `live-facts`, and the title on the rail |
+| `iq` | The IQs the step shows: `fabric`, `foundry`, `web` and `work` |
+| `say`, `do`, `land`, `setup` | The presenter's notes: the talk track, the action, the point to land and, optionally, what must be true first |
+| `question` | Optional: a step without one is talk only |
+| `variants` | The agents to ask, in order: `without_iq`, `with_iq` or both, side by side |
+| `requires` | Optional, only `work_iq`: the step needs Work IQ, so presenter mode and the rehearsal can skip it |
+| `checks` | Per variant: `keyFacts` and `mustNot`, each `{ fact, anyOf }` (the answer contains a phrase, ignoring case); `markers`, the prefixes the answer must use (`D`, `F`, `Web`, `W`); `tools`, which must run (`FabricIQOntology`, `FoundryIQKnowledge`, `WebIQPublicContext`, `WorkIQMail`); and optional `manual` checks for a person |
+| `scripted` | Per variant: `reply`, a reply in the [reply format](architecture.md#reply-format) as a list of Markdown lines, and `tools`, the calls mock mode replays (`server`, `tool`, `arguments`) |
+
+The validation refuses duplicate ids or questions; unknown variants, IQs, markers or tools; a
+`checks` or `scripted` entry for a variant the step doesn't ask, and an asked variant without
+both; a scripted reply that cites a marker of a tool it doesn't call; any tool or marker for the
+variant without IQ; and a step that expects Work IQ mail without `requires: "work_iq"`. A test
+also scores every scripted reply against its own checks.
+
+**Presenter mode.** `?presenter=1`, or **Presenter mode** in the header, shows the steps on a
+rail, the current step's question and notes (Say, Do, Land, Setup and the facts each answer
+should show), and a timer for the step and one for the session; the tab's sessionStorage
+remembers it, through a sign-in redirect. **→** or **Page Down**, **←** or **Page Up**,
+**Enter**, **N** and **B** work as a presentation clicker sends them, never while a text field
+has focus. When a turn asked from a step ends without an answer, **Show scripted answer**
+renders the step's scripted reply, labelled *Scripted answer, not live*. Those replies ship in
+production builds for that reason; the mock module still doesn't. The rules are pure functions
+in [`src/demo/presenter.ts`](../app/src/demo/presenter.ts), tested under Node. It needs no
+dependency and no inline style, which the content security policy forbids.
+
+**Rehearsal.** `npm run rehearse`, from `app/`, asks each step's question of each agent the step
+names, one question at a time, through the server's own Foundry client
+([`server/rehearsal.ts`](../app/server/rehearsal.ts)). It uses the deployment that
+`app/.env.local` names and asks as the Azure CLI's signed-in user, with a token for
+`https://ai.azure.com` kept in memory. It checks key facts and must-nots in the answer, markers
+(present, and the variant's own), the reply format, tools (from Foundry's stream, or from the
+Steps list when the stream reported none) and the time, against 120 seconds. It prints a table
+of step, variant, run, result, seconds and what was missing, and saves the results as an
+owner-only file in the repository's ignored `.artifacts/rehearsal/`.
+
+| Option | Does |
+| --- | --- |
+| `--step <id>` | Only this step; repeatable |
+| `--variant <with_iq or without_iq>` | Only this agent |
+| `--runs <n>` | Ask each question n times, 1 to 5; 2 by default |
+| `--with-work-iq` | Include the steps that need Work IQ, which are skipped otherwise |
+| `--compare <a> <b>` | Show two results files side by side: per step and agent, the passes out of the runs and the median time |
+
+It exits `0` when every turn passed, `1` when a check failed, `2` on a usage error and `3` when a
+tool needs your consent: open the printed link, accept as yourself, and run it again. It asks
+live agents, so it's never a template check, and its results hold the replies, which can hold
+mail: never commit them. [Tune with rehearsals](scenario-authoring.md#tune-with-rehearsals)
+explains how to use it to improve a step.
 
 ## Deploy deterministically
 
@@ -146,6 +214,9 @@ Without `infra/terraform.tfvars`, also pass `--project-name`, `--location` and `
 | --- | --- |
 | `up [--through <phase>]` | Runs the phases in order, re-verifying earlier ones, until done, the given phase or a gate. No gate can be skipped. |
 | `status [--json]` | Summarizes the receipts, including what `--approve-creates` approved, without cloud calls |
+| `links [--json]` | Prints portal links to the app and its presenter mode; Fabric IQ's ontology, lakehouse and DEV workspace and the Fabric capacity; Foundry IQ's project and Search service; Web IQ's account and portal; with Work IQ, its API permissions; Outlook on the web; and Application Insights. It reads only Terraform's outputs and calls no Azure, Fabric or Foundry API; its output holds deployment IDs: never commit it |
+| `check [--json]` | Reads, before a session, whether the Fabric capacity is `Active` (or prints the exact command to resume it), the app answers `/healthz` and serves this deployment's client ID, each agent runs its reviewed definition and each knowledge source's last ingestion completed, each with its fix, and lists what only you can check: your consents and, with Work IQ, the sample mail. It never changes anything. Its exit codes are the runner's: `0` ready, `2` not ready, `3` when a sign-in or another person's action must come first and `1` on a usage error |
+| `trace <response ID> [--days N] [--json]` | Finds the turn with that Foundry response ID, the one the app shows under an answer, in Application Insights through `az monitor app-insights query` (the last 7 days by default), and prints its spans: name, duration, outcome and tool name. It validates the ID before building the query and never reads message content or the `AppGenAIContent` table. It needs Azure CLI's `application-insights` extension (`az extension add --name application-insights`) |
 | `down` | Signs in, then deletes the environment; see [delete the environment](#delete-the-environment) |
 
 | Exit | Meaning |

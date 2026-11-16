@@ -89,6 +89,15 @@ is unavailable in that region.
 
 [Deployment stages and approval gates](docs/deployment-flow.md) | [Single-prompt setup](docs/development.md#deploy-from-one-prompt)
 
+## Present it
+
+The app has a **presenter mode** (`?presenter=1`): the steps of one demo script,
+[`app/src/demo/script.json`](app/src/demo/script.json), on a rail with talk-track notes,
+timers and presentation-clicker keys, and a clearly labelled scripted answer when a live
+turn fails. `npm run rehearse` asks the script's questions of your deployment and checks
+each answer; `deploy.py check` confirms readiness before a session without changing
+anything. Follow the [presenter runbook](docs/runbook.md).
+
 ## Delete the environment
 
 From the original derived checkout, with its tfvars, backend and deployment receipts:

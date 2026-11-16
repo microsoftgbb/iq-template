@@ -21,14 +21,26 @@ purges the deleted Foundry account. Retained Fabric data and Entra
 registrations are reported for manual cleanup. Local configuration and state
 stay.
 
+`links`, `check` and `trace` only read: they take no lock, write no receipt and
+never prompt, sign in or change anything. `links` prints portal links to the
+app and the IQ resources from Terraform outputs alone, calling no Azure, Fabric
+or Foundry API; its output holds deployment IDs, so never commit it. `check`
+reports, item by item, whether the deployment is ready to present the sample,
+with each failure's fix. `trace` finds a turn in Application Insights by the
+response ID the app shows, reading span names and timings, never message
+content.
+
 Exit codes: 0 done, 1 usage error, 2 blocked (investigate), 3 waiting for a
 person (a sign-in, a missing permission's grant) or a long-running cloud
-operation, 4 approval required. Device codes go only to the terminal or stderr;
-tokens stay in memory; nothing secret is printed or written.
+operation, 4 approval required. For `check`, 0 means ready, 2 not ready and 3
+that a sign-in or another person's action must come first. Device codes go only
+to the terminal or stderr; tokens stay in memory; nothing secret is printed or
+written.
 """
 
 import argparse
 import base64
+import calendar
 import collections
 import hashlib
 from http.client import IncompleteRead
@@ -1849,7 +1861,7 @@ def arm(ctx, method, url, body=None):
         token = access_token(ctx, resource=ARM_API + "/")
         if not token:
             raise Waiting("Azure CLI could not get an Azure Resource Manager token.",
-                          "Sign in again with az login, then rerun deploy.py up.")
+                          f"Sign in again with az login, then rerun {ctx.rerun}.")
         try:
             response = ctx.http.request(method, url, headers={"Authorization": f"Bearer {token}"}, body=body,
                                         attempts=1)
@@ -2993,7 +3005,7 @@ def foundry_call(ctx, method, url, body=None):
         token = access_token(ctx, scope=FOUNDRY_SCOPE)
         if not token:
             raise Waiting("Azure CLI could not get a Foundry token for you.",
-                          "Sign in again with az login as the deploying user, then rerun deploy.py up.")
+                          f"Sign in again with az login as the deploying user, then rerun {ctx.rerun}.")
         try:
             response = ctx.http.request(method, url, headers={"Authorization": f"Bearer {token}"}, body=body,
                                         attempts=1)
@@ -3662,6 +3674,476 @@ def print_report(report, as_json):
         print(f"  - {step}")
 
 
+# The read-only commands. Each builds a document from Terraform outputs and live reads, which main prints as JSON or
+# text; none takes a lock, writes a receipt, prompts, signs in or changes anything.
+LINKS_FORMAT = "iq-template.links.v1"
+CHECK_FORMAT = "iq-template.check.v1"
+# check's result and its exit code, the runner's own: a person must act first (3) before anything else counts.
+CHECK_RESULTS = {"ready": OK, "blocked": BLOCKED, "waiting": WAITING}
+TRACE_FORMAT = "iq-template.trace.v1"
+FABRIC_PORTAL = "https://app.fabric.microsoft.com"
+AZURE_PORTAL = "https://portal.azure.com"
+OUTLOOK_WEB = "https://outlook.office.com/mail/"
+# Azure resource IDs from Terraform outputs, checked before they reach a portal link or an Azure Resource Manager
+# request. No name segment starts with a period, so none is . or ..
+RESOURCE_GROUP_ID = (r"/subscriptions/[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}"
+                     r"/(?i:resourceGroups)/[-\w()][-\w.()]{0,89}")
+ARM_ID = re.compile(RESOURCE_GROUP_ID + r"/providers/[A-Za-z0-9][A-Za-z0-9.]*(?:/[-\w()][-\w.()]*/[-\w()][-\w.()]*)+",
+                    re.ASCII)
+CAPACITY_ID = re.compile(RESOURCE_GROUP_ID + r"/providers/(?i:Microsoft\.Fabric/capacities)/[-\w()][-\w.()]*",
+                         re.ASCII)
+# A knowledge source's status on the deployed Search service: the only URL check sends a Search token to.
+KNOWLEDGE_STATUS_PATH = re.compile(r"/knowledgesources/[A-Za-z0-9._-]+/status")
+# A Foundry response ID, as the app shows it under each answer: nothing else reaches a trace query.
+RESPONSE_ID = re.compile(r"[A-Za-z0-9_-]{1,256}")
+TIMESTAMP = re.compile(r"(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})(?:\.(\d+))?(?:Z|\+00:00)?", re.ASCII)
+TRACE_COLUMNS = ("timestamp", "itemType", "name", "duration", "success", "tool", "operation_Id")
+LINK_GROUPS = (("app", "App"), ("fabric", "Fabric IQ"), ("foundry", "Foundry IQ"), ("web", "Web IQ"),
+               ("work", "Work IQ"), ("telemetry", "Telemetry"))
+APP_FIX = ("With app.min_replicas = 0 the first request starts a replica: rerun deploy.py check in a minute. Otherwise "
+           "inspect the container app's revisions and logs in the Azure portal, and compare terraform output "
+           "app_settings with its settings.")
+PUBLISH_FIX = "Run deploy.py up through the agent phase (agent-publish approval)."
+KNOWLEDGE_FIX = "Run deploy.py up through the knowledge and verify phases."
+
+
+def nested(value, *keys):
+    """A value inside parsed JSON, or None where a level is missing or not an object."""
+    for key in keys:
+        value = value.get(key) if isinstance(value, dict) else None
+    return value
+
+
+def output_object(values, name):
+    """An object output, {} while it is absent; any other value is refused."""
+    value = values.get(name)
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise Blocked(f"The {name} output must be an object.")
+    return value
+
+
+def arm_id(value, label):
+    if not (isinstance(value, str) and ARM_ID.fullmatch(value)):
+        raise Blocked(f"{label} must be an Azure resource ID.")
+    return value
+
+
+def azure_portal_link(tenant, resource_id):
+    return f"{AZURE_PORTAL}/#@{tenant}/resource{resource_id}/overview"
+
+
+def split_url(value):
+    """A URL from an output, split, or None unless it is printable ASCII that urlsplit accepts."""
+    if isinstance(value, str) and re.fullmatch(r"[\x21-\x7e]+", value):
+        try:
+            return urllib.parse.urlsplit(value)
+        except ValueError:
+            pass
+    return None
+
+
+def https_link(value, label, host=None):
+    """An https URL from an output, without credentials, and on `host` when given."""
+    parsed = split_url(value)
+    if not (parsed and parsed.scheme == "https" and parsed.hostname and "@" not in parsed.netloc
+            and (host is None or parsed.netloc.lower() == host)):
+        raise Blocked(f"{label} must be an https URL" + (f" on {host}" if host else "") + " without credentials.")
+    return value
+
+
+def search_service_id(values):
+    """The Search service's resource ID, the path of the search_management_url output; None before it exists."""
+    url = values.get("search_management_url")
+    if not url:
+        return None
+    parsed = split_url(url)
+    if not (parsed and f"{parsed.scheme}://{parsed.netloc}" == ARM_API and SEARCH_SERVICE_PATH.fullmatch(parsed.path)):
+        raise Blocked("search_management_url must be a Search service URL on Azure Resource Manager.")
+    return arm_id(parsed.path, "search_management_url")
+
+
+def deployment_links(values):
+    """Portal links to the deployment's app and IQ resources, by group, from its Terraform outputs alone.
+
+    A link whose outputs are absent is left out, never guessed; a malformed output is refused.
+    """
+    tenant = guid(values.get("fabric_user_auth_tenant_id"), "fabric_user_auth_tenant_id")
+    app, web, work, insights, ontologies = (output_object(values, name) for name in (
+        "app", "web_iq", "work_iq", "application_insights", "ontology_knowledge_sources"))
+    workspace = guid(values["dev_workspace_id"], "dev_workspace_id") if values.get("dev_workspace_id") else None
+    search = search_service_id(values)
+    work_iq = work_iq_enabled(values)
+    links = {key: [] for key, _ in LINK_GROUPS}
+
+    def add(group, label, detail, url):
+        links[group].append({"label": str(label), "detail": detail, "url": url})
+
+    if app.get("url"):
+        origin = https_origin(app["url"], "app.url")
+        add("app", app.get("name") or "Web app", "The scenario assistant", origin + "/")
+        add("app", "Presenter mode", "The app with presenter mode on", origin + "/?presenter=1")
+    for key, source in sorted(ontologies.items()):
+        source_workspace, ontology = (guid(nested(source, name), f"ontology_knowledge_sources.{key}.{name}")
+                                      for name in ("workspace_id", "ontology_id"))
+        add("fabric", scenario_name("ontology") if len(ontologies) == 1 else key, "Fabric IQ ontology",
+            f"{FABRIC_PORTAL}/groups/{source_workspace}/ontologies/{ontology}")
+    if workspace and values.get("knowledge_lakehouse_id"):
+        lakehouse = guid(values["knowledge_lakehouse_id"], "knowledge_lakehouse_id")
+        add("fabric", f"{values.get('knowledge_lakehouse_name') or 'Knowledge'} lakehouse",
+            "The sample tables and the documents Foundry IQ indexes",
+            f"{FABRIC_PORTAL}/groups/{workspace}/lakehouses/{lakehouse}")
+    if workspace:
+        add("fabric", values.get("dev_workspace_name") or "DEV workspace", "Fabric DEV workspace",
+            f"{FABRIC_PORTAL}/groups/{workspace}")
+    if values.get("fabric_capacity_resource_id"):
+        capacity = values["fabric_capacity_resource_id"]
+        if not (isinstance(capacity, str) and CAPACITY_ID.fullmatch(capacity)):
+            raise Blocked("fabric_capacity_resource_id must be a Fabric capacity's Azure resource ID.")
+        add("fabric", capacity.rsplit("/", 1)[-1], "Fabric capacity: resume it before a session, pause it after",
+            azure_portal_link(tenant, capacity))
+    if values.get("foundry_project_id"):
+        project = arm_id(values["foundry_project_id"], "foundry_project_id")
+        add("foundry", project.rsplit("/", 1)[-1], "Foundry project: its agents and traces",
+            azure_portal_link(tenant, project))
+    base, public = values.get("knowledge_base_name"), values.get("public_context_knowledge_base_name")
+    if search:
+        detail = f"Search service with the {base} knowledge base" if base else "Search service"
+        add("foundry", search.rsplit("/", 1)[-1], detail, azure_portal_link(tenant, search))
+    if web.get("resource_id"):
+        account = arm_id(web["resource_id"], "web_iq.resource_id")
+        add("web", account.rsplit("/", 1)[-1], "Web IQ account", azure_portal_link(tenant, account))
+    if search and public:
+        add("web", search.rsplit("/", 1)[-1], f"Search service with the {public} knowledge base",
+            azure_portal_link(tenant, search))
+    if web.get("portal_url"):
+        add("web", "Web IQ portal", "Web IQ's own portal", https_link(web["portal_url"], "web_iq.portal_url"))
+    if work_iq and work.get("api_permissions_url"):
+        add("work", "Work IQ API permissions", "Where an administrator grants WorkIQAgent.Ask and offline_access",
+            https_link(work["api_permissions_url"], "work_iq.api_permissions_url", host="portal.azure.com"))
+    add("work", "Outlook on the web", "Your own mailbox, where Work IQ's sample mail goes", OUTLOOK_WEB)
+    if insights.get("id"):
+        component = arm_id(insights["id"], "application_insights.id")
+        add("telemetry", insights.get("name") or component.rsplit("/", 1)[-1],
+            "Application Insights: the app's and the agents' traces", azure_portal_link(tenant, component))
+    return {"format": LINKS_FORMAT, "generatedAt": utc_now(), "environment": values.get("dev_workspace_name") or None,
+            "workIqEnabled": work_iq, "links": links}
+
+
+def links_document(ctx):
+    ctx.state.load()
+    required_outputs(ctx, "dev_workspace_id", "fabric_user_auth_tenant_id")
+    return deployment_links(outputs(ctx))
+
+
+def links_text(document):
+    lines = [f"Links for {document['environment'] or 'this deployment'}: they hold deployment IDs, so never commit "
+             "them."]
+    for key, heading in LINK_GROUPS:
+        if not document["links"][key]:
+            continue
+        off = key == "work" and not document["workIqEnabled"]
+        lines += ["", heading + (" (off: work_iq_enabled = false)" if off else "")]
+        for link in document["links"][key]:
+            lines += [f"  {link['label']}: {link['detail']}", f"    {link['url']}"]
+    return "\n".join(lines)
+
+
+def check_item(name, status, detail, fix=""):
+    """status: pass, fail, wait (a person must act first, such as signing in, before it can be checked) or manual."""
+    item = {"name": name, "status": status, "detail": detail}
+    if status in ("fail", "wait"):
+        item["fix"] = fix
+    return item
+
+
+def failed_item(name, error, fix):
+    """The item for a stop or an unexpected error, which affects only that item; call it while handling it.
+
+    A Waiting stop, such as a missing sign-in, waits for that person; any other fails the item.
+    """
+    if not isinstance(error, Stop):
+        traceback.print_exc(file=sys.stderr)
+        error = Blocked(f"Unexpected {type(error).__name__}: {str(error)[:300]}",
+                        "This is a runner bug or an unrecognized service response.")
+    return check_item(name, "wait" if isinstance(error, Waiting) else "fail", error.message,
+                      " ".join(error.next_steps) or fix)
+
+
+def probe(name, check, fix):
+    """One item from check(), which returns its status, detail and, failing, fix; `fix` covers a stop without one."""
+    try:
+        return check_item(name, *check())
+    except Exception as error:
+        return failed_item(name, error, fix)
+
+
+def capacity_readiness(ctx, values):
+    """The Fabric capacity must be Active: check only reads it, and names the command that resumes it."""
+    resource = values.get("fabric_capacity_resource_id")
+    if not resource:
+        return ("fail", "The platform phase hasn't created the Fabric capacity yet.",
+                "Run deploy.py up through the platform phase.")
+    if not (isinstance(resource, str) and CAPACITY_ID.fullmatch(resource)):
+        raise Blocked("fabric_capacity_resource_id must be a Fabric capacity's Azure resource ID.",
+                      "Inspect: terraform -chdir=infra output fabric_capacity_resource_id")
+    name = resource.rsplit("/", 1)[-1]
+    response = arm(ctx, "GET", f"{ARM_API}{resource}?api-version=2023-11-01")
+    if response.status != 200:
+        return ("fail", f"reading {name} failed with HTTP {response.status}",
+                f"Sign in with az login as the deployer, who can read {name}, then rerun deploy.py check; if it no "
+                "longer exists, rerun deploy.py up.")
+    body = response.json(default={})
+    state, sku = nested(body, "properties", "state"), nested(body, "sku", "name")
+    if state == "Active":
+        return "pass", f"{name} is Active ({sku or 'unknown SKU'})"
+    return ("fail", f"{name} is {state or 'in an unknown state'}, not Active",
+            "Resume it: " + quoted(["az", "resource", "invoke-action", "--action", "resume", "--ids", resource])
+            + ", wait until it is Active, then rerun deploy.py check. It bills while active: pause it after the "
+            "session.")
+
+
+def app_readiness(ctx, values):
+    app = output_object(values, "app")
+    if not app.get("url"):
+        return "fail", "The app phase hasn't deployed the app yet.", "Run deploy.py up through the app phase."
+    origin = https_origin(app["url"], "app.url")
+    health = ctx.http.request("GET", f"{origin}/healthz", timeout=15)
+    if health.status != 200:
+        return "fail", f"{origin}/healthz answered HTTP {health.status}", APP_FIX
+    config = ctx.http.request("GET", f"{origin}/api/config", timeout=15)
+    if config.status != 200:
+        return "fail", f"{origin}/api/config answered HTTP {config.status}", APP_FIX
+    if not same_guid(nested(config.json(default={}), "clientId"), app.get("client_id")):
+        return "fail", f"{origin} serves another sign-in registration than this deployment's app.client_id", APP_FIX
+    return "pass", f"{origin} answers /healthz and serves this deployment's sign-in registration"
+
+
+def agent_readiness(ctx):
+    """One item per agent: whether its latest version runs the reviewed definition this checkout renders."""
+    try:
+        _, agents, work_iq = foundry_agents(ctx)
+    except Exception as error:
+        return [failed_item("agents", error, PUBLISH_FIX)]
+    setting = f"Work IQ is {'on' if work_iq else 'off'} (work_iq_enabled = {str(work_iq).lower()})"
+
+    def state(agent):
+        live = live_agent(ctx, agent)
+        status = foundry.status(live, agent["body"])
+        if status == "current":
+            digest = agent["body"]["metadata"][foundry.DIGEST_KEY]
+            return "pass", (f"version {nested(live, 'versions', 'latest', 'version')} runs the reviewed definition "
+                            f"(sha256 {digest[:12]})")
+        if status == "missing":
+            return "fail", "not published", PUBLISH_FIX
+        return ("fail", f"its latest version differs from the reviewed definition in this checkout; {setting}, and "
+                "switching it changes the with-IQ definition",
+                "Commit the definitions you mean to present, then deploy.py up publishes them (agent-publish "
+                "approval).")
+
+    return [probe(f"agent {agent['name']}", lambda agent=agent: state(agent), PUBLISH_FIX) for agent in agents]
+
+
+def knowledge_status_url(values, key):
+    """The status URL of knowledge source `key`, refused unless it is on the deployed Search service."""
+    url = values["knowledge_source_status_urls"][key]
+    service = split_url(https_origin(values.get("search_endpoint"), "search_endpoint"))
+    parsed = split_url(url)
+    if not (service and parsed and parsed.scheme == "https" and "@" not in parsed.netloc and "#" not in url
+            and parsed.netloc.lower() == service.netloc and KNOWLEDGE_STATUS_PATH.fullmatch(parsed.path)
+            and "api-version" in urllib.parse.parse_qs(parsed.query)):
+        raise Blocked(f"knowledge_source_status_urls.{key} is not a knowledge source status on the deployed Search "
+                      "service (search_endpoint), so nothing was sent to it.",
+                      "Inspect: terraform -chdir=infra output knowledge_source_status_urls")
+    return url
+
+
+def knowledge_readiness(ctx, values):
+    """One item per knowledge source: whether its last synchronization completed cleanly."""
+    urls = values.get("knowledge_source_status_urls")
+    if not isinstance(urls, dict) or not urls:
+        return [check_item("knowledge sources", "fail", "Knowledge setup hasn't run.", KNOWLEDGE_FIX)]
+
+    def state(key):
+        response = search_call(ctx, "GET", knowledge_status_url(values, key))
+        if response.status != 200:
+            # search_call reports a request that failed in transit as 599.
+            return ("fail", "no response" if response.status == 599 else f"HTTP {response.status}",
+                    "Sign in with az login as the deployer, who holds Search Index Data Reader, then rerun deploy.py "
+                    "check.")
+        body = response.json(default=None)
+        if not isinstance(body, dict):
+            raise Blocked("Search returned an unexpected ingestion status.")
+        verdict, detail = ingestion_state(body)
+        if verdict == "ready":
+            return "pass", (f"last synchronization completed ({detail['items_processed_last']} item(s), "
+                            f"{detail['synchronizations']} synchronization(s))")
+        if verdict == "pending":
+            return ("fail", detail, "Ingestion runs when a source is created and then on its schedule: wait, or rerun "
+                    "deploy.py up, whose verify phase observes it.")
+        return ("fail", detail, "Fix the cause (the Search identity's access to DEV, the file content), then let the "
+                "next synchronization run.")
+
+    return [probe(f"knowledge source {key}", lambda key=key: state(key), KNOWLEDGE_FIX) for key in sorted(urls)]
+
+
+def check_document(ctx):
+    """Readiness to present the sample, item by item, from reads alone: it never resumes, publishes or fixes."""
+    items, values = [], None
+    try:
+        ctx.state.load()
+        values = outputs(ctx)
+    except Exception as error:
+        items.append(failed_item("terraform outputs", error, "Fix the cause, then rerun deploy.py check in the "
+                                 "checkout, with the Terraform state, that deploy.py up deployed."))
+    if values is not None:
+        items += [probe("fabric capacity", lambda: capacity_readiness(ctx, values),
+                        "Rerun deploy.py check; if this persists, inspect the capacity in the Azure portal."),
+                  probe("app", lambda: app_readiness(ctx, values), APP_FIX)]
+        items += agent_readiness(ctx) + knowledge_readiness(ctx, values)
+    work_iq = values is not None and isinstance(values.get("work_iq"), dict) and work_iq_enabled(values)
+    items.append(check_item("consents", "manual", "Each presenter signs in to the app and consents once to Fabric IQ"
+                            + (", and to Work IQ" if work_iq else "") + ": ask a with-IQ question in the app before "
+                            "the session, accept the consent card and ask again."))
+    if work_iq:
+        items.append(check_item("sample mail", "manual", "The presenter's own mailbox holds the sample mail about "
+                                "Pump B, sent at least a day before so Microsoft 365 has indexed it."))
+    statuses = {item["status"] for item in items}
+    result = "waiting" if "wait" in statuses else "blocked" if "fail" in statuses else "ready"
+    return {"format": CHECK_FORMAT, "checkedAt": utc_now(), "result": result, "ready": result == "ready",
+            "items": items}
+
+
+def check_text(document):
+    lines = []
+    for item in document["items"]:
+        detail = str(item["detail"]).replace("\n", "\n" + " " * 36)
+        lines.append(f"{item['status'].upper():<6} {item['name']:<28} {detail}")
+        if item["status"] in ("fail", "wait"):
+            lines.append(f"{'':6} fix: {item['fix']}")
+    checked = [item for item in document["items"] if item["status"] != "manual"]
+    failures, waits = (sum(item["status"] == status for item in checked) for status in ("fail", "wait"))
+    if document["result"] == "waiting":
+        lines.append(f"WAITING: {waits} of {len(checked)} checks need a sign-in or another person's action first"
+                     + (f", and {failures} failed." if failures else "."))
+    else:
+        lines.append("READY" if document["ready"] else f"NOT READY: {failures} of {len(checked)} checks failed.")
+    return "\n".join(lines)
+
+
+def response_id_argument(value):
+    """trace's RESPONSE_ID, refused before it reaches anything unless it can only be a response ID."""
+    if not RESPONSE_ID.fullmatch(value):
+        raise argparse.ArgumentTypeError("a response ID holds only letters, digits, underscores and hyphens, at most "
+                                         "256 of them")
+    return value
+
+
+def trace_query(response_id):
+    """KQL for a turn's spans by its response ID: names, types, timings, outcomes and tool names, never content.
+
+    It uses Application Insights' classic schema, which az monitor app-insights query uses even for a workspace-based
+    resource.
+    """
+    if not RESPONSE_ID.fullmatch(str(response_id)):
+        raise Blocked("A response ID holds only letters, digits, underscores and hyphens.")
+    tool = 'tool = tostring(customDimensions["gen_ai.tool.name"])'
+    return "\n".join((
+        "let ops = dependencies",
+        f'| where tostring(customDimensions["gen_ai.response.id"]) == "{response_id}"',
+        "| distinct operation_Id;",
+        "union requests, dependencies",
+        "| where operation_Id in (ops)",
+        f"| project timestamp, itemType, name, duration, success, {tool}, operation_Id",
+        "| order by timestamp asc",
+        "| take 500",
+    ))
+
+
+def epoch_microseconds(value):
+    """Microseconds since the epoch of a UTC ISO 8601 timestamp, with any fractional seconds and an optional Z."""
+    match = TIMESTAMP.fullmatch(value)
+    if not match:
+        raise ValueError("unexpected timestamp")
+    seconds = calendar.timegm(time.strptime(f"{match[1]}T{match[2]}", "%Y-%m-%dT%H:%M:%S"))
+    return seconds * 1_000_000 + int((match[3] or "")[:6].ljust(6, "0"))
+
+
+def trace_operations(payload):
+    """The trace query's rows by operation, in order of first appearance, each span timed from the operation's first."""
+    operations, starts = {}, {}
+    try:
+        table = payload["tables"][0]
+        columns = [column["name"] for column in table["columns"]]
+        index = {name: columns.index(name) for name in TRACE_COLUMNS}
+        for row in table["rows"]:
+            if not isinstance(row, list) or len(row) != len(columns):
+                raise ValueError("a row does not match the columns")
+            cell = {name: row[position] for name, position in index.items()}
+            if not all(isinstance(cell[name], str) for name in ("itemType", "name", "operation_Id")):
+                raise ValueError("a row lacks its type, name or operation")
+            at = epoch_microseconds(cell["timestamp"])
+            identity = cell["operation_Id"]
+            operation = operations.setdefault(identity, {"operationId": identity, "start": cell["timestamp"],
+                                                         "spans": []})
+            span = {"offsetMs": round((at - starts.setdefault(identity, at)) / 1000), "type": cell["itemType"],
+                    "name": cell["name"], "durationMs": round(float(cell["duration"])),
+                    "success": cell["success"] in (True, "True", "true")}
+            if cell["tool"]:
+                span["tool"] = str(cell["tool"])
+            operation["spans"].append(span)
+    except (KeyError, IndexError, TypeError, ValueError, OverflowError):
+        raise Blocked("az monitor app-insights query returned an unexpected result.") from None
+    return list(operations.values())
+
+
+def trace_document(ctx):
+    """A turn's operations in Application Insights, found by the response ID the app shows under its answer."""
+    response, days = ctx.args.response_id, ctx.args.days
+    query = trace_query(response)
+    ctx.state.load()
+    insights, = required_outputs(ctx, "application_insights")
+    app_id = guid(nested(insights, "app_id"), "application_insights.app_id")
+    result = read_cli(ctx, ["az", "monitor", "app-insights", "query", "--apps", app_id, "--analytics-query", query,
+                            "--offset", f"{days}d", "--only-show-errors", "--output", "json"])
+    if result.code:
+        text = f"{result.stderr}\n{result.stdout}".lower()
+        if ("extension" in text and "application-insights" in text) or "misspelled or not recognized" in text:
+            raise Blocked("Azure CLI's application-insights extension, which queries Application Insights, is missing.",
+                          "Run: az extension add --name application-insights", "Then rerun deploy.py trace.")
+        raise Blocked(f"az monitor app-insights query failed (exit {result.code}).\n"
+                      f"{tail(result.stderr or result.stdout)}",
+                      "The deployer needs read access to Application Insights: sign in with az login as the deployer, "
+                      "then rerun deploy.py trace.")
+    try:
+        payload = json.loads(result.stdout or "null")
+    except ValueError:
+        raise Blocked("az monitor app-insights query did not return JSON.") from None
+    operations = trace_operations(payload)
+    if not operations:
+        raise Blocked(f"No trace for response ID {response} in the last {days} day(s).",
+                      "Traces appear within a few minutes of a turn: check the ID under the app's answer, or widen "
+                      "--days.")
+    return {"format": TRACE_FORMAT, "responseId": response, "days": days, "operations": operations}
+
+
+def trace_text(document):
+    lines = []
+    for operation in document["operations"]:
+        lines.append(f"Response {document['responseId']}: operation {operation['operationId']}, "
+                     f"started {operation['start']}")
+        for span in operation["spans"]:
+            tool = f" [{span['tool']}]" if span.get("tool") else ""
+            lines.append(f"  +{span['offsetMs']:>6} ms  {span['type']:<10} {span['name']}{tool}  "
+                         f"{span['durationMs']} ms  {'ok' if span['success'] else 'failed'}")
+    return "\n".join(lines)
+
+
+READ_ONLY = {"links": (links_document, links_text), "check": (check_document, check_text),
+             "trace": (trace_document, trace_text)}
+
+
 class Parser(argparse.ArgumentParser):
     def error(self, message):
         self.print_usage(sys.stderr)
@@ -3737,6 +4219,32 @@ def parse_arguments(argv):
     parser = Parser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="command", required=True, parser_class=Parser)
     commands.add_parser("status", parents=[common], help="summarize receipts without cloud calls")
+    commands.add_parser("links", parents=[common],
+                        help="print portal links to the app and the IQ resources from Terraform outputs, calling no "
+                             "Azure, Fabric or Foundry API; they hold deployment IDs, so never commit them",
+                        description="Print portal links to the deployment's app and IQ resources from Terraform "
+                                    "outputs alone: it calls no Azure, Fabric or Foundry API, though Terraform reads "
+                                    "a remote backend's state. The links hold deployment IDs, so never commit its "
+                                    "output.")
+    commands.add_parser(
+        "check", parents=[common],
+        help="check, read-only, that the deployment is ready to present: each item passes, fails or waits for a "
+             "sign-in, with its fix",
+        description="Check, read-only, that the deployment is ready to present the sample: the Fabric capacity, the "
+                    "app, both agents and every knowledge source pass, fail or wait for a sign-in, each with its fix, "
+                    "and the steps no tool can check are listed. It sends GET requests only: it never resumes the capacity or "
+                    "changes anything. Exit codes, as for every command: 0 ready, 2 not ready, 3 a sign-in or another "
+                    "person's action is needed first, 1 usage error.")
+    trace = commands.add_parser(
+        "trace", parents=[common],
+        help="find a turn's trace in Application Insights by the response ID the app shows (reads span names and "
+             "timings, never message content)",
+        description="Find a turn's trace in Application Insights by the response ID the app shows under its answer, "
+                    "and print its operations' spans as a timeline. It reads span names and timings, never message "
+                    "content.")
+    trace.add_argument("response_id", metavar="RESPONSE_ID", type=response_id_argument,
+                       help="the response ID under the app's answer: letters, digits, underscores and hyphens")
+    trace.add_argument("--days", type=int, default=7, help="how many days back to search, 1 to 90 (default 7)")
     up = commands.add_parser("up", parents=[common, options, deployment],
                              help="run every phase in order, re-verifying earlier ones, until done or a gate")
     up.add_argument("--through", choices=PHASES, default=PHASES[-1], help="stop after this phase")
@@ -3744,8 +4252,10 @@ def parse_arguments(argv):
                                help="delete this deployment, its app, agents and ingested data")
     down.add_argument("--allow-delete", action="store_true", help="permit approved environment and data deletion")
     args = parser.parse_args(argv)
-    if args.command == "status":
+    if args.command in ("status", *READ_ONLY):
         args.non_interactive, args.timeout_minutes, args.approve = True, 30, []
+    if args.command == "trace" and not 1 <= args.days <= 90:
+        trace.error("--days must be from 1 to 90")
     if args.command == "up" and args.approve_creates and args.yes:
         up.error("--approve-creates and --yes are mutually exclusive: --yes also approves updates of existing "
                  "resources; --approve-creates is the narrower choice, approving only what adds to the environment")
@@ -3759,6 +4269,13 @@ def main(argv=None, **context):
     args = parse_arguments(argv)
     ctx = Context(args, **context)
     try:
+        if args.command in READ_ONLY:
+            ctx.start(args.command)
+            build, text = READ_ONLY[args.command]
+            document = build(ctx)
+            print(json.dumps(document, indent=2) if args.json else text(document))
+            # check reports each failure as an item rather than stopping; its result sets the exit code.
+            return CHECK_RESULTS[document["result"]] if args.command == "check" else OK
         if args.command == "status":
             code, report = status_report(ctx)
         else:

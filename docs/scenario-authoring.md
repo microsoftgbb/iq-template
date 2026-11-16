@@ -25,9 +25,9 @@ for the native work-package order.
 | `scenario/data/` | Versioned domain/table contracts, deterministic synthetic generation and small fictional fixtures. | Real tenant/customer data or evaluation answers destined for indexing. |
 | `scenario/knowledge/` | Reviewed authoritative document sources, with IDs, versions, scope and effective dates. | Raw fixture bundles, temporary exports, golden answers or mirrored mailboxes. |
 | `scenario/workflows/` | Independently testable scenario-specific rules, transformations and approved tool logic. | An undeclared backend or a second source of authoritative facts. |
-| `scenario/evals/` | Expected outcomes, source/citation requirements, negative cases and scenario checks. | Content published to a lakehouse Files corpus. |
+| `scenario/evals/` | Expected outcomes, source/citation requirements, negative cases and scenario checks. The demo's own checks stay in the app's demo script. | Content published to a lakehouse Files corpus. |
 | `agents/<variant>/` | Each variant's `agent.json` and `instructions.md`, byte-identical across variants, and its `tools/*.json` MCP tools, whose `{{placeholders}}` the runner fills from Terraform outputs. | Rendered definitions, physical IDs, access tokens, tenant IDs, deployment receipts, headers or credentials, tools that need approval or an empty allow-list. |
-| `app/` | The web app: the page in `src/`, its agent layer in `src/live/`, the token-verifying server in `server/`, its tests and `Dockerfile`. Sign-in settings come from `/api/config`. | Credentials or app-only tokens, raw browser calls to Azure/Fabric, server-built prompts, or calls to anything but the configured project and agents. |
+| `app/` | The web app: the page in `src/`, its agent layer in `src/live/`, the demo script in `src/demo/`, the token-verifying server in `server/`, its tests and `Dockerfile`. Sign-in settings come from `/api/config`. | Credentials or app-only tokens, raw browser calls to Azure/Fabric, server-built prompts, or calls to anything but the configured project and agents. |
 | `docs/`, `.github/skills/` | Canonical product explanations and repeatable procedures, respectively. | Session diaries or competing setup guides. |
 
 Use these locations rather than adding competing root `tools/`, `services/`,
@@ -159,12 +159,15 @@ publishes them. For a scenario, change:
   path. Keep each tool's `server_label`, its connection placeholder, its read-only
   `allowed_tools` and `require_approval: never`.
 - **The reply format**, if at all, together with the app's parser
-  [`app/src/live/reply.ts`](../app/src/live/reply.ts), its tests and the mock answers
-  in [`app/src/mock/client.ts`](../app/src/mock/client.ts)
-  ([reply format](architecture.md#reply-format)).
-- **The sample questions** in [`app/src/samples.ts`](../app/src/samples.ts), and the
-  runner's readiness questions and expected facts in its `SCENARIO` descriptor
-  when the seed data changes.
+  [`app/src/live/reply.ts`](../app/src/live/reply.ts), its tests and the demo script's
+  scripted replies ([reply format](architecture.md#reply-format)).
+- **The demo script**, [`app/src/demo/script.json`](../app/src/demo/script.json): the
+  steps of your story, each with its talk track, question, the agents it asks, the checks
+  their answers must pass and a scripted reply in the reply format. It is the single source
+  of the app's sample questions, presenter mode, mock mode's replies and `npm run rehearse`
+  ([development](development.md#demo-script-presenter-mode-and-rehearsal)); the app's
+  tests and build validate it. Change it with the seed data, and the runner's readiness questions and
+  expected facts in its `SCENARIO` descriptor.
 
 A definition may use only the runner's placeholders: `agent_display_name`,
 `agent_model_deployment`, `agent_reasoning_effort`, `knowledge_base_mcp_endpoint`,
@@ -196,6 +199,38 @@ blocked/incomplete states. Do not return synthetic success or indexed snapshot
 facts as live data. Releases follow the runner's `agent-publish` and `app-build`
 approvals and the reviewed app plan; granting other users access is a separate
 operator step.
+
+## Tune with rehearsals
+
+An agent's answers vary from run to run, so judge a change by how often a step passes, not by
+one good answer. `npm run rehearse` asks the demo script's questions of the deployed agents, as
+you, and checks each answer against the script ([runbook](runbook.md#the-day-before)):
+
+1. **Rehearse before you change anything**, and keep that results file from the ignored
+   `.artifacts/rehearsal/` as your baseline.
+2. **Ask one question at a time.** Parallel questions share the model deployment's quota and
+   the tools' capacity, and fail more often; the harness never asks in parallel, so don't run
+   two rehearsals at once.
+3. **Ask each step at least twice** (`--runs`, two by default): one pass can be luck.
+4. **Change one structural lever at a time**, commit it, publish it with `deploy.py up` and
+   rehearse again:
+   - **A tool description** in `agents/scenario-with-iq/tools/`: what the tool is for, the one
+     form of question it takes and what it never does.
+   - **Each tool once per question:** the shared instructions tell the agent to ask a tool
+     everything it needs in one call; extra calls cost time and fail more often.
+   - **Each fact in one source:** current facts in the ontology, guidance in documents. Never
+     copy facts into the shared instructions, which the variant without IQ also reads.
+5. **Keep only the changes that raise the pass rate.** `npm run rehearse -- --compare
+   <baseline> <new>` shows each step's passes and median time side by side; revert a change
+   that doesn't help.
+6. **Record the timings.** A turn over 120 seconds fails its check: too slow for a stage,
+   though within the app's 225-second limit. `deploy.py trace <response ID>` shows where a
+   slow turn's time went.
+
+Don't tune by widening a tool's `allowed_tools`, adding a backend or adding document content to
+the instructions; and don't make a check pass by loosening it in the script. A rehearsal proves
+answers for the account that ran it, not readiness for other users
+([evidence](runtime-integration.md#evidence-required-for-a-ready-shell)).
 
 ## Additional runtime integrations
 

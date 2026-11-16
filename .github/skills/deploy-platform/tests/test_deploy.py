@@ -2857,6 +2857,431 @@ class AgentAndAppTests(unittest.TestCase):
             self.assertNotIn(retired, steps)
 
 
+class ReadOnlyCommandTests(unittest.TestCase):
+    """links, check and trace read outputs and live state; they take no lock, write no receipt and change nothing."""
+
+    GROUP = "/subscriptions/12121212-1212-4212-8212-121212121212/resourceGroups/rg-demo"
+    CAPACITY = GROUP + "/providers/Microsoft.Fabric/capacities/fcdemo"
+    PROJECT = GROUP + "/providers/Microsoft.CognitiveServices/accounts/ai-demo/projects/demo"
+    SEARCH_SERVICE = GROUP + "/providers/Microsoft.Search/searchServices/srch"
+    WEB_IQ = GROUP + "/providers/Microsoft.WebIQ/accounts/webiq-demo"
+    INSIGHTS = {"id": GROUP + "/providers/Microsoft.Insights/components/appi-demo", "name": "appi-demo",
+                "app_id": "abababab-abab-4bab-8bab-abababababab"}
+    PERMISSIONS = (f"https://portal.azure.com/#@{TENANT}/view/Microsoft_AAD_RegisteredApps/ApplicationMenuBlade/~/"
+                   "CallAnAPI/appId/cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd/isMSAApp~/false")
+    SYNCED = {"lastSynchronizationState": {"errors": [], "itemsUpdatesFailed": 0, "itemsUpdatesProcessed": 2},
+              "statistics": {"totalSynchronization": 3}}
+    TRACE_ROWS = [
+        ["2026-11-16T10:00:00.1000000Z", "request", "POST /api/turns", 5200.4, "True", "", "op-1"],
+        ["2026-11-16T10:00:00.25Z", "dependency", "invoke_agent demo-with-iq", 4800.6, True, "", "op-1"],
+        ["2026-11-16T10:00:01.35Z", "dependency", "execute_tool", 1800, "False", "fabric_iq_ontology", "op-1"],
+        ["2026-11-16T10:05:00Z", "dependency", "invoke_agent demo-with-iq", 900, "true", "", "op-2"],
+    ]
+
+    def outputs(self, work_iq=True):
+        """A deployed environment's outputs: the agent and app tests' and those links and check read."""
+        values = AgentAndAppTests().outputs(work_iq=work_iq)
+        search = AgentAndAppTests.SEARCH
+        management = f"https://management.azure.com{self.SEARCH_SERVICE}?api-version=2026-09-01-preview"
+        values["app"]["url"] = AgentAndAppTests.APP_URL
+        if work_iq:
+            values["work_iq"]["api_permissions_url"] = self.PERMISSIONS
+        values.update({
+            "fabric_user_auth_tenant_id": TENANT, "dev_workspace_id": WORKSPACE, "dev_workspace_name": "demo-dev",
+            "fabric_capacity_resource_id": self.CAPACITY, "foundry_project_id": self.PROJECT,
+            "knowledge_lakehouse_id": LAKEHOUSE, "knowledge_lakehouse_name": NAMES["lakehouse"],
+            "ontology_knowledge_sources": {deploy.SCENARIO.registration: {
+                "knowledge_source_name": "demo-scenario-ontology", "workspace_id": WORKSPACE, "ontology_id": ONTOLOGY}},
+            "search_endpoint": search, "search_management_url": management,
+            "knowledge_base_name": "demo-knowledge", "public_context_knowledge_base_name": "demo-public-context",
+            "knowledge_source_status_urls": {key: f"{search}/knowledgesources/demo-{key}/status?api-version=v1"
+                                             for key in ("documents", "manuals")},
+            "web_iq": {"resource_id": self.WEB_IQ, "portal_url": "https://webiq.microsoft.ai/profiles"},
+            "application_insights": dict(self.INSIGHTS),
+        })
+        return values
+
+    @staticmethod
+    def portal(resource_id):
+        return f"https://portal.azure.com/#@{TENANT}/resource{resource_id}/overview"
+
+    def invoke(self, argv, values, *rules, http=None, root=None):
+        """deploy.main over Terraform outputs `values`: its exit code, stdout and the shell and HTTP fakes."""
+        output = deploy.Result(0, json.dumps({name: {"value": value} for name, value in values.items()}))
+        shell = FakeShell([*rules, TOKEN_RULE, (terraform("init"), deploy.Result(0)), (terraform("output"), output),
+                           (command("git", "diff"), deploy.Result(0))])
+        http = http or FakeHttp()
+        clock = Clock()
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(io.StringIO()):
+            code = deploy.main(argv, root=root or make_root(self), shell=shell, http=http, sleep=clock.sleep,
+                               clock=clock, interactive=False, environ={})
+        return code, stdout.getvalue(), shell, http
+
+    def test_links_cover_the_app_and_every_iq_from_the_outputs_alone(self):
+        document = deploy.deployment_links(self.outputs())
+        self.assertEqual((document["format"], document["environment"], document["workIqEnabled"]),
+                         ("iq-template.links.v1", "demo-dev", True))
+        fabric, app = f"https://app.fabric.microsoft.com/groups/{WORKSPACE}", AgentAndAppTests.APP_URL
+        self.assertEqual({group: [(link["label"], link["url"]) for link in links]
+                          for group, links in document["links"].items()}, {
+            "app": [("ca-demo", f"{app}/"), ("Presenter mode", f"{app}/?presenter=1")],
+            "fabric": [(NAMES["ontology"], f"{fabric}/ontologies/{ONTOLOGY}"),
+                       (f"{NAMES['lakehouse']} lakehouse", f"{fabric}/lakehouses/{LAKEHOUSE}"), ("demo-dev", fabric),
+                       ("fcdemo", self.portal(self.CAPACITY))],
+            "foundry": [("demo", self.portal(self.PROJECT)), ("srch", self.portal(self.SEARCH_SERVICE))],
+            "web": [("webiq-demo", self.portal(self.WEB_IQ)), ("srch", self.portal(self.SEARCH_SERVICE)),
+                    ("Web IQ portal", "https://webiq.microsoft.ai/profiles")],
+            "work": [("Work IQ API permissions", self.PERMISSIONS),
+                     ("Outlook on the web", "https://outlook.office.com/mail/")],
+            "telemetry": [("appi-demo", self.portal(self.INSIGHTS["id"]))],
+        })
+        self.assertEqual([link["detail"] for link in document["links"]["foundry"] + document["links"]["web"]
+                          if link["label"] == "srch"],
+                         ["Search service with the demo-knowledge knowledge base",
+                          "Search service with the demo-public-context knowledge base"])
+        # Without Work IQ, its group holds only the user's own mailbox.
+        document = deploy.deployment_links(self.outputs(work_iq=False))
+        self.assertFalse(document["workIqEnabled"])
+        self.assertEqual([link["label"] for link in document["links"]["work"]], ["Outlook on the web"])
+
+    def test_early_outputs_link_only_what_exists(self):
+        document = deploy.deployment_links({
+            "fabric_user_auth_tenant_id": TENANT, "dev_workspace_id": WORKSPACE,
+            "app": {"url": None, "name": "ca-demo"}, "knowledge_lakehouse_id": None, "ontology_knowledge_sources": {},
+            "work_iq": {"enabled": False}, "web_iq": None, "search_management_url": None,
+            "public_context_knowledge_base_name": None})
+        self.assertIsNone(document["environment"])
+        self.assertEqual(document["links"], {
+            "app": [], "foundry": [], "web": [], "telemetry": [],
+            "fabric": [{"label": "DEV workspace", "detail": "Fabric DEV workspace",
+                        "url": f"https://app.fabric.microsoft.com/groups/{WORKSPACE}"}],
+            "work": [{"label": "Outlook on the web", "detail": "Your own mailbox, where Work IQ's sample mail goes",
+                      "url": "https://outlook.office.com/mail/"}]})
+
+    def test_a_malformed_output_is_refused_by_name(self):
+        values = self.outputs()
+        ontology = f"ontology_knowledge_sources.{deploy.SCENARIO.registration}.ontology_id"
+        cases = {
+            "fabric_user_auth_tenant_id": {"fabric_user_auth_tenant_id": None},
+            "dev_workspace_id": {"dev_workspace_id": "demo"},
+            "fabric_capacity_resource_id": {"fabric_capacity_resource_id": self.PROJECT},
+            ontology: {"ontology_knowledge_sources": {deploy.SCENARIO.registration: {"workspace_id": WORKSPACE,
+                                                                                     "ontology_id": "x"}}},
+            "foundry_project_id": {"foundry_project_id": self.PROJECT.replace("12121212-1212-4212-8212-121212121212",
+                                                                               "sub")},
+            "web_iq.resource_id": {"web_iq": {"resource_id": self.WEB_IQ + "/../.."}},
+            "application_insights.id": {"application_insights": {**self.INSIGHTS, "id": self.INSIGHTS["id"] + "?x=1"}},
+            "search_management_url": {"search_management_url": f"https://example.com{self.SEARCH_SERVICE}"},
+            "web_iq.portal_url": {"web_iq": {"portal_url": "https://user:secret@webiq.microsoft.ai/profiles"}},
+            "work_iq.api_permissions_url": {"work_iq": {"enabled": True,
+                                                        "api_permissions_url": "https://example.com/"}},
+            "app.url": {"app": {"url": "http://ca-demo.example"}},
+        }
+        for name, change in cases.items():
+            with self.subTest(name), self.assertRaisesRegex(deploy.Blocked, re.escape(name)) as stop:
+                deploy.deployment_links({**values, **change})
+            self.assertNotIn("secret", stop.exception.message)
+
+    def test_links_reads_only_terraform_outputs_and_warns_not_to_commit_them(self):
+        values = self.outputs()
+        root = make_root(self)
+        code, stdout, shell, http = self.invoke(["links", "--json"], values, root=root)
+        document = json.loads(stdout)
+        self.assertEqual((code, document["format"]), (deploy.OK, "iq-template.links.v1"))
+        self.assertEqual(document["links"], deploy.deployment_links(values)["links"])
+        self.assertEqual([call[2] for call in shell.calls if call[0] == "terraform"], ["init", "output"])
+        self.assertFalse(shell.matching(command("az")))
+        self.assertEqual(http.calls, [])
+        self.assertFalse((root / ".artifacts").exists())
+        code, stdout, *_ = self.invoke(["links"], values)
+        self.assertEqual(code, deploy.OK)
+        self.assertEqual(stdout.splitlines()[:5], [
+            "Links for demo-dev: they hold deployment IDs, so never commit them.", "", "App",
+            "  ca-demo: The scenario assistant", f"    {AgentAndAppTests.APP_URL}/"])
+        _, stdout, *_ = self.invoke(["links"], {**values, "work_iq": {"enabled": False}})
+        self.assertIn("\nWork IQ (off: work_iq_enabled = false)\n  Outlook on the web: ", stdout)
+        missing = {name: value for name, value in values.items() if name != "fabric_user_auth_tenant_id"}
+        code, stdout, *_ = self.invoke(["links"], missing)
+        self.assertEqual(code, deploy.BLOCKED)
+        self.assertIn("Terraform outputs are missing: fabric_user_auth_tenant_id", stdout)
+
+    def check_root(self):
+        root = make_root(self)
+        shutil.copytree(REPO / "agents", root / "agents")
+        return root
+
+    def check_http(self, root, values, current=tuple(deploy.foundry.VARIANTS), state="Active", health=200,
+                   client=None, statuses=None):
+        """Live state as check reads it: the agents in `current` run this checkout's definitions."""
+        http = FakeFoundry(AgentAndAppTests.ENDPOINT)
+        ctx = make_context(self, root)
+        ctx.cache["outputs"] = values
+        for agent in deploy.foundry_agents(ctx)[1]:
+            if agent["key"] in current:
+                http.store(agent["name"], agent["body"])
+        http.add("GET", r"/capacities/fcdemo\?api-version=2023-11-01$",
+                 reply(body={"properties": {"state": state}, "sku": {"name": "F2"}}))
+        http.add("GET", r"/healthz$", reply(health))
+        http.add("GET", r"/api/config$", reply(body={"mock": False, "clientId": client or AgentAndAppTests.CLIENT}))
+        for key in ("documents", "manuals"):
+            http.add("GET", rf"/knowledgesources/demo-{key}/status\?api-version=v1$",
+                     (statuses or {}).get(key) or reply(body=self.SYNCED))
+        return http
+
+    def run_check(self, values, http=None, root=None, text=False):
+        root = root or self.check_root()
+        http = http or self.check_http(root, values)
+        code, stdout, _, http = self.invoke(["check"] if text else ["check", "--json"], values, http=http, root=root)
+        return code, stdout if text else json.loads(stdout), http, root
+
+    def test_check_passes_a_ready_deployment_item_by_item_with_reads_only(self):
+        for work_iq in (True, False):
+            with self.subTest(work_iq=work_iq):
+                code, report, http, root = self.run_check(self.outputs(work_iq=work_iq))
+                self.assertEqual((code, report["format"], report["result"], report["ready"]),
+                                 (deploy.OK, "iq-template.check.v1", "ready", True))
+                self.assertEqual([(item["name"], item["status"]) for item in report["items"]], [
+                    ("fabric capacity", "pass"), ("app", "pass"), ("agent demo-with-iq", "pass"),
+                    ("agent demo-without-iq", "pass"), ("knowledge source documents", "pass"),
+                    ("knowledge source manuals", "pass"), ("consents", "manual"),
+                    *([("sample mail", "manual")] if work_iq else [])])
+                items = {item["name"]: item for item in report["items"]}
+                self.assertEqual(items["fabric capacity"]["detail"], "fcdemo is Active (F2)")
+                self.assertEqual(items["app"]["detail"], f"{AgentAndAppTests.APP_URL} answers /healthz and serves this "
+                                                         "deployment's sign-in registration")
+                self.assertRegex(items["agent demo-with-iq"]["detail"],
+                                 r"^version 1 runs the reviewed definition \(sha256 [0-9a-f]{12}\)$")
+                self.assertEqual(items["knowledge source documents"]["detail"],
+                                 "last synchronization completed (2 item(s), 3 synchronization(s))")
+                self.assertEqual("and to Work IQ" in items["consents"]["detail"], work_iq)
+                self.assertFalse([item for item in report["items"] if "fix" in item])
+                self.assertEqual({method for method, *_ in http.calls}, {"GET"})
+                self.assertFalse((root / ".artifacts").exists())
+        code, text, *_ = self.run_check(self.outputs(), text=True)
+        self.assertEqual(code, deploy.OK)
+        self.assertIn("PASS   fabric capacity              fcdemo is Active (F2)\n", text)
+        self.assertEqual(text.splitlines()[-1], "READY")
+
+    def test_a_paused_capacity_is_not_ready_and_only_its_resume_command_is_named(self):
+        values = self.outputs()
+        root = self.check_root()
+        code, report, http, _ = self.run_check(values, self.check_http(root, values, state="Paused"), root)
+        capacity = report["items"][0]
+        self.assertEqual((code, report["result"], report["ready"]), (deploy.BLOCKED, "blocked", False))
+        self.assertEqual((capacity["name"], capacity["status"], capacity["detail"]),
+                         ("fabric capacity", "fail", "fcdemo is Paused, not Active"))
+        self.assertIn(f"Resume it: az resource invoke-action --action resume --ids {self.CAPACITY}, wait until it is "
+                      "Active", capacity["fix"])
+        # check never resumes it, nor changes anything else.
+        self.assertEqual({method for method, *_ in http.calls}, {"GET"})
+        self.assertFalse((root / ".artifacts" / "deploy" / "state.json").exists())
+        code, text, *_ = self.run_check(values, self.check_http(root, values, state="Paused"), root, text=True)
+        self.assertEqual(code, deploy.BLOCKED)
+        self.assertIn("FAIL   fabric capacity              fcdemo is Paused, not Active\n       fix: Resume it: ", text)
+        self.assertEqual(text.splitlines()[-1], "NOT READY: 1 of 6 checks failed.")
+
+    def test_each_failure_is_its_own_item_with_its_fix(self):
+        values = self.outputs()
+        root = self.check_root()
+        failed = {"lastSynchronizationState": {"errors": [{"errorMessage": "Forbidden"}], "itemsUpdatesFailed": 1}}
+        http = self.check_http(root, values, current=(), health=503,
+                               statuses={"documents": reply(body={}), "manuals": reply(body=failed)})
+        http.store("demo-with-iq", {"description": "older", "metadata": {deploy.foundry.DIGEST_KEY: "0" * 64},
+                                    "definition": {"kind": "prompt", "model": "agent"}})
+        code, report, *_ = self.run_check(values, http, root)
+        items = {item["name"]: item for item in report["items"]}
+        self.assertEqual(code, deploy.BLOCKED)
+        self.assertEqual(items["fabric capacity"]["status"], "pass")
+        self.assertEqual(items["app"]["detail"], f"{AgentAndAppTests.APP_URL}/healthz answered HTTP 503")
+        self.assertIn("app.min_replicas = 0 the first request starts a replica", items["app"]["fix"])
+        self.assertTrue(items["agent demo-with-iq"]["detail"].startswith(
+            "its latest version differs from the reviewed definition in this checkout; Work IQ is on"))
+        self.assertIn("deploy.py up publishes them (agent-publish approval)", items["agent demo-with-iq"]["fix"])
+        self.assertEqual((items["agent demo-without-iq"]["detail"], items["agent demo-without-iq"]["fix"]),
+                         ("not published", "Run deploy.py up through the agent phase (agent-publish approval)."))
+        self.assertEqual(items["knowledge source documents"]["detail"], "no synchronization has completed yet")
+        self.assertIn("whose verify phase observes it", items["knowledge source documents"]["fix"])
+        self.assertEqual(items["knowledge source manuals"]["detail"], "Forbidden")
+        self.assertIn("let the next synchronization run", items["knowledge source manuals"]["fix"])
+
+    def test_an_app_on_another_registration_or_out_of_reach_fails_only_its_item(self):
+        values = self.outputs()
+        root = self.check_root()
+        http = self.check_http(root, values, client="dddddddd-dddd-4ddd-8ddd-dddddddddddd")
+        app = self.run_check(values, http, root)[1]["items"][1]
+        self.assertIn("serves another sign-in registration", app["detail"])
+        http = self.check_http(root, values)
+        answer = http.request
+
+        def request(method, url, *args, **kwargs):
+            if url.endswith("/healthz"):
+                raise deploy.TransportError("GET to ca-demo failed (TimeoutError).")
+            return answer(method, url, *args, **kwargs)
+
+        http.request = request
+        code, report, *_ = self.run_check(values, http, root)
+        self.assertEqual(code, deploy.BLOCKED)
+        self.assertEqual((report["items"][1]["detail"], report["items"][1]["fix"]),
+                         ("GET to ca-demo failed (TimeoutError).", deploy.APP_FIX))
+        self.assertEqual([item["status"] for item in report["items"][2:6]], ["pass"] * 4)
+
+    def test_a_search_token_goes_only_to_the_deployed_search_service(self):
+        values = self.outputs()
+        search = AgentAndAppTests.SEARCH
+        host = search.removeprefix("https://")
+        path = "/knowledgesources/demo-documents/status"
+        for url in (f"https://example.com{path}?api-version=v1", f"https://{host}.example.com{path}?api-version=v1",
+                    f"https://user@{host}{path}?api-version=v1", f"http://{host}{path}?api-version=v1",
+                    f"{search}:8443{path}?api-version=v1", f"{search}/indexes/demo-documents/docs?api-version=v1",
+                    f"{search}{path}", f"{search}{path}?api-version=v1#x", f"{search}{path};x?api-version=v1",
+                    f"{search}/knowledgesources/demo documents/status?api-version=v1", None):
+            with self.subTest(url=url), self.assertRaisesRegex(deploy.Blocked, "so nothing was sent to it"):
+                deploy.knowledge_status_url({**values, "knowledge_source_status_urls": {"documents": url}}, "documents")
+        self.assertEqual(deploy.knowledge_status_url(values, "documents"), f"{search}{path}?api-version=v1")
+        evil = "https://evil.example/knowledgesources/x/status?api-version=1"
+        values["knowledge_source_status_urls"]["documents"] = evil
+        code, report, http, _ = self.run_check(values)
+        item = next(item for item in report["items"] if item["name"] == "knowledge source documents")
+        self.assertEqual((code, item["status"]), (deploy.BLOCKED, "fail"))
+        self.assertIn("knowledge_source_status_urls.documents is not a knowledge source status", item["detail"])
+        self.assertFalse([url for _, url, *_ in http.calls if "evil.example" in url])
+        self.assertTrue([url for _, url, *_ in http.calls if "/knowledgesources/demo-manuals/status" in url])
+
+    def test_unreadable_outputs_are_a_not_ready_report(self):
+        failure = (terraform("output"), deploy.Result(1, "", "Error: Backend initialization required"))
+        code, stdout, _, http = self.invoke(["check", "--json"], {}, failure)
+        report = json.loads(stdout)
+        self.assertEqual((code, report["ready"]), (deploy.BLOCKED, False))
+        self.assertEqual([(item["name"], item["status"]) for item in report["items"]],
+                         [("terraform outputs", "fail"), ("consents", "manual")])
+        self.assertIn("terraform output failed", report["items"][0]["detail"])
+        self.assertEqual(http.calls, [])
+        code, stdout, *_ = self.invoke(["check"], {}, failure)
+        self.assertEqual((code, stdout.splitlines()[-1]), (deploy.BLOCKED, "NOT READY: 1 of 1 checks failed."))
+
+    def test_every_command_check_included_exits_1_on_a_usage_error(self):
+        for argv in (["check", "--bogus"], ["check", "extra"], ["links", "--bogus"], ["status", "--bogus"], ["trace"]):
+            with self.subTest(argv=argv), self.assertRaises(SystemExit) as stop, \
+                    contextlib.redirect_stderr(io.StringIO()):
+                deploy.parse_arguments(argv)
+            self.assertEqual(stop.exception.code, deploy.USAGE)
+        args = deploy.parse_arguments(["check", "--json"])
+        self.assertEqual((args.json, args.non_interactive, args.timeout_minutes, args.approve), (True, True, 30, {}))
+
+    def test_a_check_that_needs_a_sign_in_first_waits_for_it(self):
+        values = self.outputs()
+        root = self.check_root()
+        expired = (lambda args: args[:3] == ["az", "account", "get-access-token"] and deploy.FOUNDRY_SCOPE in args,
+                   deploy.Result(1, "", "AADSTS70043: The refresh token has expired."))
+        code, stdout, _, http = self.invoke(["check", "--json"], values, expired, http=self.check_http(root, values),
+                                            root=root)
+        report = json.loads(stdout)
+        items = {item["name"]: item for item in report["items"]}
+        self.assertEqual((code, report["result"], report["ready"]), (deploy.WAITING, "waiting", False))
+        for name in ("agent demo-with-iq", "agent demo-without-iq"):
+            self.assertEqual((items[name]["status"], items[name]["detail"]),
+                             ("wait", "Azure CLI could not get a Foundry token for you."))
+            self.assertIn("then rerun deploy.py check.", items[name]["fix"])
+        self.assertEqual({items[name]["status"] for name in ("fabric capacity", "app", "knowledge source documents",
+                                                             "knowledge source manuals")}, {"pass"})
+        self.assertFalse([url for _, url, *_ in http.calls if "/agents/" in url], "nothing reaches Foundry unsigned")
+        # A person's action comes first even when another check failed.
+        code, text, *_ = self.invoke(["check"], values, expired, root=root,
+                                     http=self.check_http(root, values, state="Paused"))
+        self.assertEqual(code, deploy.WAITING)
+        self.assertIn("WAIT   agent demo-with-iq           Azure CLI could not get a Foundry token for you.\n"
+                      "       fix: Sign in again with az login as the deploying user, then rerun deploy.py check.\n", text)
+        self.assertEqual(text.splitlines()[-1], "WAITING: 2 of 6 checks need a sign-in or another person's action "
+                                                "first, and 1 failed.")
+
+    def test_trace_takes_only_a_response_id_and_a_bounded_window(self):
+        args = deploy.parse_arguments(["trace", "resp_6f1c0a"])
+        self.assertEqual((args.response_id, args.days, args.non_interactive), ("resp_6f1c0a", 7, True))
+        self.assertEqual(deploy.parse_arguments(["trace", "resp-6f1c0a", "--days", "90"]).days, 90)
+        for argv in (["trace", 'resp_1" | take 1'], ["trace", "a'b"], ["trace", "x" * 257], ["trace", ""],
+                     ["trace", "resp_1", "--days", "0"], ["trace", "resp_1", "--days", "91"]):
+            stderr = io.StringIO()
+            with self.subTest(argv=argv), self.assertRaises(SystemExit) as stop, contextlib.redirect_stderr(stderr):
+                deploy.parse_arguments(argv)
+            self.assertEqual(stop.exception.code, deploy.USAGE)
+            self.assertRegex(stderr.getvalue(), "only letters, digits, underscores and hyphens|from 1 to 90")
+
+    def trace(self, result, *options, insights=None):
+        values = {"application_insights": insights or dict(self.INSIGHTS)}
+        return self.invoke(["trace", "resp_6f1c0a", *options], values,
+                           (command("az", "monitor", "app-insights", "query"), result))
+
+    @staticmethod
+    def table(rows):
+        columns = [{"name": name, "type": "string"}
+                   for name in ("timestamp", "itemType", "name", "duration", "success", "tool", "operation_Id")]
+        return deploy.Result(0, json.dumps({"tables": [{"name": "PrimaryResult", "columns": columns, "rows": rows}]}))
+
+    def test_trace_prints_the_turn_timeline_from_one_query_of_names_and_timings(self):
+        code, stdout, shell, http = self.trace(self.table(self.TRACE_ROWS), "--json")
+        self.assertEqual(code, deploy.OK)
+        query, = shell.matching(command("az", "monitor", "app-insights", "query"))
+        self.assertEqual((query[query.index("--apps") + 1], query[query.index("--offset") + 1]),
+                         (self.INSIGHTS["app_id"], "7d"))
+        kql = query[query.index("--analytics-query") + 1]
+        self.assertIn('customDimensions["gen_ai.response.id"]) == "resp_6f1c0a"', kql)
+        # Span names and timings only: never the protected content table or every custom dimension.
+        self.assertNotIn("AppGenAIContent", kql)
+        self.assertNotRegex(kql, r"customDimensions(?!\[)")
+        self.assertEqual(http.calls, [])
+        self.assertEqual(json.loads(stdout), {"format": "iq-template.trace.v1", "responseId": "resp_6f1c0a", "days": 7,
+                                              "operations": [
+            {"operationId": "op-1", "start": "2026-11-16T10:00:00.1000000Z", "spans": [
+                {"offsetMs": 0, "type": "request", "name": "POST /api/turns", "durationMs": 5200, "success": True},
+                {"offsetMs": 150, "type": "dependency", "name": "invoke_agent demo-with-iq", "durationMs": 4801,
+                 "success": True},
+                {"offsetMs": 1250, "type": "dependency", "name": "execute_tool", "durationMs": 1800, "success": False,
+                 "tool": "fabric_iq_ontology"}]},
+            {"operationId": "op-2", "start": "2026-11-16T10:05:00Z", "spans": [
+                {"offsetMs": 0, "type": "dependency", "name": "invoke_agent demo-with-iq", "durationMs": 900,
+                 "success": True}]}]})
+        code, stdout, shell, _ = self.trace(self.table(self.TRACE_ROWS), "--days", "30")
+        self.assertEqual(shell.calls[-1][shell.calls[-1].index("--offset") + 1], "30d")
+        self.assertEqual(stdout.splitlines(), [
+            "Response resp_6f1c0a: operation op-1, started 2026-11-16T10:00:00.1000000Z",
+            "  +     0 ms  request    POST /api/turns  5200 ms  ok",
+            "  +   150 ms  dependency invoke_agent demo-with-iq  4801 ms  ok",
+            "  +  1250 ms  dependency execute_tool [fabric_iq_ontology]  1800 ms  failed",
+            "Response resp_6f1c0a: operation op-2, started 2026-11-16T10:05:00Z",
+            "  +     0 ms  dependency invoke_agent demo-with-iq  900 ms  ok"])
+
+    def test_trace_stops_with_the_fix_when_it_finds_nothing_or_cannot_query(self):
+        code, stdout, *_ = self.trace(self.table([]))
+        self.assertEqual(code, deploy.BLOCKED)
+        self.assertIn("No trace for response ID resp_6f1c0a in the last 7 day(s).", stdout)
+        self.assertIn("widen --days", stdout)
+        missing = deploy.Result(1, "", "ERROR: The command requires the extension application-insights. Unable to "
+                                       "prompt for extension install confirmation as no tty available.")
+        code, stdout, shell, _ = self.trace(missing)
+        self.assertEqual(code, deploy.BLOCKED)
+        self.assertIn("Run: az extension add --name application-insights", stdout)
+        self.assertEqual(len(shell.matching(command("az", "monitor"))), 1)
+        refused = deploy.Result(1, "", "ERROR: (InsufficientAccessError) The provided credentials have insufficient "
+                                       "access to perform the requested operation")
+        code, stdout, *_ = self.trace(refused)
+        self.assertEqual(code, deploy.BLOCKED)
+        self.assertIn("The deployer needs read access to Application Insights", stdout)
+        for result in (deploy.Result(0, "not JSON"), deploy.Result(0, json.dumps({"tables": []})),
+                       self.table([["2026-11-16T10:00:00Z", "request"]]),
+                       self.table([["yesterday", "request", "POST /api/turns", 1, "True", "", "op-1"]])):
+            with self.subTest(result=result.stdout):
+                code, stdout, *_ = self.trace(result)
+                self.assertEqual(code, deploy.BLOCKED)
+                self.assertRegex(stdout, "did not return JSON|returned an unexpected result")
+        # An app ID that is not a GUID never reaches the command.
+        code, stdout, shell, _ = self.trace(self.table(self.TRACE_ROWS),
+                                            insights={**self.INSIGHTS, "app_id": "x --debug"})
+        self.assertEqual(code, deploy.BLOCKED)
+        self.assertIn("application_insights.app_id must be a GUID", stdout)
+        self.assertFalse(shell.matching(command("az")))
+
+
 class FoundryPreflightTests(unittest.TestCase):
     def test_model_quota_is_summed_per_quota_for_the_deployments_still_to_create(self):
         usages = [{"name": {"value": "OpenAI.GlobalStandard.gpt-5.4-mini"}, "limit": 250, "currentValue": 0},
