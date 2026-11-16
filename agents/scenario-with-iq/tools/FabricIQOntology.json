@@ -1,0 +1,11 @@
+{
+  "type": "mcp",
+  "server_label": "fabric_iq_ontology",
+  "server_description": "Query ScenarioOntology, the live business map of sites and assets in Fabric IQ, as the signed-in user: Site (SiteId, SiteName, Region), Asset (AssetId, AssetName, Status) and LocatedAt, which links each asset to its site. Call it for every current fact: an asset's status or site, which assets have a given status, or the assets at a site. Ask exactly one question about the rows of one entity, with each value in quotes, naming the properties you need; you may ask for the name of each row's site through LocatedAt. Use this form: Which Asset rows have the Status value \"Maintenance\"? Return each asset name and the name of its site. Never ask about several entities' rows at once or for everything related to something. Copy values as returned and cite each row by its entity and key. Only these rows are current; documents and mail never are. Read-only.",
+  "server_url": "{{fabric_iq_mcp_endpoint}}",
+  "project_connection_id": "{{fabric_iq_connection}}",
+  "allowed_tools": [
+    "ask_ontology"
+  ],
+  "require_approval": "never"
+}

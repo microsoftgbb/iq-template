@@ -5,7 +5,6 @@ import json
 import os
 from pathlib import Path
 import subprocess
-import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -21,42 +20,46 @@ TENANT = "22222222-2222-4222-8222-222222222222"
 OTHER_TENANT = "33333333-3333-4333-8333-333333333333"
 REPOSITORY = "fixture/runtime-proof"
 SECRET = "must-not-appear-in-output"
+# Every native command the helper may run: none signs in, writes or provisions.
+READ_ONLY = (
+    ("git", "remote", "get-url", "origin"), ("git", "--version"), ("gh", "repo", "view"), ("node", "--version"),
+    ("az", "version"), ("az", "account", "show"), ("az", "ad", "sp", "show"), ("az", "provider", "show"),
+    ("az", "rest", "--method", "get"),
+)
 
 
-def catalog(name):
+def provider(namespace, resource_type, *locations):
     return {
-        "success": True,
-        "items": [{"name": name, "isBlocked": False, "isTabular": False}],
-    }
-
-
-def actions(*operations):
-    return {
-        "success": True,
-        "items": [
-            {"id": operation, "behavior": "Allow", "deprecated": False}
-            for operation in operations
+        "namespace": namespace,
+        "registrationState": "Registered",
+        "resourceTypes": [
+            {"resourceType": "operations", "locations": []},
+            {"resourceType": resource_type, "locations": list(locations)},
         ],
     }
 
 
 class RuntimePreflightTests(unittest.TestCase):
     def setUp(self):
+        executable = patch.object(runtime.shutil, "which", return_value=None)
+        executable.start()
+        self.addCleanup(executable.stop)
         self.environment = patch.dict(os.environ, {}, clear=True)
         self.environment.start()
         self.addCleanup(self.environment.stop)
         self.commands = []
         self.metadata = {"nameWithOwner": REPOSITORY, "isTemplate": False}
+        self.versions = {"node": "v24.11.0", "git": "git version 2.27.0", "az": "2.60.0"}
         self.azure = {"id": SUBSCRIPTION, "tenantId": TENANT, "userType": "user"}
-        self.authentication = {
-            "success": True,
-            "signedIn": True,
-            "activeAccount": {
-                "username": SECRET,
-                "homeAccountId": f"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.{TENANT}",
-            },
+        self.principal = {
+            "appId": runtime.FOUNDRY_API,
+            "oauth2PermissionScopes": [{"value": "user_impersonation", "isEnabled": True}],
         }
-        self.connector = "shared_azureagentservice"
+        self.providers = {
+            namespace: provider(namespace, resource_type, "Sweden Central", "Central US")
+            for namespace, resource_type in runtime.REGIONAL
+        }
+        self.principal_missing = False
         self.quota = {
             "value": [{
                 "name": {"value": "CapacityQuota"},
@@ -66,6 +69,14 @@ class RuntimePreflightTests(unittest.TestCase):
             }],
         }
 
+    def test_native_command_resolves_windows_launcher(self):
+        launcher = r"C:\Program Files\Azure\az.cmd"
+        with patch.object(runtime.shutil, "which", return_value=launcher), \
+                patch.object(runtime.subprocess, "run") as run:
+            run.return_value = subprocess.CompletedProcess([], 0, stdout="{}", stderr="")
+            self.assertEqual(runtime.command(["az", "version"], ROOT), "{}")
+            self.assertEqual(run.call_args.args[0], [launcher, "version"])
+
     def native(self, arguments, **kwargs):
         self.commands.append(arguments)
         if arguments[:4] == ["git", "remote", "get-url", "origin"]:
@@ -73,67 +84,83 @@ class RuntimePreflightTests(unittest.TestCase):
         elif arguments[:3] == ["gh", "repo", "view"]:
             output = json.dumps(self.metadata)
         elif arguments == ["node", "--version"]:
-            output = "v24.11.0"
+            output = self.versions["node"]
         elif arguments == ["git", "--version"]:
-            output = "git version 2.27.0"
-        elif arguments == ["ms", "--version"]:
-            output = runtime.cli_pin(ROOT)
+            output = self.versions["git"]
+        elif arguments[:2] == ["az", "version"]:
+            output = json.dumps({"azure-cli": self.versions["az"], "extensions": {}})
         elif arguments[:3] == ["az", "account", "show"]:
             output = json.dumps(self.azure)
+        elif arguments[:4] == ["az", "ad", "sp", "show"]:
+            if self.principal_missing:
+                return subprocess.CompletedProcess(arguments, 3, stdout="", stderr=SECRET)
+            output = json.dumps(self.principal)
+        elif arguments[:3] == ["az", "provider", "show"]:
+            output = json.dumps(self.providers[arguments[4]])
         elif arguments[:2] == ["az", "rest"]:
             output = json.dumps(self.quota)
-        elif arguments[:3] == ["ms", "auth", "status"]:
-            output = json.dumps(self.authentication)
-        elif arguments[:3] == ["ms", "connector", "list"]:
-            output = json.dumps(catalog(arguments[4]))
-        elif arguments[:3] == ["ms", "connector", "list-actions"]:
-            output = json.dumps(actions(*runtime.CONNECTORS[arguments[4]]))
         else:
             self.fail(f"Unexpected native command: {arguments}")
         return subprocess.CompletedProcess(arguments, 0, stdout=output, stderr="")
 
-    def run_preflight(self):
+    def run_preflight(self, sku="F2", **options):
         with patch.object(runtime.subprocess, "run", side_effect=self.native):
-            return runtime.preflight(ROOT, REPOSITORY, SUBSCRIPTION, TENANT, ROOT, "centralus", "F2")
+            return runtime.preflight(
+                ROOT, REPOSITORY, SUBSCRIPTION, TENANT, "swedencentral", "centralus", sku, **options
+            )
 
-    def test_success_is_only_a_candidate_and_redacts_native_account_output(self):
+    def test_success_is_only_a_candidate_and_only_reads(self):
         os.environ["FABRIC_GITHUB_TOKEN"] = SECRET
-        os.environ["MS_CLI_ORIGIN"] = "user/chosen-origin"
         report = self.run_preflight()
         self.assertEqual(report["status"], "candidate")
         self.assertTrue(report["fabric_git_token_available"])
-        self.assertEqual(len(report["connectors"]), len(runtime.CONNECTORS))
+        self.assertEqual(report["foundry_api"], {"app_id": runtime.FOUNDRY_API, "scope": "user_impersonation"})
+        self.assertEqual([region["resource_type"] for region in report["regions"]],
+                         ["Microsoft.CognitiveServices/accounts", "Microsoft.App/managedEnvironments",
+                          "Microsoft.ContainerRegistry/registries"])
+        self.assertEqual(report["tools"], {"node": "24.11.0", "git": "2.27.0", "az": "2.60.0"})
+        self.assertEqual((report["target"]["location"], report["target"]["fabric_location"]),
+                         ("swedencentral", "centralus"))
         self.assertEqual(report["fabric_quota"]["available_cus"], 508)
         self.assertEqual(report["unverified"], runtime.UNVERIFIED)
         self.assertNotIn(SECRET, json.dumps(report))
-        self.assertEqual(os.environ["MS_CLI_ORIGIN"], "user/chosen-origin")
         report["unverified"].clear()
         self.assertTrue(runtime.UNVERIFIED)
-        probes = [command for command in self.commands if command[:2] == ["ms", "connector"]]
-        self.assertEqual(
-            probes,
-            [
-                ["ms", "connector", "list", "--search", name, "--json"]
-                if kind == "list"
-                else ["ms", "connector", "list-actions", "--connector", name, "--json"]
-                for name in runtime.CONNECTORS
-                for kind in ("list", "list-actions")
-            ],
-        )
-        self.assertTrue(all("--include-blocked" not in command for command in self.commands))
-        self.assertTrue(all("login" not in command and "create" not in command for command in self.commands))
+        for command in self.commands:
+            self.assertTrue(any(tuple(command[:len(prefix)]) == prefix for prefix in READ_ONLY), command)
+        [quota] = [command for command in self.commands if command[:2] == ["az", "rest"]]
+        self.assertTrue(quota[quota.index("--url") + 1].startswith(
+            f"https://management.azure.com/subscriptions/{SUBSCRIPTION}/providers/"
+            "Microsoft.Fabric/locations/centralus/usages?"))
 
-    def test_missing_pat_does_not_turn_catalog_access_into_platform_readiness(self):
+    def test_missing_pat_does_not_turn_metadata_access_into_platform_readiness(self):
         report = self.run_preflight()
         self.assertFalse(report["fabric_git_token_available"])
         self.assertEqual(report["status"], "candidate")
         self.assertTrue(report["unverified"])
 
-    def test_template_is_refused_before_ms_or_azure_calls(self):
+    def test_work_iq_is_optional_and_its_prerequisites_are_only_listed(self):
+        default = self.run_preflight()
+        commands, self.commands = self.commands, []
+        report = self.run_preflight(work_iq=True)
+        # The flag adds no native call: nothing reads Microsoft 365, Work IQ or billing.
+        self.assertEqual(self.commands, commands)
+        self.assertEqual(default["work_iq"]["requested"], False)
+        self.assertIn("--work-iq", default["work_iq"]["note"])
+        self.assertNotIn("manual", default["work_iq"])
+        self.assertEqual((report["status"], report["work_iq"]["requested"]), ("candidate", True))
+        manual = "\n".join(report["work_iq"]["manual"])
+        for prerequisite in ("mailbox", "Copilot Credits spending policy", "Microsoft 365 Copilot licence",
+                             "WorkIQAgent.Ask and offline_access", f"az ad sp create --id {runtime.WORK_IQ_API}",
+                             "one-time consent"):
+            self.assertIn(prerequisite, manual)
+        self.assertEqual(report["unverified"], [*runtime.UNVERIFIED, runtime.WORK_IQ_UNVERIFIED])
+
+    def test_template_is_refused_before_azure_calls(self):
         self.metadata["isTemplate"] = True
         with self.assertRaisesRegex(runtime.PreflightError, "derived repository"):
             self.run_preflight()
-        self.assertFalse(any(command[0] in ("ms", "az") for command in self.commands))
+        self.assertFalse(any(command[0] == "az" for command in self.commands))
 
     def test_missing_or_string_template_flag_is_refused(self):
         for value in (None, "false", 0):
@@ -156,21 +183,67 @@ class RuntimePreflightTests(unittest.TestCase):
                     self.run_preflight()
                 self.azure[key] = original
 
-    def test_cached_managed_runtime_account_is_not_an_authentication_receipt(self):
-        self.authentication["signedIn"] = False
-        with self.assertRaisesRegex(runtime.PreflightError, "ms auth login"):
+    def test_the_foundry_api_principal_must_exist_and_publish_its_delegated_scope(self):
+        self.principal_missing = True
+        with self.assertRaises(runtime.PreflightError) as error:
             self.run_preflight()
-        self.authentication["signedIn"] = True
-        self.authentication["activeAccount"]["homeAccountId"] = f"subject.{OTHER_TENANT}"
-        with self.assertRaisesRegex(runtime.PreflightError, "different home tenants"):
+        self.assertIn(f"az ad sp create --id {runtime.FOUNDRY_API}", str(error.exception))
+        self.assertNotIn(SECRET, str(error.exception))
+        self.principal_missing = False
+        for scopes in ([], [{"value": "user_impersonation", "isEnabled": False}], [{"value": "other", "isEnabled": True}],
+                       None):
+            with self.subTest(scopes=scopes):
+                self.principal["oauth2PermissionScopes"] = scopes
+                with self.assertRaisesRegex(runtime.PreflightError, "user_impersonation"):
+                    self.run_preflight()
+        self.principal = {"appId": "other", "oauth2PermissionScopes": []}
+        with self.assertRaisesRegex(runtime.PreflightError, "Foundry API principal"):
             self.run_preflight()
 
-    def test_malformed_active_account_is_refused(self):
-        for value in (None, {}, {"homeAccountId": "missing-tenant"}):
-            with self.subTest(value=value):
-                self.authentication["activeAccount"] = value
-                with self.assertRaises(runtime.PreflightError):
+    def test_the_main_region_must_offer_foundry_container_apps_and_the_registry(self):
+        for namespace, resource_type in runtime.REGIONAL:
+            with self.subTest(namespace=namespace):
+                original = self.providers[namespace]
+                self.providers[namespace] = provider(namespace, resource_type, "Central US")
+                with self.assertRaisesRegex(runtime.PreflightError, f"{resource_type} is not offered in swedencentral"):
                     self.run_preflight()
+                self.assertFalse(any(command[:2] == ["az", "rest"] for command in self.commands[-1:]))
+                self.providers[namespace] = original
+        for value in ({}, {"namespace": "Microsoft.App", "resourceTypes": None},
+                      {"namespace": "Microsoft.App", "resourceTypes": [{"resourceType": "managedEnvironments"}]}):
+            with self.subTest(value=value), self.assertRaises(runtime.PreflightError):
+                runtime.region_check(value, "Microsoft.App", "managedEnvironments", "swedencentral")
+
+    def test_malformed_regions_and_skus_are_refused_before_any_call(self):
+        for location, fabric_location, sku, current in (
+            ("Sweden Central", "centralus", "F2", None),
+            ("swedencentral", "centralus?unexpected=1", "F2", None),
+            ("swedencentral", None, "F2", None),
+            ("swedencentral", "centralus", "F3", None),
+            ("swedencentral", "centralus", "F2", "F3"),
+        ):
+            with self.subTest(location=location, fabric_location=fabric_location, sku=sku, current=current), \
+                    patch.object(runtime.subprocess, "run", side_effect=self.native), \
+                    self.assertRaises(runtime.PreflightError):
+                runtime.preflight(ROOT, REPOSITORY, SUBSCRIPTION, TENANT, location, fabric_location, sku,
+                                  current_fabric_sku=current)
+        self.assertEqual(self.commands, [])
+
+    def test_old_tools_are_refused(self):
+        for tool, output, found in (
+            ("node", "v24.10.0", "Node 24.10.0"),
+            ("git", "git version 2.26.9", "Git 2.26.9"),
+            ("az", "2.59.9", "Azure CLI 2.59.9"),
+        ):
+            with self.subTest(tool=tool):
+                original = self.versions[tool]
+                self.versions[tool] = output
+                with self.assertRaisesRegex(
+                    runtime.PreflightError, r"Use Node >= 24\.11\.0, Git >= 2\.27\.0 and Azure CLI >= 2\.60\.0"
+                ) as error:
+                    self.run_preflight()
+                self.assertIn(f"(found {found})", str(error.exception))
+                self.versions[tool] = original
 
     def test_provider_target_conflicts_do_not_print_the_override(self):
         os.environ["ARM_SUBSCRIPTION_ID"] = OTHER_TENANT
@@ -199,23 +272,16 @@ class RuntimePreflightTests(unittest.TestCase):
         os.environ["ARM_USE_MSI"] = "false"
         self.assertEqual(self.run_preflight()["status"], "candidate")
 
-    def test_allowed_native_items_envelope(self):
-        self.assertEqual(
-            runtime.connector_check(catalog(self.connector), actions("InvokeAgent"), self.connector, ("InvokeAgent",)),
-            {"connector": self.connector, "allowed_operations": ["InvokeAgent"]},
-        )
-
-    def test_zero_or_exhausted_fabric_quota_blocks_before_connector_probes(self):
+    def test_zero_or_exhausted_fabric_quota_blocks(self):
         for limit, used in ((0, 0), (4, 4), (4, 3)):
             with self.subTest(limit=limit, used=used):
                 self.quota["value"][0].update(limit=limit, currentValue=used)
-                self.commands.clear()
                 with self.assertRaisesRegex(runtime.PreflightError, "available CUs"):
                     self.run_preflight()
-                self.assertFalse(any(command[:2] == ["ms", "connector"] for command in self.commands))
 
     def test_fabric_quota_rejects_unknown_fallbacks_and_malformed_values(self):
         for value in (
+            None,
             {},
             {"usageInfo": {"Microsoft.Fabric/capacities": [{"limit": 0, "description": "No Limit"}]}},
             {"value": []},
@@ -233,9 +299,30 @@ class RuntimePreflightTests(unittest.TestCase):
         self.assertEqual(runtime.fabric_quota_check(self.quota, "centralus", "F4")["required_cus"], 4)
         with self.assertRaisesRegex(runtime.PreflightError, "needs 8"):
             runtime.fabric_quota_check(self.quota, "centralus", "F8")
-        for location, sku in (("centralus?unexpected=1", "F2"), ("centralus", "F3")):
+        for location, sku in (("centralus?unexpected=1", "F2"), ("centralus", "F3"), (None, "F2")):
             with self.subTest(location=location, sku=sku), self.assertRaises(runtime.PreflightError):
                 runtime.fabric_quota_check(self.quota, location, sku)
+
+    def test_fabric_quota_for_a_resize_counts_only_the_added_cus(self):
+        quota = self.quota["value"][0]
+        quota.update(limit=8, currentValue=2)
+        self.assertEqual(runtime.fabric_quota_check(self.quota, "centralus", "F8", current_sku="F2")["required_cus"], 6)
+        with self.assertRaisesRegex(runtime.PreflightError, "F4 -> F16 needs 12"):
+            runtime.fabric_quota_check(self.quota, "centralus", "F16", current_sku="F4")
+        with self.assertRaises(runtime.PreflightError):
+            runtime.fabric_quota_check(self.quota, "centralus", "F8", current_sku="F3")
+
+    def test_an_existing_capacity_needs_quota_only_for_the_cus_a_larger_sku_adds(self):
+        # This deployment's existing capacity and others use up the region's quota.
+        self.quota["value"][0].update(limit=16, currentValue=16)
+        with self.assertRaisesRegex(runtime.PreflightError, "0 available CUs, but F2 needs 2"):
+            self.run_preflight()
+        for current in ("F2", "F4"):
+            with self.subTest(current=current):
+                fabric = self.run_preflight(current_fabric_sku=current)["fabric_quota"]
+                self.assertEqual((fabric["current_sku"], fabric["required_cus"]), (current, 0))
+        with self.assertRaisesRegex(runtime.PreflightError, "F2 -> F4 needs 2"):
+            self.run_preflight("F4", current_fabric_sku="F2")
 
     def test_fabric_quota_requires_one_complete_cu_record(self):
         for mode in ("duplicate", "wrong-unit", "negative", "pagination"):
@@ -257,71 +344,27 @@ class RuntimePreflightTests(unittest.TestCase):
                 with self.assertRaises(runtime.PreflightError):
                     runtime.fabric_quota_check(quota, "centralus", "F2")
 
-    def test_missing_or_wrong_catalog_envelopes_are_errors(self):
-        for value in ({}, {"actions": []}, {"items": {}}, {"items": [None]}):
-            with self.subTest(value=value):
-                with self.assertRaisesRegex(runtime.PreflightError, "items array"):
-                    runtime.connector_check(value, actions("InvokeAgent"), self.connector, ("InvokeAgent",))
-
-    def test_connector_governance_is_strict(self):
-        for value in (True, None, "false", 0):
-            with self.subTest(value=value):
-                data = catalog(self.connector)
-                data["items"][0]["isBlocked"] = value
-                with self.assertRaises(runtime.PreflightError):
-                    runtime.connector_check(data, actions("InvokeAgent"), self.connector, ("InvokeAgent",))
-
-    def test_connector_matches_must_be_unique_and_non_tabular(self):
-        for mode in ("missing", "duplicate", "tabular"):
-            with self.subTest(mode=mode):
-                data = catalog(self.connector)
-                if mode == "missing":
-                    data["items"] = []
-                elif mode == "duplicate":
-                    data["items"].append(dict(data["items"][0]))
-                else:
-                    data["items"][0]["isTabular"] = True
-                with self.assertRaises(runtime.PreflightError):
-                    runtime.connector_check(data, actions("InvokeAgent"), self.connector, ("InvokeAgent",))
-
-    def test_required_actions_cannot_be_denied_deprecated_missing_or_duplicated(self):
-        for mode in ("denied", "deprecated", "missing", "duplicate", "unknown"):
-            with self.subTest(mode=mode):
-                data = actions("InvokeAgent")
-                if mode == "denied":
-                    data["items"][0]["behavior"] = "Deny"
-                elif mode == "deprecated":
-                    data["items"][0]["deprecated"] = True
-                elif mode == "missing":
-                    data["items"] = []
-                elif mode == "duplicate":
-                    data["items"].append(dict(data["items"][0]))
-                else:
-                    del data["items"][0]["deprecated"]
-                with self.assertRaises(runtime.PreflightError):
-                    runtime.connector_check(catalog(self.connector), data, self.connector, ("InvokeAgent",))
-
     def test_native_command_errors_do_not_echo_sensitive_output(self):
-        result = subprocess.CompletedProcess(["ms"], 1, stdout=SECRET, stderr=SECRET)
+        result = subprocess.CompletedProcess(["az"], 1, stdout=SECRET, stderr=SECRET)
         with patch.object(runtime.subprocess, "run", return_value=result):
             with self.assertRaises(runtime.PreflightError) as error:
-                runtime.command(["ms", "auth", "status", "--json"], ROOT)
+                runtime.command(["az", "account", "show", "--output", "json"], ROOT)
         self.assertNotIn(SECRET, str(error.exception))
         self.assertIn("exit code 1", str(error.exception))
 
     def test_json_failures_do_not_become_empty_success(self):
-        for value in (SECRET, "[]", json.dumps({"success": False, "errorMessage": SECRET})):
+        for value in (SECRET, "[]", "null", json.dumps([SECRET])):
             with self.subTest(value=value), patch.object(runtime, "command", return_value=value):
                 with self.assertRaises(runtime.PreflightError) as error:
-                    runtime.json_command(["ms", "auth", "status", "--json"], ROOT)
+                    runtime.json_command(["az", "account", "show", "--output", "json"], ROOT)
                 self.assertNotIn(SECRET, str(error.exception))
 
     def test_timeouts_and_missing_tools_stop_the_probe(self):
-        for error in (FileNotFoundError(SECRET), subprocess.TimeoutExpired(["ms"], 120)):
+        for error in (FileNotFoundError(SECRET), subprocess.TimeoutExpired(["az"], 120)):
             with self.subTest(error=type(error).__name__):
                 with patch.object(runtime.subprocess, "run", side_effect=error):
                     with self.assertRaises(runtime.PreflightError) as caught:
-                        runtime.command(["ms", "--version"], ROOT)
+                        runtime.command(["az", "version"], ROOT)
                 self.assertNotIn(SECRET, str(caught.exception))
 
     def test_github_origins_are_explicit_and_uncredentialed(self):
@@ -350,21 +393,11 @@ class RuntimePreflightTests(unittest.TestCase):
         with self.assertRaises(runtime.PreflightError):
             runtime.tool_version(SECRET, "node")
 
-    def test_cli_pin_must_be_unique(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            source = root / ".devcontainer/features/managed-runtime/install.sh"
-            source.parent.mkdir(parents=True)
-            for content in ("", "cli_version=0.27.0\ncli_version=0.28.0\n"):
-                source.write_text(content, encoding="utf-8")
-                with self.assertRaises(runtime.PreflightError):
-                    runtime.cli_pin(root)
-
     def test_main_failure_has_no_success_report(self):
         arguments = [
             str(SCRIPT), "--repository", REPOSITORY,
             "--subscription-id", SUBSCRIPTION, "--tenant-id", TENANT,
-            "--fabric-location", "centralus",
+            "--location", "swedencentral",
         ]
         stdout, stderr = io.StringIO(), io.StringIO()
         with (
@@ -378,6 +411,24 @@ class RuntimePreflightTests(unittest.TestCase):
         self.assertEqual(error.exception.code, 1)
         self.assertEqual(stdout.getvalue(), "")
         self.assertIn("Runtime preflight blocked", stderr.getvalue())
+
+    def test_main_passes_the_optional_flags_and_prints_only_the_report(self):
+        arguments = [
+            str(SCRIPT), "--repository", REPOSITORY,
+            "--subscription-id", SUBSCRIPTION, "--tenant-id", TENANT,
+            "--location", "swedencentral", "--fabric-capacity-sku", "F4",
+            "--current-fabric-capacity-sku", "F2", "--work-iq",
+        ]
+        stdout = io.StringIO()
+        with (
+            patch("sys.argv", arguments),
+            patch.object(runtime, "preflight", return_value={"status": "candidate"}) as preflight,
+            contextlib.redirect_stdout(stdout),
+        ):
+            runtime.main()
+        self.assertEqual(json.loads(stdout.getvalue()), {"status": "candidate"})
+        self.assertEqual(preflight.call_args.args[4:], ("swedencentral", "swedencentral", "F4"))
+        self.assertEqual(preflight.call_args.kwargs, {"current_fabric_sku": "F2", "work_iq": True})
 
 
 if __name__ == "__main__":

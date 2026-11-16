@@ -12,21 +12,21 @@ There is no fabric-cicd dependency or `fab deploy` configuration. The [determini
 
 ## Ownership and included items
 
-Terraform owns the project-specific user-auth registration, capacity, workspaces, permissions, the optional GitHub credentials connection, the DEV/TEST deployment pipeline, Foundry, Search and Web IQ. An administrator owns consent; shared Microsoft enterprise applications are read-only lookups, not Terraform-owned assets. The repository owns workspace item definitions, deployed by native import or opt-in Git sync. The seeder inserts only missing demo keys and initial starter content. Do not also manage these item definitions with Terraform.
+Terraform owns the project-specific user-auth registration, capacity, workspaces, permissions, the optional GitHub credentials connection, the DEV/TEST deployment pipeline, Foundry, Search, Web IQ, the agents' connections and the app's hosting. An administrator owns consent; shared Microsoft enterprise applications are read-only lookups, not Terraform-owned assets. The repository owns workspace item definitions, deployed by native import or opt-in Git sync. The seeder inserts only missing demo keys and initial starter content. Do not also manage these item definitions with Terraform.
 
 | Git item | Purpose |
 | --- | --- |
 | [`Scenario.Lakehouse`](../workspace/Scenario.Lakehouse) | Schema-enabled lakehouse with default schema `dbo`; Git does not contain its data. |
-| [`SeedScenario.Notebook`](../workspace/SeedScenario.Notebook/notebook-content.py) | Synthetic sites/assets and a starter document, embedded in code so they travel through Git and native promotion. |
+| [`SeedScenario.Notebook`](../workspace/SeedScenario.Notebook/notebook-content.py) | Synthetic sites/assets and a starter document in the `documents` knowledge folder, embedded in code so they travel through Git and native promotion. |
 | [`ScenarioOntology.Ontology`](../workspace/ScenarioOntology.Ontology) | New-experience TMDL Site/Asset entities and their LocatedAt relationship, initially without environment-specific partitions. |
-| [`BindScenario.Notebook`](../workspace/BindScenario.Notebook/notebook-content.py) | Wait for scoped SQL metadata refresh and bind the sample ontology to the current workspace's lakehouse. |
+| [`BindScenario.Notebook`](../workspace/BindScenario.Notebook/notebook-content.py) | Wait for scoped SQL metadata refresh and bind the sample ontology to the current workspace's lakehouse through its SQL analytics endpoint, with every `ONT_*` source pin. |
 | [`Bootstrap.DeploymentPlan`](../workspace/Bootstrap.DeploymentPlan/plan.yml) | Deploy the lakehouse, run the seed notebook, deploy the ontology, then run its binding notebook. |
 
 The generic item names are local to each project's workspaces. Preserve each `.platform` logical ID across environments. If you rename `Scenario` or `ScenarioOntology`, update notebook parameters and plan actions together. The plan uses logical IDs, while Terraform's `knowledge_lakehouse_id` and `knowledge_ontologies` inputs require physical DEV item GUIDs.
 
 Keep notebook defaults in executable `# PARAMETERS CELL` sections. This delimiter preserves the parameter-cell role through Fabric Git; a `tags` entry in the language metadata does not. A `# PARAMETERS` heading alone is not a code-cell delimiter and can cause Fabric to import the defaults as Markdown.
 
-The seeder uses the current runtime workspace, never a saved DEV workspace ID or default lakehouse attachment. It writes `Tables/dbo/demo_sites`, `Tables/dbo/demo_assets` and `Files/starter.txt`. Existing rows (including edited demo rows) and the existing file are retained. Incompatible table schemas/non-Delta paths and write failures stop the run; no data is silently replaced. Serialize seed runs per workspace.
+The seeder uses the current runtime workspace, never a saved DEV workspace ID or default lakehouse attachment. It writes `Tables/dbo/demo_sites`, `Tables/dbo/demo_assets` and `Files/documents/starter.txt`, which the default `documents` knowledge folder indexes. Existing rows (including edited demo rows) and the existing file are retained, and a legacy `Files/starter.txt` is left untouched. Incompatible table schemas/non-Delta paths and write failures stop the run; no data is silently replaced. Serialize seed runs per workspace.
 
 ## Initial native bootstrap
 
@@ -112,7 +112,7 @@ An action finishes when its own run finishes, not when downstream services catch
 
 Prefer small synthetic fixtures embedded in notebook code or an authenticated data source. Notebook `Resources/builtin/` files can be [tracked by Git](https://learn.microsoft.com/fabric/data-engineering/notebook-source-control-deployment#notebooks-resources-folder-support-in-git), but deployment-pipeline/public-API support is currently limited; the starter doesn't depend on this feature.
 
-The indexed Foundry IQ source remains scoped to the selected DEV lakehouse's **Files** area. Ontologies registered through `knowledge_ontologies` are separate live `fabricOntology` sources in the same knowledge base; they require an end-user token at retrieval time. Creating a table/ontology/graph without registration does not expose it automatically.
+The indexed Foundry IQ sources remain scoped to the `knowledge_folders` folders of the selected DEV lakehouse's **Files** area. Ontologies registered through `knowledge_ontologies` are separate live `fabricOntology` sources in the check-only knowledge base, which require an end-user token at retrieval time, and Fabric IQ connections that the with-IQ agent uses as the signed-in user. Creating a table/ontology/graph without registration does not expose it automatically.
 
 ## Promoting through TEST and PROD
 
@@ -126,6 +126,8 @@ Terraform creates a native deployment pipeline with DEV and TEST assigned. Find 
 PROD should normally use ingestion from approved production sources, not synthetic fixtures. The bundled plan fails its seeder action outside `*-dev`/`*-test`. Define a separate production release plan that omits/replaces the demo action but retains the necessary target binding, or explicitly authorize demo seeding for a deliberate demo environment. The binding notebook itself does not insert demo data. Version and review both plans with the same release; don't silently weaken the default guard.
 
 For automation, use Fabric's [Deploy Stage Content API with a deployment plan](https://learn.microsoft.com/fabric/cicd/deployment-plan/deployment-plan-automation#deploy-content-between-pipeline-stages): add `beta=true` and `options.deploymentPlan` with the plan's physical `itemId` and `referenceType: "ByItemId"`. Retain the normal source/target stage fields and selected items, and poll the operation. This is different from Git's logical-ID reference.
+
+Fabric pipelines promote Fabric items only. The prompt agents and the web app serve DEV: their Fabric IQ connection targets the DEV ontology. A TEST or PROD agent needs its own Foundry project, connections to that stage's bound ontology and knowledge bases, and a release designed in the derived project.
 
 The pinned Terraform provider treats changes to the pipeline's `stages` as replacement. Review the plan when extending it for PROD; don't change Terraform-owned stage assignments only in the portal and expect Terraform to preserve that drift.
 

@@ -85,6 +85,30 @@ resource "azapi_resource" "embedding_model" {
   }
 }
 
+# The prompt agents run on their own deployment, so their tokens-per-minute budget never competes with the knowledge
+# bases' query planning and answer synthesis on the chat deployment.
+resource "azapi_resource" "agent_model" {
+  type      = "Microsoft.CognitiveServices/accounts/deployments@2025-06-01"
+  name      = "agent"
+  parent_id = azapi_resource.foundry.id
+  locks     = [azapi_resource.foundry.id]
+
+  body = {
+    sku = {
+      name     = var.agent_model.sku
+      capacity = var.agent_model.capacity
+    }
+    properties = {
+      model = {
+        format  = "OpenAI"
+        name    = var.agent_model.name
+        version = var.agent_model.version
+      }
+      versionUpgradeOption = "NoAutoUpgrade"
+    }
+  }
+}
+
 # The published connection schema omits the documented connection properties.
 resource "azapi_resource" "search_connection" {
   type                      = "Microsoft.CognitiveServices/accounts/projects/connections@2025-06-01"
@@ -107,7 +131,10 @@ resource "azapi_resource" "search_connection" {
   }
 }
 
-# RemoteTool/ProjectManagedIdentity is documented but absent from AzAPI's schema.
+# RemoteTool/ProjectManagedIdentity is documented but absent from AzAPI's schema. The agents' Foundry IQ tool reads
+# the knowledge base as the project identity; Agent Service adds the caller's identity in
+# x-ms-query-source-authorization. Foundry stores every RemoteTool connection with isSharedToAll false, whatever is
+# sent, so every tool connection declares false: true would plan an update on every run.
 resource "azapi_resource" "knowledge_base_connection" {
   count = var.knowledge_lakehouse_id == null ? 0 : 1
 
@@ -131,7 +158,8 @@ resource "azapi_resource" "knowledge_base_connection" {
   depends_on = [azurerm_role_assignment.project_search_reader]
 }
 
-# UserEntraToken is documented on the preview RemoteTool API, not AzAPI's schema.
+# UserEntraToken is documented on the preview RemoteTool API, not AzAPI's schema. Foundry exchanges the caller's
+# Foundry token for a Fabric token, so the with-IQ agent queries the ontology as the signed-in user.
 resource "azapi_resource" "fabric_iq_connection" {
   for_each = var.knowledge_ontologies
 
@@ -151,6 +179,63 @@ resource "azapi_resource" "fabric_iq_connection" {
       metadata      = { ApiType = "Azure" }
     }
   }
+}
+
+# The agents' Web IQ tool: the public-context knowledge base, whose only source is Web IQ, read as the project
+# identity like the agents' knowledge base. Search calls Web IQ with the key it holds.
+resource "azapi_resource" "public_context_connection" {
+  count = var.knowledge_lakehouse_id == null ? 0 : 1
+
+  type                      = "Microsoft.CognitiveServices/accounts/projects/connections@2025-10-01-preview"
+  name                      = "public-context"
+  parent_id                 = azapi_resource.foundry_project.id
+  schema_validation_enabled = false
+  locks                     = [azapi_resource.foundry.id]
+
+  body = {
+    properties = {
+      category      = "RemoteTool"
+      authType      = "ProjectManagedIdentity"
+      target        = local.public_context_mcp_endpoint
+      audience      = "https://search.azure.com/"
+      isSharedToAll = false
+      metadata      = { ApiType = "Azure" }
+    }
+  }
+
+  depends_on = [azurerm_role_assignment.project_search_reader]
+}
+
+# The agents' Work IQ mail tool, only with work_iq_enabled: Work IQ's MCP server, signed in as each user (OAuth
+# identity passthrough). The first question asks the user to consent through Foundry's link, which the app shows;
+# Foundry then keeps a token per user and connection. The client is the deployment's Work IQ registration, public, so
+# the connection holds no secret. OAuth2 isn't in AzAPI's schema for connections.
+resource "azapi_resource" "work_iq_connection" {
+  count = var.work_iq_enabled ? 1 : 0
+
+  type                      = "Microsoft.CognitiveServices/accounts/projects/connections@2025-10-01-preview"
+  name                      = "work-iq"
+  parent_id                 = azapi_resource.foundry_project.id
+  schema_validation_enabled = false
+  locks                     = [azapi_resource.foundry.id]
+
+  body = {
+    properties = {
+      category         = "RemoteTool"
+      authType         = "OAuth2"
+      target           = local.work_iq_mcp_endpoint
+      credentials      = { clientId = azuread_application.work_iq[0].client_id }
+      authorizationUrl = "${local.entra_oauth_endpoint}/authorize"
+      tokenUrl         = "${local.entra_oauth_endpoint}/token"
+      refreshUrl       = "${local.entra_oauth_endpoint}/token"
+      scopes           = local.work_iq_mcp_scopes
+      isSharedToAll    = false
+      metadata         = { type = "generic_mcp" }
+    }
+  }
+
+  # Foundry's consent-service URL, which the registration lists as its redirect.
+  response_export_values = ["properties.redirectUrl"]
 }
 
 resource "azurerm_role_assignment" "deployer_foundry_user" {

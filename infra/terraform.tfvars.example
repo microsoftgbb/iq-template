@@ -11,19 +11,50 @@ fabric_git_enabled = false
 knowledge_lakehouse_id = null
 knowledge_ontologies   = {}
 
+# deploy.py's app phase sets this to the tag of the image it built: a digest of the app's committed files.
+# Leave it null until then; the container app exists only once it is set.
+app_image_tag = null
+
 # Web IQ is deployed with every platform. Set true only after accepting its terms.
 # Read preparation.md: paid subscription, public global service,
-# preview terms, manual portal AppID linking and a separate runtime integration.
+# preview terms and manual portal AppID linking. The with-IQ agent's Web IQ tool
+# reads public context through its own knowledge base.
 web_iq_terms_accepted = false
 # The runner's public-only search probe reads WEB_IQ_API_KEY from the environment.
+# After knowledge setup, the runner also passes it to Terraform as the write-only
+# web_iq_api_key for the public-context knowledge source. After rotating the key, increment:
+# web_iq_api_key_version = 2
 # Never put that key in tfvars, source control or the browser app.
+
+# Work IQ, the with-IQ agent's mail tool, reads each user's own mail as that user. Set true only
+# with a Microsoft 365 mailbox per user, a Copilot Credits spending policy covering the Work IQ
+# API (it bills custom agents' Work IQ calls even for users with a Microsoft 365 Copilot licence),
+# and administrator consent to the Work IQ registration's WorkIQAgent.Ask and offline_access.
+# Each user also consents once, on their first Work IQ question. Without such a tenant, Work IQ
+# stays unverified.
+work_iq_enabled = false
+
+# Performance profile: the defaults favour demo speed. The agents run on their own agent
+# deployment (agent_model) at low agent_reasoning_effort, the agents' knowledge base retrieves
+# at minimal effort with extractive output, and the app keeps one warm replica. Fabric IQ
+# queries run on the Fabric capacity (fabric_capacity_sku); Web IQ public-context calls plan
+# and synthesize on chat_model, so raise chat_model's capacity if they return HTTP 429.
+# GlobalStandard model deployments bill per token, so unused model capacity costs nothing.
+# For lower cost, set app = { min_replicas = 0 } between sessions (the first question then
+# waits for a cold start), keep a smaller Fabric capacity and pause it when idle.
+# agent_model            = { capacity = 100 }
+# agent_reasoning_effort = "low"
+# chat_model             = { capacity = 50 }
+# app                    = { min_replicas = 1 }
 
 # Edit all six placeholders for your derived repository, or use the initialize-project skill.
 # Explicitly accept Web IQ terms above before deployment.
 # project_name: 3-16 lowercase letters/digits/single hyphens; start with a letter.
 # Capacity admins: user UPNs or service-principal object IDs.
 # Select the new repository's published default branch, not a local agent worktree branch.
-# Defaults: F2 capacity, serverless (preview) Search; native bootstrap imports workspace/.
+# Defaults: F2 capacity, serverless (preview) Search and a Basic container registry for the
+# app image; native bootstrap imports workspace/. For a larger registry tier, set:
+# container_registry_sku = "Standard"
 # Serverless needs a region that offers it and the subscription's auto-approved
 # Microsoft.Search/Serverless feature. For an SLA-backed dedicated tier, set:
 # search_sku = "basic"
@@ -38,7 +69,8 @@ web_iq_terms_accepted = false
 # The first full apply creates the platform, not the workspace items.
 # After Bootstrap and successful seed/binding runs, replace null with the
 # DEV Scenario lakehouse's physical GUID (not its .platform logicalId) and apply again.
-# Register the bound ontology in that same knowledge apply:
+# Register the bound ontology in that same knowledge apply. It joins only the
+# check-only knowledge base <project_name>-ontology-check, never the agents' one:
 # knowledge_ontologies = {
 #   scenario = {
 #     ontology_id = "<dev-ScenarioOntology-physical-guid>"
@@ -46,8 +78,25 @@ web_iq_terms_accepted = false
 #   }
 # }
 # Ontology queries require delegated user authentication at runtime, not a saved token.
-# Registered ontologies also receive native Foundry Fabric IQ UserEntraToken connections.
-# fabric_iq_connections outputs their IDs/endpoints; this does not create a consuming
-# agent/app or prove its OBO flow. Search fabricOntology calls still need the user header.
+# Registered ontologies also receive native Foundry Fabric IQ UserEntraToken connections, which
+# the with-IQ agent's Fabric IQ tool uses as the signed-in user. Search fabricOntology calls
+# still need the user header.
+# The agents' knowledge base (knowledge_base_name, default <project_name>-knowledge) holds only
+# the attached knowledge_folders sources. Each folder under the lakehouse Files area, such as
+# documents for Files/documents, becomes one indexedOneLake source named <project_name>-<key>,
+# checked for changes every five minutes. An override of knowledge_folders replaces the whole
+# default map in infra/variables.tf, so copy it all. A detached folder is created and indexed,
+# ready for a live attach in the Foundry portal; re-applying the knowledge plan detaches it again:
+# knowledge_folders = {
+#   documents = { description = "Starter documents", target_path = "documents", attach = true }
+#   manuals   = { description = "Equipment manuals", target_path = "manuals", attach = false }
+# }
+# Optional: Entra object IDs that get Search Service Contributor for that live attach:
+# knowledge_editor_principal_ids = ["<editor-entra-object-id>"]
+# For a local live run of the app (npm run dev), also register its MSAL redirect bridge:
+# app_local_redirect_uris = ["http://localhost:3000/redirect.html"]
+# Optional: how long the workspace keeps the app's logs and the app's and agents' traces (30-730 days).
+# Foundry's traces include message text and tool inputs and outputs, in a protected table.
+# telemetry = { retention_days = 30 }
 # Only with fabric_git_enabled = true: supply FABRIC_GITHUB_TOKEN as a Codespaces
 # secret or TF_VAR_github_token in your shell. Never add a PAT to this file.

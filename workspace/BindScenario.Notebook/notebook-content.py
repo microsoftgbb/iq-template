@@ -13,7 +13,9 @@
 
 # # Bind the scenario ontology
 # Run after SeedScenario and ScenarioOntology deploy. This notebook does not seed
-# data or create items. It binds only the sample ontology to its current workspace.
+# data or create items. It binds only the sample ontology to its current workspace,
+# through the lakehouse's SQL analytics endpoint with ONT_* source pins on every
+# partition: Fabric keeps the pins in this form, and graph materialization needs them.
 # Run as an authorized Fabric user; service-principal NotebookUtils tokens lack
 # the full Fabric scopes needed for these definition/metadata operations.
 # Serialize runs and authoring: updateDefinition replaces the item's definition.
@@ -54,9 +56,11 @@ workspace_id = str(UUID(notebookutils.runtime.context["currentWorkspaceId"]))
 workspace_name = notebookutils.runtime.context["currentWorkspaceName"]
 deadline = time.monotonic() + timeout_seconds
 api_root = "https://api.fabric.microsoft.com"
-sample_logical_id = "e6a99499-e3f5-4a9b-8288-3985c73a05e5"
+ontology_logical_id = "e6a99499-e3f5-4a9b-8288-3985c73a05e5"
 table_names = ("demo_sites", "demo_assets")
+entity_names = ("Site", "Asset")
 binding_marker = "annotation BootstrapBinding = site-asset-v1"
+expression_name = "ScenarioLakehouse"
 source_lineage_tag = "afcdf5a6-abb9-4722-81d6-c540ac4b4433"
 
 
@@ -144,10 +148,10 @@ def get_definition(ontology_id):
     if (
         item["type"] != "Ontology"
         or str(UUID(item["workspaceId"])) != workspace_id
-        or str(UUID(item["logicalId"])) != sample_logical_id
+        or str(UUID(item["logicalId"])) != ontology_logical_id
         or item["properties"]["generation"] != 2
     ):
-        raise ValueError("BindScenario requires the current workspace's new-experience sample ontology.")
+        raise ValueError(f"BindScenario requires the current workspace's new-experience {ontology_name}.")
     # The definition export can return a placeholder logical ID; item metadata is authoritative.
     definition = fabric_operation(
         f"/v1/workspaces/{workspace_id}/ontologies/{ontology_id}/getDefinition"
@@ -155,13 +159,12 @@ def get_definition(ontology_id):
     parts = {part["path"]: part for part in definition["parts"]}
     if len(parts) != len(definition["parts"]):
         raise ValueError("The ontology definition contains duplicate part paths.")
-    required_parts = {
-        ".platform", "database.tmdl", "model.tmdl",
-        "entities/Site.tmdl", "entities/Asset.tmdl",
-        "tables/demo_sites.tmdl", "tables/demo_assets.tmdl",
-    }
-    if not required_parts.issubset(parts):
-        raise ValueError("The ontology did not return the required sample TMDL parts.")
+    required_parts = {".platform", "database.tmdl", "model.tmdl"}
+    required_parts |= {f"entities/{name}.tmdl" for name in entity_names}
+    required_parts |= {f"tables/{name}.tmdl" for name in table_names}
+    missing = sorted(required_parts - set(parts))
+    if missing:
+        raise ValueError(f"The ontology did not return the required {ontology_name} TMDL parts: {missing}")
     return parts
 
 
@@ -184,7 +187,7 @@ def bind_partition_annotations(text, values):
     lines = text.splitlines(keepends=True)
     starts = [index for index, line in enumerate(lines) if line.startswith("\tpartition ")]
     if len(starts) != 1:
-        raise ValueError("Expected one canonically indented sample partition.")
+        raise ValueError(f"Expected one canonically indented {ontology_name} partition.")
     start = starts[0]
     end = next(
         (index for index in range(start + 1, len(lines))
@@ -233,6 +236,7 @@ def bound_definition(original, lakehouse, target_workspace_name):
     sql_host = lakehouse["properties"]["sqlEndpointProperties"]["connectionString"]
     if not re.fullmatch(r"[A-Za-z0-9.-]+(?:,1433)?", sql_host):
         raise ValueError("The lakehouse returned an unexpected SQL endpoint hostname.")
+    sql_database = str(UUID(lakehouse["properties"]["sqlEndpointProperties"]["id"]))
     annotations = {
         "ONT_WorkspaceId": target_workspace_id,
         "ONT_ItemId": lakehouse_id,
@@ -253,11 +257,11 @@ def bound_definition(original, lakehouse, target_workspace_name):
     platform = json.loads(part_text(parts, ".platform"))
     if platform["metadata"]["type"] != "Ontology":
         raise ValueError("The selected item is not an ontology.")
-    for entity_name in ("Site", "Asset"):
+    for entity_name in entity_names:
         if binding_marker not in (
             line.strip() for line in part_text(parts, f"entities/{entity_name}.tmdl").splitlines()
         ):
-            raise ValueError(f"The {entity_name} entity is missing its site-asset-v1 binding marker.")
+            raise ValueError(f"The {entity_name} entity is missing its binding marker: {binding_marker}")
 
     for table_name in table_names:
         path = f"tables/{table_name}.tmdl"
@@ -268,7 +272,7 @@ def bound_definition(original, lakehouse, target_workspace_name):
                 "mode": "directLake",
                 "entityName": table_name,
                 "schemaName": "dbo",
-                "expressionSource": "ScenarioLakehouse",
+                "expressionSource": expression_name,
             }
             if len(partitions) != 1 or partitions[0].strip() not in (
                 f"{table_name} = entity", f"'{table_name}' = entity"
@@ -286,20 +290,22 @@ def bound_definition(original, lakehouse, target_workspace_name):
                 "\t\tsource\n"
                 f"\t\t\tentityName: {table_name}\n"
                 "\t\t\tschemaName: dbo\n"
-                "\t\t\texpressionSource: ScenarioLakehouse\n"
+                f"\t\t\texpressionSource: {expression_name}\n"
             )
         annotated = bind_partition_annotations(text, annotations)
         if annotated != part_text(parts, path):
             set_part(parts, path, annotated)
 
-    onelake_root = f"https://onelake.dfs.fabric.microsoft.com/{target_workspace_id}/{lakehouse_id}"
-    source_call = f'AzureStorage.DataLake("{onelake_root}", [HierarchicalNavigation=true])'
+    # Read the lakehouse through its SQL analytics endpoint. Fabric keeps the partitions' ONT_* source pins with
+    # this documented form but strips them from an AzureStorage.DataLake (OneLake) expression, and graph
+    # materialization then rejects every entity as an unsupported data source.
+    source_call = f'Sql.Database("{sql_host}", "{sql_database}")'
     expression = (
-        "expression ScenarioLakehouse =\n"
+        f"expression {expression_name} =\n"
         "\t\tlet\n"
-        f"\t\t\tSource = {source_call}\n"
+        f"\t\t\tdatabase = {source_call}\n"
         "\t\tin\n"
-        "\t\t\tSource\n"
+        "\t\t\tdatabase\n"
         f"\tlineageTag: {source_lineage_tag}\n"
     )
     path = "expressions.tmdl"
@@ -310,25 +316,34 @@ def bound_definition(original, lakehouse, target_workspace_name):
         lines = [line.strip() for line in text.splitlines() if line.strip()]
         if (
             len(lines) != 6
-            or lines[0] not in ("expression ScenarioLakehouse =", "expression 'ScenarioLakehouse' =")
-            or lines[1] != "let" or lines[3:5] != ["in", "Source"]
+            or lines[0] not in (f"expression {expression_name} =", f"expression '{expression_name}' =")
+            or lines[1] != "let" or lines[3] != "in"
             or lines[5] != f"lineageTag: {source_lineage_tag}"
         ):
             raise ValueError("Refusing to overwrite an unrecognized source expression.")
-        native = re.fullmatch(
-            r'Source\s*=\s*AzureStorage\.DataLake\(\s*"'
-            r'(https://onelake\.dfs\.fabric\.microsoft\.com/[0-9a-fA-F-]{36}/[0-9a-fA-F-]{36})'
-            r'"\s*,\s*\[\s*HierarchicalNavigation\s*=\s*true\s*\]\s*\)',
+        sql = re.fullmatch(
+            r'database\s*=\s*Sql\.Database\(\s*"([A-Za-z0-9.-]+(?:,1433)?)"\s*,\s*"([0-9a-fA-F-]{36})"\s*\)',
             lines[2],
         )
-        # Repair only the SQL expression previously generated by this same marked binder.
-        previous_sql = re.fullmatch(
-            r'Source\s*=\s*Sql\.Database\(\s*"[A-Za-z0-9.-]+(?:,1433)?"\s*,\s*"[0-9a-fA-F-]{36}"\s*\)',
+        # Fabric stores the SQL form with ALM tokens that it resolves from the pins of the named lakehouse.
+        alm = re.fullmatch(
+            r'database\s*=\s*Sql\.Database\(\s*"ONT_ALM_SQL_ENDPOINT"\s*,\s*'
+            r'"ONT_ALM_SQL_DATABASE-Lakehouse:([0-9a-fA-F-]{36}):([0-9a-fA-F-]{36})"\s*\)',
             lines[2],
         )
-        if not native and not previous_sql:
+        # The OneLake form an earlier version of this binder wrote; it is replaced, never kept.
+        onelake = re.fullmatch(
+            r'Source\s*=\s*AzureStorage\.DataLake\(\s*"https://onelake\.dfs\.fabric\.microsoft\.com/'
+            r'[0-9a-fA-F-]{36}/[0-9a-fA-F-]{36}"\s*,\s*\[\s*HierarchicalNavigation\s*=\s*true\s*\]\s*\)',
+            lines[2],
+        )
+        if not (((sql or alm) and lines[4] == "database") or (onelake and lines[4] == "Source")):
             raise ValueError("Refusing to overwrite a custom source connector or transformation.")
-        if not native or native[1] != onelake_root:
+        current = (
+            (sql and sql[1].lower() == sql_host.lower() and str(UUID(sql[2])) == sql_database)
+            or (alm and str(UUID(alm[1])) == target_workspace_id and str(UUID(alm[2])) == lakehouse_id)
+        )
+        if not current:
             set_part(parts, path, expression)
     return parts
 
@@ -344,6 +359,8 @@ def bound_definition(original, lakehouse, target_workspace_name):
 lakehouse_id = find_item("Lakehouse", lakehouse_name)
 ontology_id = find_item("Ontology", ontology_name)
 original = get_definition(ontology_id)
+# updateDefinition replaces the whole definition, so any business rules must survive the round trip.
+rule_parts = sorted(path for path in original if path.startswith("rules/"))
 
 while True:
     lakehouse = fabric_request(
@@ -352,7 +369,7 @@ while True:
     if str(UUID(lakehouse["workspaceId"])) != workspace_id:
         raise ValueError("Refusing to bind to a different workspace.")
     if lakehouse["properties"].get("defaultSchema") != "dbo":
-        raise ValueError("Scenario must be a schema-enabled lakehouse with default schema dbo.")
+        raise ValueError(f"{lakehouse_name} must be a schema-enabled lakehouse with default schema dbo.")
     sql_endpoint = lakehouse["properties"]["sqlEndpointProperties"]
     if sql_endpoint["provisioningStatus"] == "Success":
         break
@@ -378,7 +395,7 @@ for result in sync["value"]:
         raise RuntimeError(f"Unexpected SQL metadata refresh result: {result}")
     statuses[name] = result
 if set(statuses) != set(table_names):
-    raise RuntimeError(f"SQL metadata refresh did not report both seeded tables: {statuses}")
+    raise RuntimeError(f"SQL metadata refresh did not report every seeded table: {statuses}")
 for name, result in statuses.items():
     if result["status"] == "Success" or (
         result["status"] == "NotRun" and result.get("lastSuccessfulSyncDateTime")
@@ -395,12 +412,15 @@ if updated != original:
         {"definition": {"parts": list(updated.values())}},
         has_result=False,
     )
+    # The read-back must keep every pin and read this lakehouse, in the form written or as Fabric's ALM tokens.
     verified = get_definition(ontology_id)
     if bound_definition(verified, lakehouse, workspace_name) != verified:
         raise RuntimeError("The ontology update completed without the expected target binding.")
-    print("Bound ScenarioOntology. Review and commit the generated DEV definition in Git.")
+    if sorted(path for path in verified if path.startswith("rules/")) != rule_parts:
+        raise RuntimeError("The ontology update changed its business rules; restore them from Git in a reviewed update.")
+    print(f"Bound {ontology_name}. Review and commit the generated DEV definition in Git.")
 else:
-    print("ScenarioOntology is already bound to the current workspace's lakehouse.")
+    print(f"{ontology_name} is already bound to the current workspace's lakehouse.")
 
 print(f"Lakehouse GUID: {lakehouse_id}")
 print(f"Ontology GUID: {ontology_id}")

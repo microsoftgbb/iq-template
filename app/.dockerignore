@@ -1,0 +1,16 @@
+# Only what the image build needs: never local settings, tests, dependencies or earlier builds.
+*
+!Dockerfile
+!package.json
+!package-lock.json
+!index.html
+!redirect.html
+!tsconfig*.json
+!vite.config.ts
+!vite.server.config.ts
+!public/
+!server/
+!src/
+**/.env*
+**/*.log
+**/.DS_Store

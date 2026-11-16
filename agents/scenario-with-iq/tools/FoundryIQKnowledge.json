@@ -1,0 +1,11 @@
+{
+  "type": "mcp",
+  "server_label": "foundry_iq_knowledge",
+  "server_description": "Retrieve passages from the approved documents in the Foundry IQ knowledge base, such as the starter document (starter.txt), not the web. Call it for what an approved document says, such as background, a procedure, a definition or how the sample data is set up, with one natural-language question that names what you need. Documents describe and guide; they never prove current status, counts or relationships, which come from the live ontology. Cite each document's title, and its section only when the passage names one, taken from the passage text, and name the document inline in the answer, because the result can omit citation markers. If no passage covers the question, say that no approved document covers it. Read-only.",
+  "server_url": "{{knowledge_base_mcp_endpoint}}",
+  "project_connection_id": "{{knowledge_base_connection}}",
+  "allowed_tools": [
+    "knowledge_base_retrieve"
+  ],
+  "require_approval": "never"
+}
