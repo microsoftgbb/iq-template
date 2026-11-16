@@ -3039,7 +3039,8 @@ class ReadOnlyCommandTests(unittest.TestCase):
         for work_iq in (True, False):
             with self.subTest(work_iq=work_iq):
                 code, report, http, root = self.run_check(self.outputs(work_iq=work_iq))
-                self.assertEqual((code, report["format"], report["ready"]), (deploy.OK, "iq-template.check.v1", True))
+                self.assertEqual((code, report["format"], report["result"], report["ready"]),
+                                 (deploy.OK, "iq-template.check.v1", "ready", True))
                 self.assertEqual([(item["name"], item["status"]) for item in report["items"]], [
                     ("fabric capacity", "pass"), ("app", "pass"), ("agent demo-with-iq", "pass"),
                     ("agent demo-without-iq", "pass"), ("knowledge source documents", "pass"),
@@ -3067,7 +3068,7 @@ class ReadOnlyCommandTests(unittest.TestCase):
         root = self.check_root()
         code, report, http, _ = self.run_check(values, self.check_http(root, values, state="Paused"), root)
         capacity = report["items"][0]
-        self.assertEqual((code, report["ready"]), (deploy.NOT_READY, False))
+        self.assertEqual((code, report["result"], report["ready"]), (deploy.BLOCKED, "blocked", False))
         self.assertEqual((capacity["name"], capacity["status"], capacity["detail"]),
                          ("fabric capacity", "fail", "fcdemo is Paused, not Active"))
         self.assertIn(f"Resume it: az resource invoke-action --action resume --ids {self.CAPACITY}, wait until it is "
@@ -3076,7 +3077,7 @@ class ReadOnlyCommandTests(unittest.TestCase):
         self.assertEqual({method for method, *_ in http.calls}, {"GET"})
         self.assertFalse((root / ".artifacts" / "deploy" / "state.json").exists())
         code, text, *_ = self.run_check(values, self.check_http(root, values, state="Paused"), root, text=True)
-        self.assertEqual(code, deploy.NOT_READY)
+        self.assertEqual(code, deploy.BLOCKED)
         self.assertIn("FAIL   fabric capacity              fcdemo is Paused, not Active\n       fix: Resume it: ", text)
         self.assertEqual(text.splitlines()[-1], "NOT READY: 1 of 6 checks failed.")
 
@@ -3090,7 +3091,7 @@ class ReadOnlyCommandTests(unittest.TestCase):
                                     "definition": {"kind": "prompt", "model": "agent"}})
         code, report, *_ = self.run_check(values, http, root)
         items = {item["name"]: item for item in report["items"]}
-        self.assertEqual(code, deploy.NOT_READY)
+        self.assertEqual(code, deploy.BLOCKED)
         self.assertEqual(items["fabric capacity"]["status"], "pass")
         self.assertEqual(items["app"]["detail"], f"{AgentAndAppTests.APP_URL}/healthz answered HTTP 503")
         self.assertIn("app.min_replicas = 0 the first request starts a replica", items["app"]["fix"])
@@ -3120,7 +3121,7 @@ class ReadOnlyCommandTests(unittest.TestCase):
 
         http.request = request
         code, report, *_ = self.run_check(values, http, root)
-        self.assertEqual(code, deploy.NOT_READY)
+        self.assertEqual(code, deploy.BLOCKED)
         self.assertEqual((report["items"][1]["detail"], report["items"][1]["fix"]),
                          ("GET to ca-demo failed (TimeoutError).", deploy.APP_FIX))
         self.assertEqual([item["status"] for item in report["items"][2:6]], ["pass"] * 4)
@@ -3142,7 +3143,7 @@ class ReadOnlyCommandTests(unittest.TestCase):
         values["knowledge_source_status_urls"]["documents"] = evil
         code, report, http, _ = self.run_check(values)
         item = next(item for item in report["items"] if item["name"] == "knowledge source documents")
-        self.assertEqual((code, item["status"]), (deploy.NOT_READY, "fail"))
+        self.assertEqual((code, item["status"]), (deploy.BLOCKED, "fail"))
         self.assertIn("knowledge_source_status_urls.documents is not a knowledge source status", item["detail"])
         self.assertFalse([url for _, url, *_ in http.calls if "evil.example" in url])
         self.assertTrue([url for _, url, *_ in http.calls if "/knowledgesources/demo-manuals/status" in url])
@@ -3151,23 +3152,48 @@ class ReadOnlyCommandTests(unittest.TestCase):
         failure = (terraform("output"), deploy.Result(1, "", "Error: Backend initialization required"))
         code, stdout, _, http = self.invoke(["check", "--json"], {}, failure)
         report = json.loads(stdout)
-        self.assertEqual((code, report["ready"]), (deploy.NOT_READY, False))
+        self.assertEqual((code, report["ready"]), (deploy.BLOCKED, False))
         self.assertEqual([(item["name"], item["status"]) for item in report["items"]],
                          [("terraform outputs", "fail"), ("consents", "manual")])
         self.assertIn("terraform output failed", report["items"][0]["detail"])
         self.assertEqual(http.calls, [])
         code, stdout, *_ = self.invoke(["check"], {}, failure)
-        self.assertEqual((code, stdout.splitlines()[-1]), (deploy.NOT_READY, "NOT READY: 1 of 1 checks failed."))
+        self.assertEqual((code, stdout.splitlines()[-1]), (deploy.BLOCKED, "NOT READY: 1 of 1 checks failed."))
 
-    def test_check_exits_2_on_a_usage_error_and_the_other_commands_keep_1(self):
-        for argv, code in ((["check", "--bogus"], 2), (["check", "extra"], 2), (["links", "--bogus"], deploy.USAGE),
-                           (["status", "--bogus"], deploy.USAGE), (["trace"], deploy.USAGE)):
+    def test_every_command_check_included_exits_1_on_a_usage_error(self):
+        for argv in (["check", "--bogus"], ["check", "extra"], ["links", "--bogus"], ["status", "--bogus"], ["trace"]):
             with self.subTest(argv=argv), self.assertRaises(SystemExit) as stop, \
                     contextlib.redirect_stderr(io.StringIO()):
                 deploy.parse_arguments(argv)
-            self.assertEqual(stop.exception.code, code)
+            self.assertEqual(stop.exception.code, deploy.USAGE)
         args = deploy.parse_arguments(["check", "--json"])
         self.assertEqual((args.json, args.non_interactive, args.timeout_minutes, args.approve), (True, True, 30, {}))
+
+    def test_a_check_that_needs_a_sign_in_first_waits_for_it(self):
+        values = self.outputs()
+        root = self.check_root()
+        expired = (lambda args: args[:3] == ["az", "account", "get-access-token"] and deploy.FOUNDRY_SCOPE in args,
+                   deploy.Result(1, "", "AADSTS70043: The refresh token has expired."))
+        code, stdout, _, http = self.invoke(["check", "--json"], values, expired, http=self.check_http(root, values),
+                                            root=root)
+        report = json.loads(stdout)
+        items = {item["name"]: item for item in report["items"]}
+        self.assertEqual((code, report["result"], report["ready"]), (deploy.WAITING, "waiting", False))
+        for name in ("agent demo-with-iq", "agent demo-without-iq"):
+            self.assertEqual((items[name]["status"], items[name]["detail"]),
+                             ("wait", "Azure CLI could not get a Foundry token for you."))
+            self.assertIn("then rerun deploy.py check.", items[name]["fix"])
+        self.assertEqual({items[name]["status"] for name in ("fabric capacity", "app", "knowledge source documents",
+                                                             "knowledge source manuals")}, {"pass"})
+        self.assertFalse([url for _, url, *_ in http.calls if "/agents/" in url], "nothing reaches Foundry unsigned")
+        # A person's action comes first even when another check failed.
+        code, text, *_ = self.invoke(["check"], values, expired, root=root,
+                                     http=self.check_http(root, values, state="Paused"))
+        self.assertEqual(code, deploy.WAITING)
+        self.assertIn("WAIT   agent demo-with-iq           Azure CLI could not get a Foundry token for you.\n"
+                      "       fix: Sign in again with az login as the deploying user, then rerun deploy.py check.\n", text)
+        self.assertEqual(text.splitlines()[-1], "WAITING: 2 of 6 checks need a sign-in or another person's action "
+                                                "first, and 1 failed.")
 
     def test_trace_takes_only_a_response_id_and_a_bounded_window(self):
         args = deploy.parse_arguments(["trace", "resp_6f1c0a"])

@@ -32,9 +32,10 @@ content.
 
 Exit codes: 0 done, 1 usage error, 2 blocked (investigate), 3 waiting for a
 person (a sign-in, a missing permission's grant) or a long-running cloud
-operation, 4 approval required; `check` exits 0 when ready, 1 when not ready
-and 2 on a usage error. Device codes go only to the terminal or stderr; tokens
-stay in memory; nothing secret is printed or written.
+operation, 4 approval required. For `check`, 0 means ready, 2 not ready and 3
+that a sign-in or another person's action must come first. Device codes go only
+to the terminal or stderr; tokens stay in memory; nothing secret is printed or
+written.
 """
 
 import argparse
@@ -77,8 +78,6 @@ import preflight_runtime as runtime  # noqa: E402
 PHASES = ("signin", "config", "preflight", "identity", "consent", "platform",
           "bootstrap", "knowledge", "verify", "agent", "app")
 OK, USAGE, BLOCKED, WAITING, APPROVAL = 0, 1, 2, 3, 4
-# check's own exit codes besides 0 (ready): its usage error is 2, so that 1 means only "not ready".
-NOT_READY, CHECK_USAGE = 1, 2
 PLAN_PHASES = ("identity", "platform", "knowledge", "app", "destroy")
 # Never granted by --yes: deletions, and replacing live Fabric definitions.
 DESTRUCTIVE_APPROVALS = ("destroy", "purge-foundry", "item-update", "shared-action-group")
@@ -1862,7 +1861,7 @@ def arm(ctx, method, url, body=None):
         token = access_token(ctx, resource=ARM_API + "/")
         if not token:
             raise Waiting("Azure CLI could not get an Azure Resource Manager token.",
-                          "Sign in again with az login, then rerun deploy.py up.")
+                          f"Sign in again with az login, then rerun {ctx.rerun}.")
         try:
             response = ctx.http.request(method, url, headers={"Authorization": f"Bearer {token}"}, body=body,
                                         attempts=1)
@@ -3006,7 +3005,7 @@ def foundry_call(ctx, method, url, body=None):
         token = access_token(ctx, scope=FOUNDRY_SCOPE)
         if not token:
             raise Waiting("Azure CLI could not get a Foundry token for you.",
-                          "Sign in again with az login as the deploying user, then rerun deploy.py up.")
+                          f"Sign in again with az login as the deploying user, then rerun {ctx.rerun}.")
         try:
             response = ctx.http.request(method, url, headers={"Authorization": f"Bearer {token}"}, body=body,
                                         attempts=1)
@@ -3679,6 +3678,8 @@ def print_report(report, as_json):
 # text; none takes a lock, writes a receipt, prompts, signs in or changes anything.
 LINKS_FORMAT = "iq-template.links.v1"
 CHECK_FORMAT = "iq-template.check.v1"
+# check's result and its exit code, the runner's own: a person must act first (3) before anything else counts.
+CHECK_RESULTS = {"ready": OK, "blocked": BLOCKED, "waiting": WAITING}
 TRACE_FORMAT = "iq-template.trace.v1"
 FABRIC_PORTAL = "https://app.fabric.microsoft.com"
 AZURE_PORTAL = "https://portal.azure.com"
@@ -3850,19 +3851,24 @@ def links_text(document):
 
 
 def check_item(name, status, detail, fix=""):
+    """status: pass, fail, wait (a person must act first, such as signing in, before it can be checked) or manual."""
     item = {"name": name, "status": status, "detail": detail}
-    if status == "fail":
+    if status in ("fail", "wait"):
         item["fix"] = fix
     return item
 
 
 def failed_item(name, error, fix):
-    """The failed item for a stop or an unexpected error, which fails only that item; call it while handling it."""
+    """The item for a stop or an unexpected error, which affects only that item; call it while handling it.
+
+    A Waiting stop, such as a missing sign-in, waits for that person; any other fails the item.
+    """
     if not isinstance(error, Stop):
         traceback.print_exc(file=sys.stderr)
         error = Blocked(f"Unexpected {type(error).__name__}: {str(error)[:300]}",
                         "This is a runner bug or an unrecognized service response.")
-    return check_item(name, "fail", error.message, " ".join(error.next_steps) or fix)
+    return check_item(name, "wait" if isinstance(error, Waiting) else "fail", error.message,
+                      " ".join(error.next_steps) or fix)
 
 
 def probe(name, check, fix):
@@ -4003,8 +4009,10 @@ def check_document(ctx):
     if work_iq:
         items.append(check_item("sample mail", "manual", "The presenter's own mailbox holds the sample mail about "
                                 "Pump B, sent at least a day before so Microsoft 365 has indexed it."))
-    return {"format": CHECK_FORMAT, "checkedAt": utc_now(),
-            "ready": not any(item["status"] == "fail" for item in items), "items": items}
+    statuses = {item["status"] for item in items}
+    result = "waiting" if "wait" in statuses else "blocked" if "fail" in statuses else "ready"
+    return {"format": CHECK_FORMAT, "checkedAt": utc_now(), "result": result, "ready": result == "ready",
+            "items": items}
 
 
 def check_text(document):
@@ -4012,11 +4020,15 @@ def check_text(document):
     for item in document["items"]:
         detail = str(item["detail"]).replace("\n", "\n" + " " * 36)
         lines.append(f"{item['status'].upper():<6} {item['name']:<28} {detail}")
-        if item["status"] == "fail":
+        if item["status"] in ("fail", "wait"):
             lines.append(f"{'':6} fix: {item['fix']}")
     checked = [item for item in document["items"] if item["status"] != "manual"]
-    failures = sum(item["status"] == "fail" for item in checked)
-    lines.append("READY" if document["ready"] else f"NOT READY: {failures} of {len(checked)} checks failed.")
+    failures, waits = (sum(item["status"] == status for item in checked) for status in ("fail", "wait"))
+    if document["result"] == "waiting":
+        lines.append(f"WAITING: {waits} of {len(checked)} checks need a sign-in or another person's action first"
+                     + (f", and {failures} failed." if failures else "."))
+    else:
+        lines.append("READY" if document["ready"] else f"NOT READY: {failures} of {len(checked)} checks failed.")
     return "\n".join(lines)
 
 
@@ -4133,11 +4145,9 @@ READ_ONLY = {"links": (links_document, links_text), "check": (check_document, ch
 
 
 class Parser(argparse.ArgumentParser):
-    usage_code = USAGE
-
     def error(self, message):
         self.print_usage(sys.stderr)
-        self.exit(self.usage_code, f"{self.prog}: error: {message}\n")
+        self.exit(USAGE, f"{self.prog}: error: {message}\n")
 
 
 def approvals(values, parser):
@@ -4216,13 +4226,15 @@ def parse_arguments(argv):
                                     "outputs alone: it calls no Azure, Fabric or Foundry API, though Terraform reads "
                                     "a remote backend's state. The links hold deployment IDs, so never commit its "
                                     "output.")
-    check = commands.add_parser(
+    commands.add_parser(
         "check", parents=[common],
-        help="check, read-only, that the deployment is ready to present: each item passes or fails with its fix",
+        help="check, read-only, that the deployment is ready to present: each item passes, fails or waits for a "
+             "sign-in, with its fix",
         description="Check, read-only, that the deployment is ready to present the sample: the Fabric capacity, the "
-                    "app, both agents and every knowledge source pass or fail, each failure with its fix, and the "
-                    "steps no tool can check are listed. It sends GET requests only: it never resumes the capacity or "
-                    "changes anything. Exit codes: 0 ready, 1 not ready, 2 usage error.")
+                    "app, both agents and every knowledge source pass, fail or wait for a sign-in, each with its fix, "
+                    "and the steps no tool can check are listed. It sends GET requests only: it never resumes the capacity or "
+                    "changes anything. Exit codes, as for every command: 0 ready, 2 not ready, 3 a sign-in or another "
+                    "person's action is needed first, 1 usage error.")
     trace = commands.add_parser(
         "trace", parents=[common],
         help="find a turn's trace in Application Insights by the response ID the app shows (reads span names and "
@@ -4239,10 +4251,6 @@ def parse_arguments(argv):
     down = commands.add_parser("down", parents=[common, options],
                                help="delete this deployment, its app, agents and ingested data")
     down.add_argument("--allow-delete", action="store_true", help="permit approved environment and data deletion")
-    # Argument errors reach the top-level parser too ("unrecognized arguments"), so both exit with check's code.
-    tokens = sys.argv[1:] if argv is None else argv
-    if next((token for token in tokens if not token.startswith("-")), None) == "check":
-        parser.usage_code = check.usage_code = CHECK_USAGE
     args = parser.parse_args(argv)
     if args.command in ("status", *READ_ONLY):
         args.non_interactive, args.timeout_minutes, args.approve = True, 30, []
@@ -4266,8 +4274,8 @@ def main(argv=None, **context):
             build, text = READ_ONLY[args.command]
             document = build(ctx)
             print(json.dumps(document, indent=2) if args.json else text(document))
-            # check reports each failure as an item rather than stopping, and exits 1 when any failed.
-            return NOT_READY if document.get("ready") is False else OK
+            # check reports each failure as an item rather than stopping; its result sets the exit code.
+            return CHECK_RESULTS[document["result"]] if args.command == "check" else OK
         if args.command == "status":
             code, report = status_report(ctx)
         else:

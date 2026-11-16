@@ -139,9 +139,11 @@ template maintenance.
 1. **Check, an hour before:**
    `python3 .github/skills/deploy-platform/scripts/deploy.py check --json`. It reads the Fabric
    capacity's state, the app's `/healthz` and `/api/config`, each agent's latest version against
-   its reviewed definition and each knowledge source's last ingestion, and changes nothing. It
-   exits `0` ready, `1` not ready and `2` on a usage error. Relay each failed item's fix; the
-   user resumes a paused capacity with the printed command, because it bills while active.
+   its reviewed definition and each knowledge source's last ingestion, and changes nothing. Its
+   exit codes are the runner's: `0` ready, `2` not ready, `3` when a sign-in or another
+   person's action must come first (a `WAIT` item) and `1` on a usage error. Relay each failed
+   or waiting item's fix; the user signs in themselves, and resumes a paused capacity with the
+   printed command, because it bills while active.
    Never resume, publish or apply anything yourself to make the check pass.
 2. **Rehearse, the day before:** from `app/`, with the deployment's `app/.env.local`, run
    `npm run rehearse` as the presenter's Azure CLI user. It asks each step of

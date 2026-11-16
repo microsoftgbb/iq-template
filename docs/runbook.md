@@ -65,8 +65,9 @@ python3 .github/skills/deploy-platform/scripts/deploy.py links
 
   It reports the capacity's state, the app's health and sign-in registration, whether each agent
   runs its reviewed definition and each knowledge source's last ingestion, each with a fix. It
-  changes nothing. Exit code `0` is ready, `1` not ready. It can't check your consents or your
-  mail: those stay on your list.
+  changes nothing. Exit code `0` is ready and `2` not ready; `3` means you must sign in, or
+  someone must act as a fix says, before it can check everything. It can't check your consents
+  or your mail: those stay on your list.
 - [ ] **Sign in and give your consents.** Open the app, sign in, and ask the live facts question
   with IQ. Accept Fabric IQ's consent card once, in the new tab, then ask again. With Work IQ,
   ask the mail question and accept its card too. Foundry IQ and Web IQ never ask.
