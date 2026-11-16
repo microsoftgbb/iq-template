@@ -57,15 +57,22 @@ jobs:
                   ast.parse(source.read(), path)
           print(f"Parsed {len(sys.argv) - 1} files")
           '
-      - name: Deployment runner and Studio agent helper tests
+      - name: Deployment runner and Foundry agent helper tests
         run: python -B -m unittest discover -s .github/skills/deploy-platform/tests
+      - name: Agent definitions (shared files byte-identical, tools read-only and allowlisted)
+        run: python -B .github/skills/deploy-platform/scripts/foundry_agent.py validate
       - name: Runtime preflight tests
         run: python -B -m unittest discover -s .github/skills/runtime-integration/tests
+      - name: Fabric notebook tests (offline binder and seeder)
+        run: python -B -m unittest discover -s .github/skills/fabric-workspace/tests
 
   app:
     name: App
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: app
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -73,17 +80,51 @@ jobs:
       - name: Require public npm registry URLs in the lockfile
         run: |
           if grep -nE '"resolved": "https?://' package-lock.json | grep -v '"resolved": "https://registry.npmjs.org/'; then
-            echo "::error file=package-lock.json::Resolve packages from https://registry.npmjs.org/, not a private feed. See CONTRIBUTING.md."
+            echo "::error file=app/package-lock.json::Resolve packages from https://registry.npmjs.org/, not a private feed. See CONTRIBUTING.md."
             exit 1
           fi
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24"
           cache: npm
+          cache-dependency-path: app/package-lock.json
       - run: npm ci --no-audit --no-fund
       - run: npm run lint
       - run: npm run build
       - run: npm test
+
+  image:
+    name: App image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The image deploy.py builds with ACR Tasks: build it, then prove it starts, refuses unsigned
+      # questions and an incomplete configuration, and serves MSAL's redirect bridge. Nothing is pushed.
+      - run: docker build --pull --tag app:ci app
+      - name: The image serves its health check without signing anyone in
+        run: |
+          docker run --detach --name app-ci --publish 8080:8080 \
+            --env FOUNDRY_PROJECT_ENDPOINT=https://ai-ci.services.ai.azure.com/api/projects/ci \
+            --env ENTRA_TENANT_ID=11111111-1111-4111-8111-111111111111 \
+            --env ENTRA_CLIENT_ID=22222222-2222-4222-8222-222222222222 \
+            --env AGENT_WITH_IQ=ci-with-iq --env AGENT_WITHOUT_IQ=ci-without-iq app:ci
+          for attempt in $(seq 1 30); do
+            curl --fail --silent --show-error http://localhost:8080/healthz && break
+            sleep 1
+          done
+          curl --fail --silent --show-error http://localhost:8080/healthz
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' -X POST http://localhost:8080/api/turns)" = 401
+          # MSAL's redirect bridge is in the image, and only the app may frame it for silent token renewal.
+          curl --fail --silent --show-error --dump-header - --output /dev/null http://localhost:8080/redirect.html \
+            | grep -i "^content-security-policy:.*frame-ancestors 'self'"
+          docker rm --force app-ci
+          if docker run --rm app:ci; then
+            echo "::error::The image started without its configuration."
+            exit 1
+          fi
 
   shell:
     name: Shell scripts

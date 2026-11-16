@@ -1,23 +1,39 @@
 version: 2
 
-# Terraform providers and the dev container's Copilot, Managed Runtime CLI and plugin pins
-# are updated deliberately, not here; see AGENTS.md and the template-maintenance skill.
+# Terraform providers and the dev container's Copilot and plugin pins are updated
+# deliberately, not here; see AGENTS.md and the template-maintenance skill.
 updates:
   - package-ecosystem: npm
-    directory: /
+    directory: /app
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    ignore:
+      # Keep Node's type definitions on the runtime's release line (Node 24 in app/Dockerfile).
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
     groups:
-      # Keep the Managed Runtime SDK and Vite plugin together and in step with the CLI
-      # pinned in .devcontainer/features/managed-runtime/install.sh.
-      managed-runtime:
+      # The trace exporter and the OpenTelemetry SDK must share one OpenTelemetry release line.
+      opentelemetry:
         patterns:
-          - "@microsoft/managed-apps*"
+          - "@azure/monitor-opentelemetry-exporter"
+          - "@opentelemetry/*"
       minor-and-patch:
         update-types:
           - minor
           - patch
+
+  - package-ecosystem: docker
+    directories:
+      - /app
+    schedule:
+      interval: weekly
+    ignore:
+      # The runtime line changes deliberately: Node stays on its 24 LTS line.
+      - dependency-name: node
+        update-types: ["version-update:semver-major"]
+      - dependency-name: distroless/nodejs24-debian13
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: github-actions
     directory: /
