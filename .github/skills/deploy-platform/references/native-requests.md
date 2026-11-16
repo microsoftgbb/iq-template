@@ -13,6 +13,7 @@ Read this after choosing the derived repository, execution host and delegated us
 - [Serverless Search identity](#serverless-search-identity)
 - [Knowledge readiness and retrieval](#knowledge-readiness-and-retrieval)
 - [Foundry agents and the app](#foundry-agents-and-the-app)
+- [Read-only commands](#read-only-commands)
 - [Teardown](#teardown)
 
 ## Authentication and response receipts
@@ -309,6 +310,14 @@ The `app` phase first grants the app registration's single delegated scope tenan
 - The reviewed `app` plan carries `-var=app_image_tag={tag}`. The runner writes that tag into the one `app_image_tag` line of `infra/terraform.tfvars` only after the plan's approval, then applies it. The container app itself is Terraform's.
 
 Readiness reads the `app` output's URL: `GET {url}/healthz` must return `200`, polled every 10 seconds while a revision starts, and `GET {url}/api/config` must return the `app` output's `client_id` as `clientId`. That proves the deployed image and its sign-in settings, not a user's consent to the agents' tools or an answer.
+
+## Read-only commands
+
+`links`, `check` and `trace` take no lock, write no receipt, plan nothing and send only reads. Each validates every Terraform output and argument it uses before it reaches a URL, a token-bearing request, a command or a query.
+
+- `links` runs `terraform init` and `terraform output -json`, and nothing else, so it calls no Azure, Fabric or Foundry API: it builds Fabric (`https://app.fabric.microsoft.com/groups/{workspace}/...`), Azure portal (`https://portal.azure.com/#@{tenant}/resource{id}/overview`), Web IQ portal and Outlook links from the outputs.
+- `check` sends, with the deployer's tokens: `GET {fabric_capacity_resource_id}?api-version=2023-11-01` on Azure Resource Manager, which must report `properties.state` `Active` (otherwise it prints `az resource invoke-action --action resume --ids {id}` for the user and never runs it); `GET {app.url}/healthz` and `GET {app.url}/api/config`, as the `app` phase does; `GET {project}/agents/{name}?api-version=v1` for each agent, compared with its rendered definition as the `agent` phase does; and `GET` on each `knowledge_source_status_urls` entry, only on the `search_endpoint` output's host.
+- `trace` runs `az monitor app-insights query --apps {application_insights.app_id} --analytics-query {query} --offset {days}d`. The query, in Application Insights' classic schema, finds the `operation_Id` of the `dependencies` row whose `customDimensions["gen_ai.response.id"]` is the validated response ID, then projects only the `timestamp`, `itemType`, `name`, `duration`, `success` and `gen_ai.tool.name` of that operation's `requests` and `dependencies`. It never reads `AppGenAIContent` or other message content.
 
 ## Teardown
 
