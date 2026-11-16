@@ -88,6 +88,13 @@ For `2`, read the message and the receipts in `.artifacts/deploy/state.json`, fi
 the cause and rerun. [Deploy deterministically](development.md#deploy-deterministically)
 lists every phase, approval and flag.
 
+A **new environment** can approve its additions once instead: `up --approve-creates`
+applies every saved plan that only creates resources, creates the agents and builds
+the first image without stopping, and saves a receipt for each approval, which
+`deploy.py status` lists. It still stops for any update, replacement or deletion.
+Later changes, such as an updated plan, a changed agent or a new app image, are
+reviewed per plan as above.
+
 ## 1. Create your repository
 
 On GitHub, select **Use this template > Create a new repository**, then open **that repository** in Codespaces or clone it locally. Keep the five item folders under `workspace/`, including their `.platform` logical IDs: these are portable identities, not someone else's deployment bindings. The notebooks resolve physical bindings in each target workspace. Select your new repository's published bootstrap branch and `/workspace` directory; do not select an unpublished Copilot worktree branch. Push any customization to the selected branch before synchronizing Fabric. Replace the template's code owners and contribution, conduct, security and support policies with your own, and keep its MIT license notice ([what gets templated](development.md#what-gets-templated)).

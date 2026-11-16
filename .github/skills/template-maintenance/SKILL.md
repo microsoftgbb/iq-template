@@ -69,6 +69,7 @@ For the deployment runner, its knowledge helper and its Foundry agent helper (`s
 `python3 -B -m unittest discover -s .github/skills/deploy-platform/tests`, then
 `python3 -B .github/skills/deploy-platform/scripts/foundry_agent.py validate`.
 They use mocked native commands and HTTP. They cover saved-plan approval by hash,
+the `--approve-creates` policy for additions and its receipts,
 identity-target and destructive-change guards, stale saved plans after an apply,
 PAT-free native import and its identity/partial-result/resume guards, approved
 definition updates, opt-in Git sync refusals, the explicit plan-attachment
