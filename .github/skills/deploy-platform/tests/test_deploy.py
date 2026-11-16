@@ -14,6 +14,7 @@ import tempfile
 import unittest
 from unittest import mock
 import urllib.error
+import urllib.parse
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
@@ -984,7 +985,8 @@ class NativeBootstrapTests(unittest.TestCase):
             source = ctx.root / "workspace" / part["path"].lstrip("/")
             self.assertEqual(base64.b64decode(part["payload"]), source.read_bytes())
         self.assertEqual(sum(part["path"].endswith("/.platform") for part in body["definitionParts"]), len(ITEMS["value"]) + 1)
-        self.assertFalse(any("/git/" in url or "api.github.com" in url for _, url, *_ in ctx.http.calls))
+        self.assertFalse(any("/git/" in url or urllib.parse.urlsplit(url).hostname == "api.github.com"
+                             for _, url, *_ in ctx.http.calls))
         self.assertFalse(ctx.http.posts(r"/jobs/execute/instances"))
         self.assertTrue(ctx.state.section("bootstrap")["native"]["import"]["validated"])
         before = len(ctx.http.posts(r"/bulkImportDefinitions"))

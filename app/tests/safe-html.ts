@@ -23,5 +23,6 @@ export function assertSafe(html: string): void {
     if (name !== 'br') open.push(name)
   }
   assert.deepEqual(open, [], html)
-  assert.doesNotMatch(html.replace(/<\/?[a-z]+(?: [^<>]*)?>/g, ''), /[<>]/, html)
+  // The text between the allowed tags holds no angle bracket of its own.
+  for (const text of html.split(/<\/?[a-z]+(?: [^<>]*)?>/)) assert.doesNotMatch(text, /[<>]/, html)
 }
