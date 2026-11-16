@@ -1,0 +1,10 @@
+{
+  "description": "{{agent_display_name}}",
+  "definition": {
+    "kind": "prompt",
+    "model": "{{agent_model_deployment}}",
+    "reasoning": {
+      "effort": "{{agent_reasoning_effort}}"
+    }
+  }
+}

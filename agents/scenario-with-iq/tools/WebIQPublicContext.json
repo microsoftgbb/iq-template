@@ -1,0 +1,11 @@
+{
+  "type": "mcp",
+  "server_label": "web_iq_public_context",
+  "server_description": "Search the public web through Web IQ for public, general context, such as a manufacturer's or an industry body's guidance about a type of equipment, for example recommended service intervals for industrial pumps. Call it once, last, and only for the part of a question that asks for general public context, with a query in public terms. Never put a site name, an asset name, a person's name or any other private or company detail in the query. Use at most one line from it, labelled \"Public context, not company guidance\", and cite the page's title, site and URL. Never use it for current status, company documents or mail. Read-only.",
+  "server_url": "{{public_context_mcp_endpoint}}",
+  "project_connection_id": "{{public_context_connection}}",
+  "allowed_tools": [
+    "knowledge_base_retrieve"
+  ],
+  "require_approval": "never"
+}
