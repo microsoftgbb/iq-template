@@ -43,11 +43,11 @@ WORK_IQ_OPTIONAL = (
 )
 WORK_IQ_MANUAL = [
     "The tenant's Work IQ service principal, which a Global Administrator creates once: "
-    f"az ad sp create --id {WORK_IQ_API} (a conflict means it exists)",
+    + f"az ad sp create --id {WORK_IQ_API} (a conflict means it exists)",
     "Administrator consent to the Work IQ registration's WorkIQAgent.Ask and offline_access, at the "
-    "api_permissions_url of terraform output work_iq",
+    + "api_permissions_url of terraform output work_iq",
     "A Copilot Credits spending policy that covers the Work IQ API and each user: an agent's Work IQ calls are "
-    "billed per use, also for users with a Microsoft 365 Copilot licence",
+    + "billed per use, also for users with a Microsoft 365 Copilot licence",
     "A Microsoft 365 mailbox for each user",
     "Each user's own one-time consent, at the link the app shows for their first Work IQ question",
 ]
@@ -342,7 +342,7 @@ def preflight(
             [
                 "az", "provider", "show", "--namespace", namespace, "--subscription", subscription, "--query",
                 "{namespace:namespace,registrationState:registrationState,"
-                "resourceTypes:resourceTypes[].{resourceType:resourceType,locations:locations}}",
+                + "resourceTypes:resourceTypes[].{resourceType:resourceType,locations:locations}}",
                 "--output", "json",
             ],
             checkout,
@@ -353,7 +353,7 @@ def preflight(
         [
             "az", "rest", "--method", "get", "--url",
             f"https://management.azure.com/subscriptions/{subscription}/providers/"
-            f"Microsoft.Fabric/locations/{fabric_location}/usages?api-version=2023-11-01",
+            + f"Microsoft.Fabric/locations/{fabric_location}/usages?api-version=2023-11-01",
             "--output", "json",
         ],
         checkout,
