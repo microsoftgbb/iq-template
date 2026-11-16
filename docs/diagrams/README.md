@@ -11,19 +11,19 @@ beside each image.
 
 ### Platform architecture
 
-[![Platform overview showing authoring, Fabric, Azure resources and the Studio agent/Managed Runtime experience, with separate document and live-fact routes.](platform-architecture.svg)](platform-architecture.svg)
+[![Platform overview showing authoring, Fabric, Azure resources with Web IQ, and the two Foundry prompt agents with their Container Apps web app, with separate document, public-context, live-fact and optional Work IQ mail routes.](platform-architecture.svg)](platform-architecture.svg)
 
 ### Deployment flow
 
-[![Ten stages from a derived repository through verified DEV readiness to the Studio agent and Managed Runtime app, with explicit approvals.](deployment-flow.svg)](deployment-flow.svg)
+[![Ten stages from a derived repository through verified DEV readiness to publishing the Foundry prompt agents and building and deploying the Container Apps web app, with explicit approvals.](deployment-flow.svg)](deployment-flow.svg)
 
 ### Agent runtime
 
-[![The generated app connector invokes a published Studio agent; its Fabric IQ and Foundry IQ tools use the signed-in user's own connections.](agent-runtime.svg)](agent-runtime.svg)
+[![The Container Apps web app's server verifies the signed-in user's token and forwards it to two Foundry prompt agents. Only the with-IQ agent has tools: Fabric IQ and the optional Work IQ mail tool run as that user; Foundry IQ documents and Web IQ public context use the project's managed identity. Application Insights holds the app's and the agents' traces.](agent-runtime.svg)](agent-runtime.svg)
 
 ### Knowledge retrieval
 
-[![Indexed OneLake documents and optional live ontology queries feed one knowledge base, with distinct indexing and end-user authorization.](knowledge-retrieval.svg)](knowledge-retrieval.svg)
+[![Indexed OneLake document folders feed the agents' knowledge base; the optional live ontology source sits in a check-only knowledge base that only the runner's verify queries, and Web IQ feeds its own public-context knowledge base, with distinct indexing and end-user authorization.](knowledge-retrieval.svg)](knowledge-retrieval.svg)
 
 ### Fabric lifecycle
 

@@ -37,7 +37,10 @@ Report security issues as described in [SECURITY.md](SECURITY.md), never in a pu
   chosen target.
 - **Portable identities.** Keep `.platform` logical IDs, TMDL lineage tags and binding markers
   stable; they are not deployment IDs.
-- **Generated code.** Never edit `generated/`; regenerate it with `ms`.
+- **Locked dependencies.** Keep `app/package-lock.json` in step with `app/package.json`, on
+  public npm registry URLs ([npm lockfile](#npm-lockfile)); never hand-edit its hashes.
+- **Fictional sample.** Keep sample sites, assets, documents and mail fictional; never add a
+  real customer, company or person name.
 - **Pins.** Do not upgrade providers, tools or dependencies in an unrelated change.
 - **Docs in step.** Keep the README, [getting started](docs/getting-started.md) and
   `infra/terraform.tfvars.example` aligned with any input or behavior change.
@@ -55,7 +58,7 @@ Report security issues as described in [SECURITY.md](SECURITY.md), never in a pu
    A static check doesn't prove cloud permissions, preview availability, quota or ingestion, so
    say what you couldn't verify.
 6. A [code owner](.github/CODEOWNERS) reviews changes to agent guidance, skills, CI, the dev
-   container, infrastructure, Fabric items, the Studio agent and dependencies. Maintainers
+   container, infrastructure, Fabric items, the agent definitions and dependencies. Maintainers
    squash-merge approved pull requests.
 
 ## Run the checks
@@ -68,13 +71,23 @@ terraform init -backend=false -input=false -lockfile=readonly
 terraform fmt -check -recursive
 terraform validate
 
-# Python helpers, from the repository root
+# Python helpers and agent definitions, from the repository root
 python3 -B -m unittest discover -s .github/skills/deploy-platform/tests
+python3 -B .github/skills/deploy-platform/scripts/foundry_agent.py validate
 python3 -B -m unittest discover -s .github/skills/runtime-integration/tests
+python3 -B -m unittest discover -s .github/skills/fabric-workspace/tests
 
-# App, from the repository root
-npm ci && npm run lint && npm run build && npm test
+# App, in app/
+(cd app && npm ci && npm run lint && npm run build && npm test)
+
+# App image, from the repository root, where Docker is available
+docker build --tag app:check app
 ```
+
+CI also parses every tracked Python file without running it, checks shell syntax, and starts
+the app image with placeholder settings to check its health endpoint, its refusal of an
+unauthenticated question and of a missing configuration, and the redirect bridge's framing
+header.
 
 If `infra/` holds local deployment files, validate an isolated copy as described in the
 [template-maintenance skill](.github/skills/template-maintenance/SKILL.md#run-static-checks-only),
@@ -83,10 +96,10 @@ ask it to statically validate the template.
 
 ### npm lockfile
 
-`package-lock.json` must resolve every package from `https://registry.npmjs.org/`; CI rejects
+`app/package-lock.json` must resolve every package from `https://registry.npmjs.org/`; CI rejects
 other hosts. If your npm configuration uses an Azure Artifacts mirror, normalize the lockfile
-after changing dependencies. Integrity hashes are unchanged, and npm still routes these URLs
-through your configured registry.
+from `app/` after changing dependencies. Integrity hashes are unchanged, and npm still routes
+these URLs through your configured registry.
 
 ```sh
 node -e 'const fs=require("fs"),f="package-lock.json";fs.writeFileSync(f,fs.readFileSync(f,"utf8").replace(/("resolved": ")https:\/\/[^"]+?\/_packaging\/[^"\/]+\/npm\/registry\//g,"$1https://registry.npmjs.org/"))'
@@ -110,8 +123,8 @@ separate repository with your own subscription and tenant:
 3. Commit, push and deploy it by following [getting started](docs/getting-started.md).
 
 Share only redacted evidence in your pull request. Never bring deployment output back into the
-template, such as tfvars, state, `ms.config.json`, agent or app settings, or bound workspace
-definitions.
+template, such as tfvars, state, deployment receipts or evidence, rendered agent definitions,
+app settings or bound workspace definitions.
 
 ## Review pull requests from forks
 
