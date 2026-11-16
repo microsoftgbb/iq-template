@@ -75,8 +75,9 @@ section headings plain, bold, as Markdown headings or with a trailing colon, and
 treats a reply without them as all answer. Its renderer escapes everything, allows
 a small Markdown subset and turns markers into IQ-colored chips. Change the
 [shared instructions](../agents/scenario-with-iq/instructions.md), the parser and
-its tests, and the mock answers in
-[`app/src/mock/client.ts`](../app/src/mock/client.ts) together.
+its tests, and the scripted replies in the demo script,
+[`app/src/demo/script.json`](../app/src/demo/script.json), which mock mode and
+presenter mode show, together.
 
 ## Reading the boundaries
 

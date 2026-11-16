@@ -10,11 +10,12 @@ user and streams each tool call and the answer back. It holds no secret and stor
 | Path | What it holds |
 | --- | --- |
 | `src/` | The page: `App.tsx`, `components/`, the sample questions (`samples.ts`) and the conversation state (`exchanges.ts`) |
+| `src/demo/` | The demo script (`script.json`), the single source of the sample questions, presenter mode, mock mode's replies and the rehearsal; its validation (`script.ts`) and presenter mode's rules (`presenter.ts`) |
 | `src/live/` | The agent layer: wire protocol, stream reader, one turn, the reply parser and safe Markdown renderer, MSAL sign-in, the client |
-| `src/mock/` | Mock mode's canned answers, loaded only behind `import.meta.env.MODE === 'mock'`, so production builds leave them out |
+| `src/mock/` | Mock mode, which replays the demo script's scripted answers, loaded only behind `import.meta.env.MODE === 'mock'`, so production builds leave it out |
 | `src/redirect.ts`, `redirect.html` | MSAL's redirect bridge, the registration's only redirect URI |
-| `server/` | Settings (`config.ts`), token verification (`auth.ts`), the turn route (`turn.ts`), the Foundry stream (`foundry.ts`), static files, tracing, and the `main.ts` and `dev.ts` entries |
-| `tests/` | `node --test` with type stripping: server, protocol, parser, renderer, turn, mock and bundle checks |
+| `server/` | Settings (`config.ts`), token verification (`auth.ts`), the turn route (`turn.ts`), the Foundry stream (`foundry.ts`), static files, tracing, the `main.ts` and `dev.ts` entries, and the rehearsal (`rehearsal.ts`, `rehearse.ts`), which the image doesn't include |
+| `tests/` | `node --test` with type stripping: server, protocol, parser, renderer, turn, demo script, presenter mode, rehearsal, mock and bundle checks |
 
 ## Commands
 
@@ -22,11 +23,12 @@ From `app/`:
 
 | Command | Runs |
 | --- | --- |
-| `npm run dev:mock` | The page at `http://localhost:3000/` with canned answers for the sample questions: no sign-in, no Azure |
+| `npm run dev:mock` | The page at `http://localhost:3000/` with the demo script's scripted answers: no sign-in, no Azure |
 | `npm run dev` | The real server with Vite's middleware at `http://localhost:3000/`, against the deployment `.env.local` names |
 | `npm run build` | Type checks, then builds the page into `dist/` and bundles the server into one module, `dist-server/main.mjs` |
 | `npm start` | The built server on port 8080 |
 | `npm run lint`, `npm test` | ESLint; the unit tests |
+| `npm run rehearse` | Asks the demo script's questions of the agents that `.env.local` names, as the Azure CLI's user, and checks each answer: a live operation ([rehearsal](../docs/development.md#demo-script-presenter-mode-and-rehearsal)) |
 
 ## Run it against a deployment
 
@@ -41,6 +43,15 @@ Sign-in works only where the app registration lists the redirect bridge. For `np
 `app_local_redirect_uris = ["http://localhost:3000/redirect.html"]` to your tfvars and rerun the deployment
 (`deploy.py up`), which adds it to the registration. In a Codespace, open port 3000 through VS Code's local
 forwarding so the browser shows `localhost:3000`; keep ports private.
+
+## Presenter mode
+
+Add `?presenter=1` to the app's URL, or select **Presenter mode** in the header: the demo script's
+steps appear on a rail, with the current step's question, notes and timers. Arrow keys, Page Up
+and Page Down, Enter, N and B work as a presentation clicker sends them. When a step's turn ends
+without an answer, **Show scripted answer** shows the script's reply, labelled *Scripted answer,
+not live*. It works in mock mode too. The [presenter runbook](../docs/runbook.md) has the
+procedure.
 
 ## Settings
 

@@ -23,6 +23,8 @@ Read `AGENTS.md` and inspect the current diff before editing. Preserve unrelated
 | Guided deployment | The `deploy-platform` skill, its runner (`scripts/deploy.py`), its native-request reference and `cicd/README.md` |
 | Prompt agents or their publication | `agents/` and its README, `scripts/foundry_agent.py`, the agent outputs in `infra/app.tf` and `infra/outputs.tf`, the runner's `agent` phase, `docs/runtime-integration.md` |
 | Web app or its hosting | `app/` (page, `src/live/`, `server/`, `Dockerfile`) and its README, `infra/app.tf`, the runner's `app` phase, `docs/runtime-integration.md` |
+| Demo script, presenter mode or rehearsal | `app/src/demo/` (`script.json`, `script.ts`, `presenter.ts`), `app/server/rehearsal.ts`, `docs/runbook.md`, `docs/development.md#demo-script-presenter-mode-and-rehearsal` |
+| The runner's read-only `links`, `check` and `trace` | The runner and its tests, `docs/development.md#deploy-deterministically`, `docs/runbook.md` |
 
 Preserve the non-obvious infrastructure constraints:
 
@@ -89,7 +91,13 @@ For the Fabric notebooks, run the offline binder and seeder tests:
 `python3 -B -m unittest discover -s .github/skills/fabric-workspace/tests`.
 
 For the app, run `npm ci`, `npm run lint`, `npm run build` and `npm test` from
-`app/`. Where Docker is available, `docker build --tag app:check app` and a local
+`app/`. The tests validate the demo script (`app/src/demo/script.json`), score every
+scripted reply against its own checks, and cover presenter mode's rules and the
+rehearsal's scoring, selection, comparison and consent path with a fake ask and token.
+Never run `npm run rehearse` as a template check: it asks live agents. Likewise, the
+runner's tests cover `links`, `check` and `trace` with fakes; never run those commands
+here, because they read a deployment's state and, for `check` and `trace`, live
+services. Where Docker is available, `docker build --tag app:check app` and a local
 run with placeholder settings are fine; do not push images or start the app
 against a deployed agent as a template check: those need a chosen target.
 

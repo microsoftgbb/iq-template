@@ -32,9 +32,9 @@ Report security issues as described in [SECURITY.md](SECURITY.md), never in a pu
 
 - **No sensitive data.** Never commit or paste credentials, tokens, tfvars, `.env` files,
   Terraform state, saved plans, logs or tenant, subscription or physical Fabric IDs.
-- **Static checks only.** Never run a live `plan`, `apply`, `destroy`, deployment or notebook
-  as a test of a template change. Live work belongs in a derived repository with an explicitly
-  chosen target.
+- **Static checks only.** Never run a live `plan`, `apply`, `destroy`, deployment, notebook,
+  rehearsal (`npm run rehearse`) or the runner's `check` or `trace` as a test of a template
+  change. Live work belongs in a derived repository with an explicitly chosen target.
 - **Portable identities.** Keep `.platform` logical IDs, TMDL lineage tags and binding markers
   stable; they are not deployment IDs.
 - **Locked dependencies.** Keep `app/package-lock.json` in step with `app/package.json`, on

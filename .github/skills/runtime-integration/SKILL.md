@@ -1,6 +1,6 @@
 ---
 name: runtime-integration
-description: Preflight the shipped Foundry prompt agents and Container Apps web app route, prove its remaining readiness evidence, or diagnose a blocked agent or app in an explicitly chosen derived project. Use before promising an end-to-end IQ shell. Distinguish a deployed, healthy route from authenticated, data-backed, per-user readiness; never provision as template maintenance.
+description: Preflight the shipped Foundry prompt agents and Container Apps web app route, prove its remaining readiness evidence, prepare a presented demo (read-only check, rehearsal, trace lookup) or diagnose a blocked agent or app in an explicitly chosen derived project. Use before promising an end-to-end IQ shell. Distinguish a deployed, healthy route from authenticated, data-backed, per-user readiness; never provision as template maintenance.
 ---
 
 # Prove the runtime path first
@@ -129,3 +129,36 @@ blocked capability and request an explicit design decision.
 
 Require all evidence in `docs/runtime-integration.md` before saying **shell
 ready**. Work IQ stays unverified without a tenant that meets its prerequisites.
+
+## 5. Prepare a presented demo
+
+Only when the user asks to prepare or present a demo, in the chosen derived checkout against
+its deployment, follow `docs/runbook.md`. These commands read live services: never run them as
+template maintenance.
+
+1. **Check, an hour before:**
+   `python3 .github/skills/deploy-platform/scripts/deploy.py check --json`. It reads the Fabric
+   capacity's state, the app's `/healthz` and `/api/config`, each agent's latest version against
+   its reviewed definition and each knowledge source's last ingestion, and changes nothing. It
+   exits `0` ready, `1` not ready and `2` on a usage error. Relay each failed item's fix; the
+   user resumes a paused capacity with the printed command, because it bills while active.
+   Never resume, publish or apply anything yourself to make the check pass.
+2. **Rehearse, the day before:** from `app/`, with the deployment's `app/.env.local`, run
+   `npm run rehearse` as the presenter's Azure CLI user. It asks each step of
+   `app/src/demo/script.json` twice, one question at a time, and exits `0` when every turn
+   passed, `1` when a check failed, `2` on a usage error and `3` when a tool needs the user's
+   consent: relay the printed link, which only the user can accept. Add `--with-work-iq` only
+   once Work IQ is enabled and the sample mail is indexed. Report each step's passes and times:
+   a rehearsal is answers for the rehearsing user, not a ready shell. Results stay in the ignored
+   `.artifacts/rehearsal/`; never commit them or paste their replies, which can hold mail.
+3. **Trace a slow or failed turn:** `deploy.py trace "<response ID>"`, with the ID the app shows
+   under the answer. It validates the ID, queries Application Insights and prints the turn's
+   spans, durations, outcomes and tool names, never content; it needs Azure CLI's
+   `application-insights` extension. Never read `AppGenAIContent` or grant its reader role to
+   see more.
+4. **Plan B** is presenter mode's labelled scripted answer and, offline, mock mode: never
+   present either as a live answer.
+
+`deploy.py links` prints the deployment's portal links from Terraform's outputs alone; its output holds
+deployment IDs, so keep it out of the repository. To improve a step that keeps failing, use the
+tuning playbook in `docs/scenario-authoring.md` with the `scenario-authoring` skill.
