@@ -1,0 +1,227 @@
+{
+  "format": "iq-template.demo.v1",
+  "title": "One assistant, four IQs",
+  "description": "The demo of the template's fictional Site/Asset sample, the single source of presenter mode's steps and notes, mock mode's replies and npm run rehearse's checks. A fact passes when the answer contains one of its anyOf phrases, ignoring case; a mustNot fact fails it. markers are the marker prefixes the answer must use, and tools the tools that must run. scripted holds each agent's reply in the agents' reply format and the tool calls mock mode replays. Validated by app/src/demo/script.ts.",
+  "steps": [
+    {
+      "id": "welcome",
+      "title": "One assistant, four IQs",
+      "iq": ["fabric", "foundry", "web", "work"],
+      "say": "Everything in this sample is fictional: two sites, three assets and one starter document. You'll see one assistant in two versions, with the same model, the same instructions and the same questions. One has the four IQs as tools; the other has none. The assistant prepares answers; people decide.",
+      "do": "Show the app and its legend: the marker after each fact names its source, D for Fabric IQ's live ontology, F for Foundry IQ's approved documents, Web for Web IQ's public context and W for Work IQ's mail. Work IQ is optional.",
+      "land": "Same agent, same model: the only difference is the context it can use.",
+      "setup": "deploy.py check passes, you're signed in to the app as yourself and you've given your consents (docs/runbook.md)."
+    },
+    {
+      "id": "live-facts",
+      "title": "Live facts with Fabric IQ",
+      "iq": ["fabric"],
+      "say": "Ask an assistant without the business data which assets are in maintenance, and it can only guess or decline. The version with Fabric IQ asks the live ontology, as you, and cites the row it found.",
+      "do": "Ask both. Point at the answer without IQ, which can't confirm, then at the one with IQ: its D1 marker and the Fabric IQ call in its tool timeline. Open Sources to show the ontology row.",
+      "land": "Current facts come from the live ontology, read as the signed-in user, and every fact carries its source.",
+      "question": "Which assets are in maintenance, and at which site?",
+      "variants": ["without_iq", "with_iq"],
+      "checks": {
+        "without_iq": {
+          "keyFacts": [
+            {"fact": "Says it can't confirm", "anyOf": ["can't confirm", "cannot confirm", "can not confirm", "unable to confirm", "not able to confirm"]}
+          ],
+          "mustNot": [
+            {"fact": "Names an asset", "anyOf": ["Pump A", "Pump B", "Conveyor A"]}
+          ],
+          "markers": [],
+          "tools": []
+        },
+        "with_iq": {
+          "keyFacts": [
+            {"fact": "Pump B is in maintenance", "anyOf": ["Pump B"]},
+            {"fact": "At North Works", "anyOf": ["North Works"]}
+          ],
+          "mustNot": [
+            {"fact": "Says it can't confirm the status", "anyOf": ["can't confirm", "cannot confirm", "unable to confirm"]}
+          ],
+          "markers": ["D"],
+          "tools": ["FabricIQOntology"]
+        }
+      },
+      "scripted": {
+        "without_iq": {
+          "reply": [
+            "**I can't confirm which assets are in maintenance or where they are.** This version of the assistant has no tools, so it can't check the live data, and it won't guess.",
+            "",
+            "Sources",
+            "",
+            "Steps",
+            "1. Called no tool: this version has none."
+          ],
+          "tools": []
+        },
+        "with_iq": {
+          "reply": [
+            "**Pump B is in maintenance, at North Works.** [D1]",
+            "",
+            "- Pump B · Status \"Maintenance\" · located at North Works [D1]",
+            "",
+            "Sources",
+            "- [D1] ScenarioOntology · Asset · demo-asset-002",
+            "",
+            "Steps",
+            "1. Fabric IQ ontology: asked which Asset rows have the Status value \"Maintenance\", with the name of each one's site; it returned Pump B at North Works."
+          ],
+          "tools": [
+            {
+              "server": "fabric_iq_ontology",
+              "tool": "ask_ontology",
+              "arguments": "{\"question\":\"Which Asset rows have the Status value \\\"Maintenance\\\"? Return each asset name and the name of its site.\"}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "documents",
+      "title": "Approved documents with Foundry IQ",
+      "iq": ["foundry"],
+      "say": "Documents explain how things work, but they age. Foundry IQ retrieves passages from the approved documents only, and the assistant names the document it used.",
+      "do": "Ask with IQ. Open F1 and the Foundry IQ call in the timeline: the answer quotes the starter document, which itself says to use the live ontology for current values.",
+      "land": "Documents describe the original seed; the live ontology gives current values. The assistant keeps the two apart.",
+      "question": "What does the starter document say about where current entity values come from?",
+      "variants": ["with_iq"],
+      "checks": {
+        "with_iq": {
+          "keyFacts": [
+            {"fact": "Current values come from the live ontology", "anyOf": ["ontology", "live source"]}
+          ],
+          "mustNot": [
+            {"fact": "Says no approved document covers it", "anyOf": ["no approved document", "can't confirm", "cannot confirm"]}
+          ],
+          "markers": ["F"],
+          "tools": ["FoundryIQKnowledge"]
+        }
+      },
+      "scripted": {
+        "with_iq": {
+          "reply": [
+            "**From the live ontology, not from the document.** The starter document says to use the ontology source for current entity values and counts [F1].",
+            "",
+            "- The facts it lists describe the original seed, not current operational status [F1].",
+            "",
+            "Sources",
+            "- [F1] Synthetic asset operations starter knowledge · starter.txt",
+            "",
+            "Steps",
+            "1. Foundry IQ knowledge: asked where current entity values come from; it returned the starter document's passage about the ontology source."
+          ],
+          "tools": [
+            {
+              "server": "foundry_iq_knowledge",
+              "tool": "knowledge_base_retrieve",
+              "arguments": "{\"queries\":[\"Where do current entity values come from, according to the starter document?\"]}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "public-context",
+      "title": "Public context with Web IQ",
+      "iq": ["web"],
+      "say": "Sometimes the useful context is public, such as a manufacturer's or an industry body's guidance. Web IQ searches the web for it with a query in public terms only, and the assistant labels it as public context, not company guidance.",
+      "do": "Ask with IQ. Open the Web IQ call's Query in the timeline: it holds no site, asset or person's name. Point at the label and the Web1 source.",
+      "land": "Public context is welcome when it's labelled, and nothing private leaves in the query.",
+      "question": "What general public guidance exists for centrifugal pump maintenance?",
+      "variants": ["with_iq"],
+      "checks": {
+        "with_iq": {
+          "keyFacts": [
+            {"fact": "Labels the line as public context", "anyOf": ["public context"]}
+          ],
+          "mustNot": [
+            {"fact": "Names a site or an asset", "anyOf": ["Pump A", "Pump B", "Conveyor A", "North Works", "South Works"]}
+          ],
+          "markers": ["Web"],
+          "tools": ["WebIQPublicContext"],
+          "manual": ["The Web IQ query in the tool timeline holds no site, asset or person's name."]
+        }
+      },
+      "scripted": {
+        "with_iq": {
+          "reply": [
+            "**Public context, not company guidance:** general guidance for centrifugal pumps recommends regular checks of seals, bearings, vibration and alignment, with service intervals set by operating hours and conditions [Web1].",
+            "",
+            "Sources",
+            "- [Web1] Centrifugal pump maintenance basics · example.com · https://example.com/centrifugal-pump-maintenance",
+            "",
+            "Steps",
+            "1. Web IQ public context: searched public guidance on centrifugal pump maintenance, without any site or asset name; it returned one general guide."
+          ],
+          "tools": [
+            {
+              "server": "web_iq_public_context",
+              "tool": "knowledge_base_retrieve",
+              "arguments": "{\"queries\":[\"centrifugal pump maintenance guidance\"]}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "work-context",
+      "title": "Your own mail with Work IQ",
+      "iq": ["work"],
+      "say": "What the team has written is context too. Work IQ reads only your own mailbox, as you, and only reads: it can't send, reply or change anything.",
+      "do": "Ask with IQ. If a consent card appears, authorize Work IQ in the new tab and ask again. Open W1: its link opens the message in Outlook.",
+      "land": "Mail tells you what people reported or planned; the live ontology still says what is current.",
+      "setup": "Work IQ is enabled (work_iq_enabled = true), and at least a day before you sent yourself an email with the subject \"Pump B seal replacement\" and a line such as \"We found a worn seal on Pump B at North Works and will replace it this week.\" Microsoft 365 must index it before Work IQ finds it.",
+      "requires": "work_iq",
+      "question": "Find recent mail about Pump B",
+      "variants": ["with_iq"],
+      "checks": {
+        "with_iq": {
+          "keyFacts": [
+            {"fact": "Finds mail about Pump B", "anyOf": ["Pump B"]}
+          ],
+          "mustNot": [
+            {"fact": "Finds no mail", "anyOf": ["no mail", "no messages", "found no", "didn't find", "did not find", "couldn't find", "could not find"]}
+          ],
+          "markers": ["W"],
+          "tools": ["WorkIQMail"]
+        }
+      },
+      "scripted": {
+        "with_iq": {
+          "reply": [
+            "**Two recent messages mention Pump B.**",
+            "",
+            "- The maintenance team reported a worn seal on Pump B and planned its replacement [W1].",
+            "- The North Works site lead expects Pump B back in service after the replacement [W2].",
+            "",
+            "Mail is what people reported or planned, not current status; the live ontology holds that.",
+            "",
+            "Sources",
+            "- [W1] Outlook · Maintenance team · 10 November 2026 · Pump B seal replacement · https://example.com/mail/1",
+            "- [W2] Outlook · North Works site lead · 12 November 2026 · Pump B back in service · https://example.com/mail/2",
+            "",
+            "Steps",
+            "1. Work IQ mail: searched your mail for \"Pump B\"; it returned two messages."
+          ],
+          "tools": [
+            {
+              "server": "work_iq_mail",
+              "tool": "fetch",
+              "arguments": "{\"entityUrls\":[\"/me/messages?$search=\\\"Pump B\\\"&$select=subject,from,receivedDateTime,webLink,body&$top=10\"]}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "wrap-up",
+      "title": "What changed, and what didn't",
+      "iq": ["fabric", "foundry", "web", "work"],
+      "say": "Same model, same instructions, same questions. With the IQs, the assistant found the live status, the approved document, public context and your own mail, as you, and showed where each fact came from. Without them, it said what it couldn't confirm instead of guessing.",
+      "do": "Scroll back through the answers and point at the markers and the tool timelines. Each answer shows its response ID, which finds the turn's trace in Application Insights.",
+      "land": "Context, not a bigger model, makes the assistant useful, and every answer stays checkable."
+    }
+  ]
+}
