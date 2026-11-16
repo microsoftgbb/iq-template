@@ -1,171 +1,119 @@
-import { useState, type FormEvent } from 'react'
-import { getContext } from '@microsoft/managed-apps/app'
-import { getUser } from '@microsoft/managed-apps/auth'
-import { MicrosoftCopilotStudioService } from '../../generated/services/MicrosoftCopilotStudioService'
-import { STUDIO_AGENT_SCHEMA } from './config'
-import { connectionManagerUrl, studioDiagnostic, studioFailure, studioProof, studioReply } from './studio'
-import './App.css'
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
+import { Composer } from './components/Composer.tsx'
+import { ExchangeView, type TurnActions } from './components/Exchange.tsx'
+import { Header } from './components/Header.tsx'
+import { followUpFrom, newTurn, reduce, type Exchange, type Thread, type Turn } from './exchanges.ts'
+import type { Choice } from './labels.ts'
+import { createAgentClient, loadSession } from './live/client.ts'
+import type { Question, Session, Variant } from './live/types.ts'
 
-// Required by ExecuteCopilotAsyncV2, but unused because the call waits for the reply.
-const NOTIFICATION_URL = 'https://notificationurlplaceholder'
-const LOCALE = 'en-US'
+type SessionState =
+  | { status: 'loading' }
+  | { status: 'ready'; session: Session }
+  | { status: 'failed'; message: string }
 
-interface Result {
-  tone: 'ready' | 'answer' | 'warning' | 'error'
-  title: string
-  lines?: string[]
-  link?: string
-  detail?: string
-  elapsed?: number
+function messageOf(error: unknown, fallback: string): string {
+  return error instanceof Error && error.message ? error.message : fallback
 }
 
-class Failure extends Error {
-  detail?: string
+export default function App() {
+  const [sessionState, setSessionState] = useState<SessionState>({ status: 'loading' })
+  const [problem, setProblem] = useState<string>()
+  const [exchanges, dispatch] = useReducer(reduce, [])
+  const client = useMemo(() => createAgentClient(), [])
+  // The running turns' controllers, by turn: Stop aborts one, and the server then stops its Foundry run.
+  const controllers = useRef(new Map<string, AbortController>())
 
-  constructor(message: string, raw?: unknown) {
-    super(message)
-    if (raw !== undefined) this.detail = JSON.stringify(studioDiagnostic(raw), null, 2)
-  }
-}
-
-async function target() {
-  if (!STUDIO_AGENT_SCHEMA) {
-    throw new Failure('Set STUDIO_AGENT_SCHEMA in app/src/config.ts to the agent schema name.')
-  }
-  const [user, context] = await Promise.all([getUser(), getContext()])
-  if (!user.objectId || !user.tenantId || !context.app.environmentId) {
-    throw new Failure('Open this app through the signed-in Managed Runtime player.')
-  }
-  return { tenantId: user.tenantId, environmentId: context.app.environmentId }
-}
-
-async function send(message: string, environmentId: string, conversationId?: string) {
-  const response = await MicrosoftCopilotStudioService.ExecuteCopilotAsyncV2(
-    STUDIO_AGENT_SCHEMA,
-    { message, locale: LOCALE, notificationUrl: NOTIFICATION_URL },
-    conversationId,
-    environmentId,
-  )
-  if (!response.success) throw new Failure(studioFailure(response.error?.message))
-  const raw: unknown = response.data
-  return raw
-}
-
-function connectionNeeded(tenantId: string, environmentId: string, conversationId: string): Result {
-  return {
-    tone: 'warning',
-    title: 'The agent is waiting for input this app cannot show, usually your connection consent.',
-    lines: ['Open the connection manager, connect each source, then try again.'],
-    link: connectionManagerUrl(tenantId, environmentId, STUDIO_AGENT_SCHEMA, conversationId),
-  }
-}
-
-function parse<T>(raw: unknown, parser: (value: unknown) => T): T {
-  try {
-    return parser(raw)
-  } catch (error) {
-    throw new Failure(error instanceof Error ? error.message : 'Studio returned an unreadable reply.', raw)
-  }
-}
-
-function App() {
-  const [question, setQuestion] = useState('')
-  const [conversationId, setConversationId] = useState<string>()
-  const [pending, setPending] = useState(false)
-  const [result, setResult] = useState<Result>(STUDIO_AGENT_SCHEMA
-    ? { tone: 'ready', title: 'Ask a question, or check the agent connection first.' }
-    : { tone: 'warning', title: 'Set STUDIO_AGENT_SCHEMA in app/src/config.ts.' })
-
-  async function run(work: () => Promise<Result>) {
-    setPending(true)
-    const started = performance.now()
-    let outcome: Result
-    try {
-      outcome = await work()
-    } catch (error) {
-      outcome = {
-        tone: 'error',
-        title: error instanceof Error ? error.message : 'The request failed.',
-        detail: error instanceof Failure ? error.detail : undefined,
-      }
+  useEffect(() => {
+    let active = true
+    loadSession().then(
+      (session) => {
+        if (active) setSessionState({ status: 'ready', session })
+      },
+      (error: unknown) => {
+        if (active) setSessionState({ status: 'failed', message: messageOf(error, 'Sign-in could not start.') })
+      },
+    )
+    return () => {
+      active = false
     }
-    setResult({ ...outcome, elapsed: (performance.now() - started) / 1000 })
-    setPending(false)
-  }
+  }, [])
 
-  function ask(event: FormEvent) {
-    event.preventDefault()
-    void run(async () => {
-      const { tenantId, environmentId } = await target()
-      const reply = parse(await send(question.trim(), environmentId, conversationId), studioReply)
-      if (reply.status === 'needs-input') {
-        setConversationId(undefined)
-        return connectionNeeded(tenantId, environmentId, reply.conversationId)
-      }
-      setConversationId(reply.conversationId)
-      return { tone: 'answer', title: 'Answer', lines: reply.responses }
+  useEffect(() => {
+    const running = controllers.current
+    return () => {
+      for (const controller of running.values()) controller.abort()
+    }
+  }, [])
+
+  const session = sessionState.status === 'ready' ? sessionState.session : undefined
+  const blocked = sessionState.status === 'loading' ? 'Connecting to the app server…'
+    : sessionState.status === 'failed' ? 'The app can’t ask the agents until sign-in starts.'
+      : session?.identity ? undefined : 'Sign in with your Microsoft Entra account to ask the agents.'
+
+  const run = useCallback((turnId: string, question: Question) => {
+    const controller = new AbortController()
+    controllers.current.set(turnId, controller)
+    void client.ask(question, controller.signal, (call) => dispatch({ type: 'tool', turnId, call })).then((result) => {
+      if (controllers.current.get(turnId) === controller) controllers.current.delete(turnId)
+      dispatch({ type: 'finish', turnId, result })
     })
-  }
+  }, [client])
 
-  function check() {
-    void run(async () => {
-      const { tenantId, environmentId } = await target()
-      const challenge = `connection proof ${crypto.randomUUID()}`
-      const raw = await send(challenge, environmentId)
-      const proof = parse(raw, (value) => studioProof(value, challenge))
-      if (proof.status === 'needs-input') return connectionNeeded(tenantId, environmentId, proof.conversationId)
-      return proof.status === 'responded'
-        ? { tone: 'ready', title: 'Connected: the published agent returned this check\'s fresh challenge.' }
-        : { tone: 'warning', title: 'Studio accepted the message but the agent returned no reply.', detail: new Failure('', raw).detail }
-    })
-  }
+  const ask = useCallback((text: string, choice: Choice) => {
+    const variants: Variant[] = choice === 'both' ? ['with_iq', 'without_iq'] : [choice]
+    const startedAt = performance.now()
+    const exchange: Exchange = {
+      id: crypto.randomUUID(),
+      question: text,
+      threads: variants.map((variant) => ({ id: crypto.randomUUID(), variant, turns: [newTurn(crypto.randomUUID(), text, startedAt)] })),
+    }
+    dispatch({ type: 'ask', exchange })
+    for (const thread of exchange.threads) run(thread.turns[0].id, { variant: thread.variant, text })
+  }, [run])
 
-  function restart() {
-    setConversationId(undefined)
-    setResult({ tone: 'ready', title: 'New conversation.' })
-  }
+  const authenticate = useCallback((action: 'signIn' | 'signOut') => {
+    setProblem(undefined)
+    session?.[action]().catch((error: unknown) => setProblem(messageOf(error, 'Microsoft Entra sign-in did not start. Try again.')))
+  }, [session])
+
+  const actions = useMemo<TurnActions>(() => ({
+    onFollowUp: (thread: Thread, text: string) => {
+      const previousResponseId = followUpFrom(thread)
+      const turn = newTurn(crypto.randomUUID(), text, performance.now(), previousResponseId)
+      dispatch({ type: 'follow-up', threadId: thread.id, turn })
+      run(turn.id, { variant: thread.variant, text, ...(previousResponseId ? { previousResponseId } : {}) })
+    },
+    onRetry: (thread: Thread, turn: Turn) => {
+      dispatch({ type: 'restart', turnId: turn.id, startedAt: performance.now() })
+      run(turn.id, { variant: thread.variant, text: turn.question, ...(turn.previousResponseId ? { previousResponseId: turn.previousResponseId } : {}) })
+    },
+    onStop: (turn: Turn) => controllers.current.get(turn.id)?.abort(),
+    onSignIn: () => authenticate('signIn'),
+  }), [run, authenticate])
 
   return (
-    <main>
-      <header>
-        <span className="eyebrow">Scenario assistant</span>
-        <h1>Ask about live operations and project documents.</h1>
-        <p>
-          Answers come from the project's Copilot Studio agent. It reads the Fabric IQ ontology and the
-          Foundry IQ knowledge base with your own connections.
-        </p>
-      </header>
-      <form className="panel" onSubmit={ask}>
-        <label htmlFor="question">Question</label>
-        <textarea
-          id="question"
-          rows={3}
-          maxLength={2000}
-          value={question}
-          placeholder="Which assets are in maintenance, and what does the procedure say to check first?"
-          onChange={(event) => setQuestion(event.target.value)}
-        />
-        <div className="actions">
-          <button className="primary" type="submit" disabled={pending || !question.trim()}>
-            {pending ? 'Waiting for the agent…' : 'Ask'}
-          </button>
-          <button type="button" disabled={pending || !conversationId} onClick={restart}>New conversation</button>
-          <button type="button" disabled={pending} onClick={check}>Check connection</button>
-        </div>
-        <p className="hint">
-          {conversationId ? 'Follow-up questions continue this conversation. ' : ''}
-          An answer can take up to two minutes.
-        </p>
-      </form>
-      <section className={`panel result ${result.tone}`} aria-live="polite">
-        <h2>{result.title}</h2>
-        {result.lines?.map((line, index) => <p key={index} className="answer">{line}</p>)}
-        {result.link && <a href={result.link} target="_blank" rel="noreferrer">{result.link}</a>}
-        {result.detail && <pre>{result.detail}</pre>}
-        {result.elapsed !== undefined && <p className="meta">{result.elapsed.toFixed(1)} s</p>}
-      </section>
-    </main>
+    <>
+      <a className="skip-link" href="#main">Skip to the question</a>
+      <Header session={session} onSignIn={() => authenticate('signIn')} onSignOut={() => authenticate('signOut')} />
+      <main id="main" className="page">
+        {sessionState.status === 'failed' && (
+          <div className="notice error page-notice" role="alert">
+            <p>{sessionState.message}</p>
+            <div className="actions">
+              <button type="button" className="secondary" onClick={() => window.location.reload()}>Reload</button>
+            </div>
+          </div>
+        )}
+        {problem && <div className="notice error page-notice" role="alert"><p>{problem}</p></div>}
+        <Composer blocked={blocked} onAsk={ask} />
+        <section className="exchanges" aria-label="Answers">
+          {exchanges.map((exchange) => <ExchangeView key={exchange.id} exchange={exchange} actions={actions} />)}
+        </section>
+      </main>
+      <footer className="footer">
+        <p>Everything in this sample is fictional. Each question runs a Foundry agent as you.</p>
+      </footer>
+    </>
   )
 }
-
-export default App
