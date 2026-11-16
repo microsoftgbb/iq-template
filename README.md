@@ -72,7 +72,7 @@ than redesigning the platform.
 2. Open its **Codespace** for the prepared toolchain, or follow [developer setup](docs/development.md) for a local environment.
 3. Tell Copilot **"Deploy the platform"**. When using Copilot App with Codespaces, name the Codespace to keep deployment in that checkout and state. It finishes with both agents published and the web app running at its Container Apps URL. To deploy without Copilot, run the same [deterministic runner](docs/development.md#deploy-deterministically) yourself: `python3 .github/skills/deploy-platform/scripts/deploy.py up`. It stops to ask for any missing choice, such as the subscription.
 
-Review [prerequisites and manual steps](docs/getting-started.md) before deploying. You choose the target, complete every sign-in once at the start and approve the plans. The runner assumes you are an administrator, grants consent as you, and names a specific grant only if an API refuses. For **configuration only**, use **/initialize-project**.
+Review [prerequisites and manual steps](docs/getting-started.md) before deploying. You choose the target, complete every sign-in once at the start and approve the plans, each by its hash or, for a new environment, everything that only creates resources at once with `--approve-creates`; updates, replacements and deletions always stop for your review. The runner assumes you are an administrator, grants consent as you, and names a specific grant only if an API refuses. For **configuration only**, use **/initialize-project**.
 
 Optional inputs, such as `work_iq_enabled`, `knowledge_folders`, `agent_model`
 and `app`, are listed under [configuration keys](docs/getting-started.md#configuration-keys).

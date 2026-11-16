@@ -25,7 +25,7 @@ The diagram's Git-sync step is opt-in; the default uses native Fabric import wit
 
 The diagram's four **saved-plan approvals**, for the identity, platform, knowledge and app plans, are not a replacement for administrator consent, user sign-in, the publish and build approvals or review of incoming Git changes. Every phase uses the same execution host, checkout, tfvars file and state/backend.
 
-The [deterministic runner](development.md#deploy-deterministically) executes these stages as phases `signin` through `app` with the same gates: it completes every sign-in first, approves each saved plan by its hash and each action by name, names the exact grant when an API refuses for lack of permission, and resumes from live state when rerun. Both bootstrap paths deploy only additions from the reviewed, published `workspace/` revision, and the app phase builds only committed `app/` files.
+The [deterministic runner](development.md#deploy-deterministically) executes these stages as phases `signin` through `app` with the same gates: it completes every sign-in first, approves each saved plan by its hash and each action by name (or, for a new environment, everything that only creates resources at once with `--approve-creates`), names the exact grant when an API refuses for lack of permission, and resumes from live state when rerun. Both bootstrap paths deploy only additions from the reviewed, published `workspace/` revision, and the app phase builds only committed `app/` files.
 
 ## What Bootstrap does
 

@@ -455,6 +455,71 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(deploy.converge(ctx, "platform"), "unchanged")
         self.assertEqual(list((ctx.state.directory / "plans").iterdir()), [])
 
+    def test_approve_creates_applies_a_plan_of_only_creates_after_saving_its_receipt(self):
+        shell = FakeShell(plan_rules([("azurerm_resource_group.main", ["create"]), ("fabric_workspace.dev", ["create"])]))
+        ctx = make_context(self, make_root(self), shell, approve_creates=True)
+        ctx.interactive, ctx.prompt = True, mock.Mock(side_effect=AssertionError("prompted"))
+        saved = []
+
+        def apply(args, options):
+            state = json.loads(ctx.state.path.read_text(encoding="utf-8"))
+            saved.append((state.get("approvals"), state["pending_plans"]["platform"]["sha256"]))
+            return deploy.Result(0, "apply output")
+
+        shell.rules.insert(0, (terraform("apply"), apply))
+        self.assertEqual(deploy.converge(ctx, "platform"), "applied")
+        ((receipt,), sha256), = saved
+        self.assertEqual(receipt, {"key": "platform", "description": "Apply the saved platform plan (2 create)",
+                                   "sha256": sha256, "counts": {"create": 2}, "by": "approve-creates",
+                                   "at": receipt["at"]})
+        self.assertIn("Approved by --approve-creates: Apply the saved platform plan (2 create).", ctx.messages)
+
+    def test_approve_creates_stops_for_a_plan_that_changes_what_exists(self):
+        # An update beside creates, an import that adopts an existing resource without changing it, or a plan with
+        # no resource changes at all: none only adds resources.
+        imported = {"resource_changes": [
+            {"address": "azurerm_resource_group.main", "change": {"actions": ["create"]}},
+            {"address": "azurerm_storage_account.adopted", "change": {"actions": ["no-op"], "importing": {"id": "/x"}}}]}
+        for changes, shown in (([("azurerm_resource_group.main", ["create"]), ("fabric_workspace.dev", ["update"])], None),
+                               ([], imported), ([], None)):
+            with self.subTest(changes=changes, imported=bool(shown)):
+                shell = FakeShell(plan_rules(changes))
+                if shown:
+                    shell.rules.insert(0, (terraform("show"), deploy.Result(0, json.dumps(shown))))
+                ctx = make_context(self, make_root(self), shell, approve_creates=True)
+                with self.assertRaisesRegex(deploy.NeedsApproval, "Approval required") as stop:
+                    deploy.converge(ctx, "platform")
+                self.assertEqual(stop.exception.code, deploy.APPROVAL)
+                self.assertIn("Not covered by --approve-creates", stop.exception.next_steps[0])
+                self.assertFalse(shell.matching(terraform("apply")))
+                self.assertNotIn("approvals", ctx.state.data)
+
+    def test_approve_creates_still_needs_allow_replace_and_the_digest_for_a_replacement(self):
+        changes = [("azurerm_resource_group.main", ["create"]), ("fabric_workspace.dev", ["delete", "create"])]
+        shell = FakeShell(plan_rules(changes))
+        ctx = make_context(self, make_root(self), shell, approve_creates=True)
+        with self.assertRaisesRegex(deploy.NeedsApproval, "deletes or replaces"):
+            deploy.converge(ctx, "platform")
+        ctx.args.allow_replace = True
+        with self.assertRaisesRegex(deploy.NeedsApproval, "Approval required") as stop:
+            deploy.converge(ctx, "platform")
+        self.assertFalse(shell.matching(terraform("apply")))
+        ctx.args.approve = {"platform": stop.exception.approval["sha256"][:12]}
+        self.assertEqual(deploy.converge(ctx, "platform"), "applied")
+        self.assertNotIn("approvals", ctx.state.data)
+
+    def test_approve_creates_never_grants_teardown_definition_updates_or_registration_changes(self):
+        ctx = make_context(self, make_root(self), approve_creates=True, allow_delete=True)
+        pending = {"sha256": "a" * 64, "summary": {"changes": [], "counts": {}}, "path": "saved.tfplan"}
+        for key, change in (("destroy", pending), ("purge-foundry", None), ("item-update", pending),
+                            ("shared-action-group", None), ("knowledge-registration", None)):
+            with self.subTest(key=key), self.assertRaises(deploy.NeedsApproval):
+                deploy.approve(ctx, key, f"Approve {key}", change, creates_only=True)
+        self.assertNotIn("approvals", ctx.state.data)
+        with self.assertRaises(SystemExit) as stop, contextlib.redirect_stderr(io.StringIO()):
+            deploy.parse_arguments(["down", "--approve-creates"])
+        self.assertEqual(stop.exception.code, deploy.USAGE)
+
 
 class TeardownTests(unittest.TestCase):
     SUBSCRIPTION = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
@@ -2305,6 +2370,40 @@ class StateAndCliTests(unittest.TestCase):
         self.assertEqual(set(deploy.DESTRUCTIVE_APPROVALS), {"destroy", "purge-foundry", "item-update",
                                                              "shared-action-group"})
 
+    def test_approve_creates_is_announced_up_front_and_cannot_be_combined_with_yes(self):
+        self.assertTrue(deploy.parse_arguments(["up", "--approve-creates"]).approve_creates)
+        stderr = io.StringIO()
+        with self.assertRaises(SystemExit) as stop, contextlib.redirect_stderr(stderr):
+            deploy.parse_arguments(["up", "--approve-creates", "--yes"])
+        self.assertEqual(stop.exception.code, deploy.USAGE)
+        self.assertIn("--yes also approves updates of existing resources; --approve-creates is the narrower choice",
+                      stderr.getvalue())
+        ctx = make_context(self, make_root(self), approve_creates=True)
+        with mock.patch.dict(deploy.PHASE_FUNCTIONS, {"config": lambda ctx: "configured"}):
+            self.assertEqual(deploy.run_phases(ctx, ("config",))[0], deploy.OK)
+        self.assertIn("still stops for updates, replacements, deletions, definition updates and teardown",
+                      ctx.messages[0])
+
+    def test_status_lists_the_policy_approvals(self):
+        root = make_root(self)
+        ctx = make_context(self, root, approve_creates=True)
+        plan = {"sha256": "ab" * 32, "summary": {"changes": [], "counts": {"create": 3}}, "path": "saved.tfplan"}
+        deploy.approve(ctx, "platform", "Apply the saved platform plan (3 create)", plan, creates_only=True)
+        deploy.approve(ctx, "agent-publish", "Create Foundry agent demo-with-iq", creates_only=True)
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            self.assertEqual(deploy.main(["status"], root=root), deploy.OK)
+        lines = [line.split("Z  ", 1)[-1] for line in stdout.getvalue().splitlines() if "approve-creates" in line]
+        self.assertEqual(lines, ["platform       sha256 abababababab, 3 create (by --approve-creates)",
+                                 "agent-publish  Create Foundry agent demo-with-iq (by --approve-creates)"])
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            deploy.main(["status", "--json"], root=root)
+        self.assertEqual([(receipt["key"], receipt.get("sha256"), receipt.get("counts"), receipt["by"])
+                          for receipt in json.loads(stdout.getvalue())["approvals"]],
+                         [("platform", "ab" * 32, {"create": 3}, "approve-creates"),
+                          ("agent-publish", None, None, "approve-creates")])
+
 
 class FakeFoundry(FakeHttp):
     """Foundry Agent Service's agents API over an in-memory project; other routes behave as in FakeHttp."""
@@ -2513,6 +2612,24 @@ class AgentAndAppTests(unittest.TestCase):
         self.assertNotIn("name", body)
         self.assertEqual(ctx.state.section("agents")["with_iq"]["published"]["version"], "2")
 
+    def test_approve_creates_creates_missing_agents_but_stops_for_a_new_version(self):
+        ctx, http = self.agent_context()
+        ctx.args.approve_creates = True
+        self.assertIn("demo-with-iq v1", deploy.phase_agent(ctx))
+        self.assertEqual(len(http.posts(r"/agents\?api-version=v1$")), 2)
+        (receipt,) = ctx.state.data["approvals"]
+        self.assertEqual((receipt["key"], receipt["by"]), ("agent-publish", "approve-creates"))
+        self.assertIn("Create Foundry agent demo-with-iq", receipt["description"])
+        # A changed live agent beside a missing one: the publication changes what exists, so it is reviewed.
+        del http.agents["demo-without-iq"]
+        ctx.cache["outputs"] = self.outputs(work_iq=False)
+        with self.assertRaises(deploy.NeedsApproval) as stop:
+            deploy.phase_agent(ctx)
+        self.assertIn("Publish a new version of Foundry agent demo-with-iq", stop.exception.message)
+        self.assertIn("Create Foundry agent demo-without-iq", stop.exception.message)
+        self.assertEqual(len(http.posts(r"/agents")), 2)
+        self.assertEqual(len(ctx.state.data["approvals"]), 1)
+
     def test_a_refused_or_failed_publish_is_recorded_and_not_reported_ready(self):
         for status, expected in ((403, "Foundry User"), (400, "failed with HTTP 400")):
             with self.subTest(status=status):
@@ -2661,6 +2778,29 @@ class AgentAndAppTests(unittest.TestCase):
         self.assertIn(f"runs app:{tag}", deploy.phase_app(ctx))
         self.assertFalse(ctx.shell.matching(command("az", "acr", "build")))
         self.assertNotIn("build", ctx.state.section("app"))
+
+    def test_approve_creates_builds_and_deploys_only_the_first_image(self):
+        ctx, tag = self.app_context()
+        ctx.args.approve_creates = True
+        self.assertIn(f"runs app:{tag}", deploy.phase_app(ctx))
+        build, plan = ctx.state.data["approvals"]
+        self.assertEqual((build["key"], plan["key"], plan["counts"]), ("app-build", "app", {"create": 1}))
+        self.assertIn(f"app:{tag}", build["description"])
+        # The next commit's image is a later one: it is reviewed as before.
+        ctx.shell.rules.insert(0, (command("git", "ls-tree", "-r", "HEAD"), deploy.Result(0, self.LISTING.replace(
+            "2222", "3333"))))
+        with self.assertRaises(deploy.NeedsApproval) as stop:
+            deploy.phase_app(ctx)
+        self.assertEqual(stop.exception.approval["key"], "app-build")
+        self.assertEqual(len(ctx.shell.matching(command("az", "acr", "build"))), 1)
+        self.assertEqual(len(ctx.state.data["approvals"]), 2)
+        # So is any build after an earlier attempt, even a failed one, before anything was deployed.
+        ctx, _ = self.app_context()
+        ctx.args.approve_creates = True
+        ctx.state.section("app")["build"] = {"tag": "0" * 12, "started_at": "earlier"}
+        with self.assertRaisesRegex(deploy.NeedsApproval, "Approval required: Build image"):
+            deploy.phase_app(ctx)
+        self.assertFalse(ctx.shell.matching(command("az", "acr", "build")))
 
     def test_uncommitted_or_untracked_app_files_are_never_built(self):
         for status in (" M app/src/App.tsx\n", "?? app/src/scratch.ts\n"):
