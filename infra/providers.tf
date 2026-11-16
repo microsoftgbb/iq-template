@@ -8,8 +8,13 @@ provider "azurerm" {
 
   resource_provider_registrations = "none"
   resource_providers_to_register = concat([
+    "Microsoft.App",
     "Microsoft.CognitiveServices",
+    "Microsoft.ContainerRegistry",
     "Microsoft.Fabric",
+    "Microsoft.Insights",
+    "Microsoft.ManagedIdentity",
+    "Microsoft.OperationalInsights",
     "Microsoft.Search",
   ], var.web_iq_terms_accepted ? ["Microsoft.WebIQ"] : [])
 }

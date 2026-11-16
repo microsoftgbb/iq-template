@@ -119,21 +119,33 @@ resource "azurerm_role_assignment" "deployer_search_reader" {
   principal_id         = data.azurerm_client_config.current.object_id
 }
 
-resource "restful_resource" "knowledge_source" {
-  count = var.knowledge_lakehouse_id == null ? 0 : 1
+# The Foundry portal edits knowledge bases with the signed-in user's Entra token, so a live attach needs this role.
+resource "azurerm_role_assignment" "knowledge_editor_search_contributor" {
+  for_each = toset([for id in var.knowledge_editor_principal_ids : lower(id)])
 
-  path            = "/knowledgesources/${local.knowledge_source_name}"
+  scope                = azapi_resource.search.id
+  role_definition_name = "Search Service Contributor"
+  principal_id         = each.value
+}
+
+# One source per knowledge_folders entry: files outside those folders, such as archived or draft versions, never
+# reach the index.
+resource "restful_resource" "knowledge_source" {
+  for_each = var.knowledge_lakehouse_id == null ? {} : var.knowledge_folders
+
+  path            = "/knowledgesources/${local.knowledge_source_names[each.key]}"
   check_existance = true
   # Rebuild the generated ingestion objects when source settings change.
   force_new_attrs = ["name", "kind", "description", "indexedOneLakeParameters"]
 
   body = {
-    name        = local.knowledge_source_name
+    name        = local.knowledge_source_names[each.key]
     kind        = "indexedOneLake"
-    description = "Documents from the ${var.project_name} DEV knowledge lakehouse Files area."
+    description = each.value.description
     indexedOneLakeParameters = {
       fabricWorkspaceId = fabric_workspace.dev.id
-      lakehouseId       = data.fabric_lakehouse.knowledge[count.index].id
+      lakehouseId       = data.fabric_lakehouse.knowledge[0].id
+      targetPath        = each.value.target_path
       ingestionParameters = {
         networkAccessMode         = "public"
         contentExtractionMode     = "minimal"
@@ -174,16 +186,19 @@ resource "restful_resource" "knowledge_base" {
   path            = "/knowledgebases/${local.knowledge_base_name}"
   check_existance = true
 
+  # Minimal effort with extractive output: Search runs the agent's question against every attached source and returns
+  # the passages, each with its file's doc_url, in about a second, where medium effort with answer synthesis took about
+  # five. The agent writes the answer from the passages, and asks a second question when a passage points to another
+  # document's section, which medium effort asked inside Search. Minimal takes intents, not messages, and runs no
+  # model: the model stays configured only so a request or the Foundry portal can still choose another effort.
   body = {
-    name                  = local.knowledge_base_name
-    description           = "Foundry IQ knowledge base for ${var.project_name}."
-    outputMode            = "answerSynthesis"
-    answerInstructions    = "Answer using retrieved source results and include citations. If the sources do not contain the answer, say you do not know. Never report unavailable or unauthorized sources as successfully queried."
-    retrievalInstructions = "Use connected Fabric ontology sources for current entities, relationships, statuses and counts. Use indexed OneLake files for documentation and background. Bootstrap documents are not live table data; do not substitute them for a failed ontology query."
-    knowledgeSources = concat(
-      [{ name = restful_resource.knowledge_source[count.index].body.name }],
-      [for source in restful_resource.ontology_source : { name = source.body.name }],
-    )
+    name        = local.knowledge_base_name
+    description = "Approved documents for ${var.project_name}: the attached knowledge_folders sources from the DEV knowledge lakehouse."
+    outputMode  = "extractiveData"
+    # Only attached folders: a detached source stays indexed, ready to attach in the Foundry portal.
+    knowledgeSources = [
+      for key, source in restful_resource.knowledge_source : { name = source.body.name } if var.knowledge_folders[key].attach
+    ]
     models = [{
       kind = "azureOpenAI"
       azureOpenAIParameters = {
@@ -192,13 +207,31 @@ resource "restful_resource" "knowledge_base" {
         modelName    = var.chat_model.name
       }
     }]
-    retrievalReasoningEffort = { kind = "low" }
+    retrievalReasoningEffort = { kind = "minimal" }
   }
 
   lifecycle {
-    # Search refuses to delete a source while a knowledge base references it.
-    replace_triggered_by = [restful_resource.knowledge_source[count.index]]
+    # Search refuses to delete a source while a knowledge base references it, including a source attached in the
+    # portal, so rebuilding any source rebuilds the base first, and so does adding or removing a folder key.
+    replace_triggered_by = [restful_resource.knowledge_source, terraform_data.knowledge_base_sources[count.index]]
   }
+}
+
+# replace_triggered_by fires when a referenced instance is updated or replaced, never when one is created or deleted.
+# These record each base's source keys, so removing a key rebuilds the base, and Terraform deletes the base before the
+# removed source, as Search requires. Without them the apply would delete a source the base still references and fail.
+# Each exists exactly when its base does: the plan that creates a base creates its tracker too, rather than replacing
+# one recorded while the base was absent, so the first knowledge setup plans no replacement.
+resource "terraform_data" "knowledge_base_sources" {
+  count = var.knowledge_lakehouse_id == null ? 0 : 1
+
+  triggers_replace = sort(keys(var.knowledge_folders))
+}
+
+resource "terraform_data" "ontology_check_base_sources" {
+  count = length(var.knowledge_ontologies) == 0 ? 0 : 1
+
+  triggers_replace = sort(keys(var.knowledge_ontologies))
 }
 
 resource "restful_resource" "ontology_source" {
@@ -221,4 +254,40 @@ resource "restful_resource" "ontology_source" {
   lifecycle {
     replace_triggered_by = [azapi_resource.search]
   }
+}
+
+# deploy.py verify proves the live ontology route here with the deployer's own token. No agent uses this base, and the
+# agents' knowledge base never holds an ontology, so a variant without the Fabric IQ tool can't reach the ontology
+# through its documents.
+resource "restful_resource" "ontology_check_base" {
+  count = length(var.knowledge_ontologies) == 0 ? 0 : 1
+
+  path            = "/knowledgebases/${local.ontology_check_base_name}"
+  check_existance = true
+
+  body = {
+    name                  = local.ontology_check_base_name
+    description           = "Check-only knowledge base for ${var.project_name}: the live Fabric ontology sources, queried by deploy.py verify and never by an agent."
+    outputMode            = "answerSynthesis"
+    answerInstructions    = "Answer only from the live ontology results and cite them. If the ontology returns nothing or the query fails, say so. Never report unavailable or unauthorized sources as successfully queried."
+    retrievalInstructions = "Query the connected Fabric ontology sources for current entities, relationships and values. Never substitute other content for a failed ontology query."
+    knowledgeSources      = [for source in restful_resource.ontology_source : { name = source.body.name }]
+    models = [{
+      kind = "azureOpenAI"
+      azureOpenAIParameters = {
+        resourceUri  = local.openai_endpoint
+        deploymentId = azapi_resource.chat_model.name
+        modelName    = var.chat_model.name
+      }
+    }]
+    retrievalReasoningEffort = { kind = "low" }
+  }
+
+  lifecycle {
+    # Search refuses to delete a source while a knowledge base references it, so a changed or removed ontology key
+    # rebuilds this base first (see terraform_data.ontology_check_base_sources).
+    replace_triggered_by = [restful_resource.ontology_source, terraform_data.ontology_check_base_sources[count.index]]
+  }
+
+  depends_on = [azurerm_role_assignment.search_foundry_user]
 }
