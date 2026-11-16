@@ -6,6 +6,7 @@ import { createApp } from './app.ts'
 import { createTokenVerifier } from './auth.ts'
 import { readServerConfig } from './config.ts'
 import { createStaticHandler } from './static.ts'
+import { createShutdown } from './shutdown.ts'
 import { startTelemetry } from './telemetry.ts'
 
 const { config, problems } = readServerConfig(process.env)
@@ -26,9 +27,12 @@ server.listen(config.port, () => {
   console.info(JSON.stringify({ event: 'app.server.listening', port: config.port, tracing: Boolean(config.telemetry) }))
   void verify.warmUp()
 })
-// Exports the queued spans before exiting, as Container Apps stops a replica.
-const stop = () => server.close(() => {
-  void telemetry.shutdown().catch(() => undefined).finally(() => process.exit(0))
+// Container Apps gives a stopping replica 30 seconds: let open requests finish for 20, then close them, so the queued
+// spans are still exported before it exits.
+const stop = createShutdown(server, {
+  drainMs: 20_000,
+  flush: () => telemetry.shutdown(),
+  exit: (code) => process.exit(code),
 })
 process.on('SIGTERM', stop)
 process.on('SIGINT', stop)

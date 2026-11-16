@@ -67,10 +67,11 @@ PHASES = ("signin", "config", "preflight", "identity", "consent", "platform",
 OK, USAGE, BLOCKED, WAITING, APPROVAL = 0, 1, 2, 3, 4
 PLAN_PHASES = ("identity", "platform", "knowledge", "app", "destroy")
 # Never granted by --yes: deletions, and replacing live Fabric definitions.
-DESTRUCTIVE_APPROVALS = ("destroy", "purge-foundry", "item-update")
+DESTRUCTIVE_APPROVALS = ("destroy", "purge-foundry", "item-update", "shared-action-group")
 # Approved by the sha256 prefix of exactly what they change.
 DIGEST_APPROVALS = PLAN_PHASES + ("item-update",)
-APPROVAL_KEYS = DIGEST_APPROVALS + ("knowledge-registration", "agent-publish", "app-build", "purge-foundry")
+APPROVAL_KEYS = DIGEST_APPROVALS + ("knowledge-registration", "agent-publish", "app-build", "purge-foundry",
+                                    "shared-action-group")
 # A transient failure (a connection reset, EOF or timeout, HTTP 429 or 5xx) of a read is retried: at most this many
 # attempts in all, after Retry-After or an exponential backoff from RETRY_BACKOFF seconds.
 RETRY_ATTEMPTS = 3
@@ -3388,8 +3389,57 @@ def teardown_next(snapshot):
     return steps
 
 
+SMART_DETECTION_GROUP = "Application Insights Smart Detection"
+
+
+def shared_smart_detection(ctx, snapshot):
+    """Alert rules outside this deployment's resource group that notify the Smart Detection action group inside it.
+
+    Azure creates the subscription's Smart Detection action group beside its first Application Insights component and
+    reuses it for every later component, wherever it is. When this deployment's resource group holds that group, the
+    destroy plan's cleanup deletes it, and the other components' Failure Anomalies rules then notify nobody.
+    """
+    group = (snapshot.get("resource_ids") or {}).get("azurerm_resource_group.main")
+    if not group or ctx.state.section("destroy").get("started_at"):
+        return []
+    action_group = f"{group}/providers/microsoft.insights/actionGroups/{SMART_DETECTION_GROUP}"
+    response = arm(ctx, "GET", f"{ARM_API}{urllib.parse.quote(action_group)}?api-version=2023-01-01")
+    if response.status == 404:
+        return []
+    if response.status != 200:
+        raise ServiceError("Reading this deployment's Smart Detection action group", response)
+    url = (f"{ARM_API}/subscriptions/{ctx.target('subscription_id')}/providers/Microsoft.AlertsManagement"
+           "/smartDetectorAlertRules?api-version=2021-04-01")
+    outside = set()
+    for _ in range(100):
+        response = arm(ctx, "GET", url)
+        if response.status != 200:
+            raise ServiceError("Listing the subscription's Smart Detection alert rules", response)
+        page = response.json(default={}) or {}
+        for rule in page.get("value") or []:
+            rule_id = str(rule.get("id") or "")
+            groups = ((rule.get("properties") or {}).get("actionGroups") or {}).get("groupIds") or []
+            if (any(urllib.parse.unquote(str(item)).lower() == action_group.lower() for item in groups)
+                    and not rule_id.lower().startswith(group.lower() + "/")):
+                outside.add(rule_id)
+        url = page.get("nextLink")
+        if not url:
+            return sorted(outside)
+        # Follow only Azure Resource Manager's own paging links.
+        if not url.startswith(ARM_API + "/"):
+            raise Blocked("Azure Resource Manager returned an unexpected paging link; nothing was deleted.")
+    raise Blocked("The subscription lists too many Smart Detection alert rules to check; nothing was deleted.")
+
+
 def phase_destroy(ctx):
     snapshot = teardown_snapshot(ctx)
+    outside = shared_smart_detection(ctx, snapshot)
+    if outside:
+        shown = ", ".join(outside[:5]) + (f" and {len(outside) - 5} more" if len(outside) > 5 else "")
+        approve(ctx, "shared-action-group",
+                f"Delete this resource group's {SMART_DETECTION_GROUP} action group, which {len(outside)} alert "
+                f"rule(s) outside this deployment also notify ({shown}); their Smart Detection notifications stop. "
+                "To keep them, give those rules another action group first, then rerun down")
 
     def started():
         # From here on, up refuses this deployment's receipts.
@@ -3589,7 +3639,7 @@ def parse_arguments(argv):
     group.add_argument("--approve", action="append", default=[], metavar="KEY[=SHA]",
                        help="approve a saved plan or item update by hash (identity|platform|knowledge|app|destroy|"
                             "item-update=SHA) or an action (knowledge-registration, agent-publish, app-build, "
-                            "purge-foundry)")
+                            "purge-foundry, shared-action-group)")
     group.add_argument("--retry-failed", action="store_true", help="resubmit a reviewed failed or unconfirmed operation")
     group.add_argument("--non-interactive", action="store_true",
                        help="never prompt: approvals stop with exit 4; device-code sign-ins still run and print their "

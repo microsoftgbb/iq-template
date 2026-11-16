@@ -164,8 +164,9 @@ Without `infra/terraform.tfvars`, also pass `--project-name`, `--location` and `
 | `agent-publish` | Creating every missing agent and publishing a new version of every changed one |
 | `app-build` | Building the app's image for the printed tag with ACR Tasks |
 | `destroy=<sha256-prefix>`, `purge-foundry` | The teardown steps |
+| `shared-action-group` | Teardown deleting this resource group's Smart Detection action group while alert rules outside the deployment still notify it |
 
-`--yes` approves this run's plans, publications and builds. It never approves `destroy`, `purge-foundry` or `item-update`, and a plan that deletes or replaces resources also needs `--allow-replace`. These choices are explicit flags, never automatic:
+`--yes` approves this run's plans, publications and builds. It never approves `destroy`, `purge-foundry`, `item-update` or `shared-action-group`, and a plan that deletes or replaces resources also needs `--allow-replace`. These choices are explicit flags, never automatic:
 
 | Flag | Use when |
 | --- | --- |
@@ -207,7 +208,7 @@ python3 .github/skills/deploy-platform/scripts/deploy.py down --non-interactive 
 
 | Order | Deletes |
 | --- | --- |
-| 1 | Everything in Terraform state: the container app, its environment, registry with its images, identity and sign-in registration; knowledge bases and sources and their Search ingestion assets; the DEV and TEST workspaces with all their data; the pipeline, connections and capacity; Foundry, with both agents in its project; Web IQ; Log Analytics and Application Insights with their traces; with Work IQ, its registration and connection; role assignments and the deployment identity. Two destroy-time actions also delete the Failure Anomalies alert rule that Azure creates beside Application Insights and, if Azure created it in this resource group, the Smart Detection action group, which would otherwise keep the resource group from being deleted. |
+| 1 | Everything in Terraform state: the container app, its environment, registry with its images, identity and sign-in registration; knowledge bases and sources and their Search ingestion assets; the DEV and TEST workspaces with all their data; the pipeline, connections and capacity; Foundry, with both agents in its project; Web IQ; Log Analytics and Application Insights with their traces; with Work IQ, its registration and connection; role assignments and the deployment identity. Two destroy-time actions also delete the Failure Anomalies alert rule that Azure creates beside Application Insights and, if Azure created it in this resource group, the Smart Detection action group, which would otherwise keep the resource group from being deleted. Azure creates that group beside a subscription's first Application Insights component and reuses it for later ones elsewhere, so before planning, `down` lists the subscription's alert rules outside this resource group that still notify it. If any do, it stops until you give them another action group or approve the loss with `--approve shared-action-group`. |
 | 2 | The soft-deleted Foundry account, by its recorded subscription, resource group, name and location. |
 
 `down` checks the repository, caller and targets without deployment quota or

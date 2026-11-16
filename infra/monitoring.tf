@@ -112,5 +112,7 @@ resource "azapi_resource" "telemetry_connection" {
     }
   }
 
-  depends_on = [azurerm_role_assignment.telemetry_publisher]
+  # Protect AppGenAIContent first: tracing must never start writing prompts, tool results or mail into a table that
+  # standard monitoring readers can still read.
+  depends_on = [azurerm_role_assignment.telemetry_publisher, azapi_resource_action.protect_genai_content]
 }

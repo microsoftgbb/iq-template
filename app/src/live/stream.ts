@@ -30,20 +30,23 @@ export async function readTurnStream(response: Response, onTool: (call: ToolCall
   if (!response.body) return failure('The app server sent no answer.')
   const reader = response.body.pipeThrough(new TextDecoderStream()).getReader()
   let buffered = ''
-  for (;;) {
-    const { value, done } = await reader.read()
-    if (value) buffered += value
-    const lines = buffered.split('\n')
-    buffered = done ? '' : lines.pop() ?? ''
-    for (const line of lines) {
-      if (!line.trim()) continue
-      const event = parseTurnEvent(line)
-      if (event.type === 'tool') onTool(event.call)
-      if (event.type === 'result') {
-        await reader.cancel().catch(() => undefined)
-        return event.outcome
+  try {
+    for (;;) {
+      const { value, done } = await reader.read()
+      if (value) buffered += value
+      const lines = buffered.split('\n')
+      buffered = done ? '' : lines.pop() ?? ''
+      for (const line of lines) {
+        if (!line.trim()) continue
+        const event = parseTurnEvent(line)
+        if (event.type === 'tool') onTool(event.call)
+        if (event.type === 'result') return event.outcome
       }
+      if (done) return failure('The connection to the app server closed before the answer arrived. Ask again.')
     }
-    if (done) return failure('The connection to the app server closed before the answer arrived. Ask again.')
+  } finally {
+    // On every exit, including an event the protocol rejects: cancelling closes the request, so the server stops the
+    // agent run instead of finishing it for nobody.
+    await reader.cancel().catch(() => undefined)
   }
 }

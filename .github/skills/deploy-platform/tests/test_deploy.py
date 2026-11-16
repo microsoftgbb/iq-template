@@ -649,6 +649,48 @@ class TeardownTests(unittest.TestCase):
         self.assertTrue(args.allow_delete)
         self.assertEqual(args.approve, {"destroy": "abcdef012345", "purge-foundry": True})
 
+    def shared_group(self, ctx, rules, present=True):
+        """Fake ARM: this resource group's Smart Detection action group, and the subscription's detector rules."""
+        resource_group = f"/subscriptions/{self.SUBSCRIPTION}/resourceGroups/rg-demo"
+        group = f"{resource_group}/providers/microsoft.insights/actionGroups/{deploy.SMART_DETECTION_GROUP}"
+        ctx.http.add("GET", re.escape(urllib.parse.quote(group)), reply(body={"id": group}) if present else reply(404))
+        ctx.http.add("GET", r"/providers/Microsoft\.AlertsManagement/smartDetectorAlertRules\?",
+                     reply(body={"value": [{"id": rule, "properties": {"actionGroups": {"groupIds": [group]}}}
+                                           for rule in rules]}))
+        snapshot = self.snapshot()
+        snapshot["resource_ids"] = {"azurerm_resource_group.main": resource_group}
+        return snapshot, resource_group
+
+    def test_deleting_a_shared_smart_detection_group_needs_its_own_approval_even_with_yes(self):
+        ctx = self.context(yes=True, allow_delete=True)
+        ctx.shell = FakeShell([TOKEN_RULE] + plan_rules([], plan_code=0))
+        rules = f"/subscriptions/{self.SUBSCRIPTION}/resourceGroups/%s/providers/microsoft.alertsmanagement/smartDetectorAlertRules"
+        snapshot, _ = self.shared_group(ctx, [f"{rules % 'rg-other'}/Failure Anomalies - appi-other",
+                                              f"{rules % 'rg-demo'}/Failure Anomalies - appi-demo"])
+        with mock.patch.object(deploy, "teardown_snapshot", return_value=snapshot), \
+                mock.patch.object(deploy, "purge_foundry"):
+            with self.assertRaises(deploy.NeedsApproval) as approval:
+                deploy.phase_destroy(ctx)
+            self.assertIn("shared-action-group", " ".join(approval.exception.next_steps))
+            self.assertIn("appi-other", str(approval.exception))
+            self.assertNotIn("appi-demo", str(approval.exception))
+            self.assertFalse(ctx.shell.matching(terraform("plan")))
+            ctx.args.approve = {"shared-action-group": True}
+            self.assertIn("managed resources deleted", deploy.phase_destroy(ctx))
+
+    def test_a_smart_detection_group_used_only_here_or_absent_needs_no_extra_approval(self):
+        inside = (f"/subscriptions/{self.SUBSCRIPTION}/resourceGroups/rg-demo/providers/microsoft.alertsmanagement/"
+                  "smartDetectorAlertRules/Failure Anomalies - appi-demo")
+        for present, rules in ((True, [inside]), (False, [])):
+            with self.subTest(present=present):
+                ctx = self.context(allow_delete=True)
+                ctx.shell = FakeShell([TOKEN_RULE] + plan_rules([], plan_code=0))
+                snapshot, _ = self.shared_group(ctx, rules, present=present)
+                with mock.patch.object(deploy, "teardown_snapshot", return_value=snapshot), \
+                        mock.patch.object(deploy, "purge_foundry"):
+                    self.assertIn("managed resources deleted", deploy.phase_destroy(ctx))
+        self.assertIn("shared-action-group", deploy.DESTRUCTIVE_APPROVALS)
+
 
 class BootstrapTests(unittest.TestCase):
     def test_a_fresh_workspace_syncs_the_reviewed_commit_with_the_bootstrap_plan(self):
@@ -2259,8 +2301,9 @@ class StateAndCliTests(unittest.TestCase):
             self.assertEqual(stop.exception.code, deploy.USAGE)
         self.assertEqual(set(deploy.APPROVAL_KEYS), {"identity", "platform", "knowledge", "app", "destroy", "item-update",
                                                      "knowledge-registration", "agent-publish", "app-build",
-                                                     "purge-foundry"})
-        self.assertEqual(set(deploy.DESTRUCTIVE_APPROVALS), {"destroy", "purge-foundry", "item-update"})
+                                                     "purge-foundry", "shared-action-group"})
+        self.assertEqual(set(deploy.DESTRUCTIVE_APPROVALS), {"destroy", "purge-foundry", "item-update",
+                                                             "shared-action-group"})
 
 
 class FakeFoundry(FakeHttp):

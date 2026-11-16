@@ -31,6 +31,22 @@ test('a stream that ends without a result is a failure, not an empty answer', as
   assert.match(outcome.status === 'failed' ? outcome.message : '', /closed before the answer/)
 })
 
+test('an event the protocol rejects cancels the stream, so the server stops the agent run', async () => {
+  let cancelled = false
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      // A malformed line, and the stream stays open as a slow agent run would.
+      controller.enqueue(new TextEncoder().encode('{"type":"tool","call":42}\n'))
+    },
+    cancel() {
+      cancelled = true
+    },
+  })
+  const response = new Response(body, { status: 200, headers: { 'Content-Type': 'application/x-ndjson' } })
+  await assert.rejects(readTurnStream(response, () => {}))
+  assert.equal(cancelled, true)
+})
+
 test("a refused sign-in is marked so the page can offer to sign in again; other errors use the server's message", async () => {
   const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
   assert.deepEqual(await readTurnStream(json(401, { message: 'Your sign-in expired. Reload the page to sign in again.' }), () => {}),

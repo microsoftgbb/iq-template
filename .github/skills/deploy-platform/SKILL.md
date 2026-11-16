@@ -118,7 +118,10 @@ Start without approvals to obtain the full destroy plan; like `up`, it signs in
 to every CLI teardown needs first. Explain that both
 workspaces and all their contents will be deleted. Require `--allow-delete`,
 the reviewed `--approve destroy=<hash>` and a separate `purge-foundry`
-approval. `--yes` does not grant them. One reviewed destroy plan deletes the
+approval. `--yes` does not grant them. If `down` reports alert rules outside the
+deployment that use its Smart Detection action group, show them to the user: they
+either give those rules another action group first or approve the loss with
+`--approve shared-action-group`; never approve it for them. One reviewed destroy plan deletes the
 container app, the Foundry project with both agents and every other Terraform
 resource; the runner then purges the Foundry account. It preserves the login
 registration until Fabric teardown finishes.
